@@ -1,0 +1,36 @@
+import type { ElectrobunConfig } from "electrobun";
+import pkg from "./package.json";
+
+export default {
+  app: {
+    name: "Interactive Learning",
+    identifier: "dev.aquatope.interactive-learning",
+    version: pkg.version,
+  },
+  runtime: {
+    exitOnLastWindowClosed: true,
+  },
+  build: {
+    bun: {
+      entrypoint: "src/bun/index.ts",
+    },
+    views: {
+      main: {
+        entrypoint: "src/views/main/index.tsx",
+      },
+    },
+    copy: {
+      "src/views/main/index.html": "views/main/index.html",
+      "src/views/main/styles/app.css": "views/main/app.css",
+      "node_modules/katex/dist/katex.min.css": "views/main/katex.min.css",
+      "python/pyproject.toml": "python/pyproject.toml",
+      "python/src": "python/src",
+    },
+    mac: {
+      bundleCEF: false,
+      defaultRenderer: "native",
+      codesign: false,
+      notarize: false,
+    },
+  },
+} satisfies ElectrobunConfig;

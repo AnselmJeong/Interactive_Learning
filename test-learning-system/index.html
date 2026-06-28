@@ -1,0 +1,1150 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>티마이오스: Test Learning System</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'%3E%3Ccircle cx='24' cy='24' r='18' fill='none' stroke='%23d3aa54' stroke-width='3'/%3E%3Ccircle cx='24' cy='24' r='4' fill='%23d3aa54'/%3E%3C/svg%3E" />
+  <style>
+    :root {
+      --bg: #101721;
+      --panel: #17202c;
+      --panel-2: #1d2836;
+      --ink: #f2ecdf;
+      --muted: #aeb8c6;
+      --quiet: #748195;
+      --line: rgba(242, 236, 223, 0.13);
+      --gold: #d3aa54;
+      --blue: #77aac4;
+      --green: #8ac08d;
+      --danger: #d88978;
+      --shadow: 0 18px 60px rgba(0, 0, 0, 0.28);
+      color-scheme: dark;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background:
+        radial-gradient(circle at 82% 4%, rgba(119, 170, 196, 0.16), transparent 32rem),
+        radial-gradient(circle at 8% 95%, rgba(211, 170, 84, 0.11), transparent 34rem),
+        var(--bg);
+      color: var(--ink);
+      font-family: ui-serif, "Apple SD Gothic Neo", "Noto Serif KR", Georgia, serif;
+    }
+
+    button, textarea {
+      font: inherit;
+    }
+
+    button {
+      color: inherit;
+    }
+
+    .app {
+      display: grid;
+      grid-template-columns: 290px minmax(0, 1fr) 330px;
+      min-height: 100vh;
+    }
+
+    .sidebar,
+    .inspector {
+      border-color: var(--line);
+      background: rgba(16, 23, 33, 0.72);
+      backdrop-filter: blur(18px);
+    }
+
+    .sidebar {
+      border-right: 1px solid var(--line);
+      padding: 22px 16px;
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      overflow: auto;
+    }
+
+    .inspector {
+      border-left: 1px solid var(--line);
+      padding: 22px 18px;
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      overflow: auto;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 0 6px 20px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .mark {
+      width: 42px;
+      height: 42px;
+      flex: none;
+    }
+
+    .brand h1 {
+      margin: 0;
+      font-size: 19px;
+      line-height: 1.18;
+      letter-spacing: 0;
+    }
+
+    .brand p {
+      margin: 4px 0 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.4;
+    }
+
+    .progress {
+      padding: 18px 6px 14px;
+    }
+
+    .progress-top {
+      display: flex;
+      justify-content: space-between;
+      color: var(--muted);
+      font-size: 12px;
+      margin-bottom: 8px;
+    }
+
+    .bar {
+      height: 8px;
+      background: rgba(242, 236, 223, 0.1);
+      border-radius: 999px;
+      overflow: hidden;
+    }
+
+    .fill {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, var(--gold), var(--blue));
+      transition: width 220ms ease;
+    }
+
+    .module-list {
+      display: grid;
+      gap: 6px;
+      padding-top: 4px;
+    }
+
+    .module-button {
+      width: 100%;
+      display: grid;
+      grid-template-columns: 28px 1fr;
+      gap: 10px;
+      align-items: start;
+      text-align: left;
+      border: 1px solid transparent;
+      background: transparent;
+      border-radius: 8px;
+      padding: 10px 9px;
+      cursor: pointer;
+      color: var(--muted);
+    }
+
+    .module-button:hover,
+    .module-button.active {
+      background: rgba(242, 236, 223, 0.055);
+      border-color: var(--line);
+      color: var(--ink);
+    }
+
+    .module-button.done .num {
+      background: rgba(138, 192, 141, 0.18);
+      color: var(--green);
+    }
+
+    .num {
+      width: 26px;
+      height: 26px;
+      display: grid;
+      place-items: center;
+      border-radius: 50%;
+      background: rgba(211, 170, 84, 0.12);
+      color: var(--gold);
+      font-size: 12px;
+      font-family: ui-sans-serif, system-ui, sans-serif;
+    }
+
+    .module-title {
+      font-size: 13px;
+      line-height: 1.35;
+    }
+
+    .module-goal {
+      margin-top: 4px;
+      color: var(--quiet);
+      font-size: 11px;
+      line-height: 1.35;
+    }
+
+    .stage {
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      min-height: 100vh;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+      padding: 22px 28px 16px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .topbar h2 {
+      margin: 0;
+      font-size: 24px;
+      line-height: 1.2;
+      letter-spacing: 0;
+    }
+
+    .topbar p {
+      margin: 6px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.45;
+    }
+
+    .top-actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex: none;
+    }
+
+    .ghost,
+    .primary {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 9px 12px;
+      cursor: pointer;
+      font-family: ui-sans-serif, system-ui, sans-serif;
+      font-size: 13px;
+      font-weight: 650;
+    }
+
+    .ghost {
+      background: rgba(242, 236, 223, 0.045);
+      color: var(--muted);
+    }
+
+    .ghost:hover {
+      color: var(--ink);
+      border-color: rgba(242, 236, 223, 0.24);
+    }
+
+    .primary {
+      border-color: rgba(211, 170, 84, 0.65);
+      background: var(--gold);
+      color: #17202c;
+    }
+
+    .stream {
+      padding: 26px 28px 20px;
+      overflow: auto;
+      min-height: 0;
+    }
+
+    .message-list {
+      max-width: 860px;
+      margin: 0 auto;
+      display: grid;
+      gap: 18px;
+    }
+
+    .message {
+      display: flex;
+    }
+
+    .message.user {
+      justify-content: flex-end;
+    }
+
+    .bubble {
+      max-width: min(760px, 92%);
+      line-height: 1.72;
+      font-size: 16px;
+    }
+
+    .bubble.tutor {
+      border-left: 2px solid rgba(211, 170, 84, 0.55);
+      padding-left: 16px;
+    }
+
+    .bubble.user {
+      padding: 11px 14px;
+      border: 1px solid rgba(211, 170, 84, 0.28);
+      background: rgba(211, 170, 84, 0.09);
+      border-radius: 14px 14px 4px 14px;
+      max-width: min(620px, 78%);
+      font-size: 15px;
+    }
+
+    .bubble.loading {
+      border-left: 2px solid rgba(119, 170, 196, 0.55);
+      padding-left: 16px;
+      color: var(--muted);
+      font-style: italic;
+    }
+
+    .speaker {
+      color: var(--gold);
+      font-family: ui-sans-serif, system-ui, sans-serif;
+      font-size: 12px;
+      font-weight: 750;
+      margin-bottom: 5px;
+      letter-spacing: 0;
+    }
+
+    .bubble p {
+      margin: 0;
+    }
+
+    .bubble p + p {
+      margin-top: 9px;
+    }
+
+    .source-line {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-top: 10px;
+    }
+
+    .ref-chip {
+      border: 1px solid rgba(119, 170, 196, 0.28);
+      background: rgba(119, 170, 196, 0.08);
+      color: var(--muted);
+      border-radius: 999px;
+      padding: 4px 8px;
+      font-family: ui-sans-serif, system-ui, sans-serif;
+      font-size: 11px;
+    }
+
+    .composer-wrap {
+      border-top: 1px solid var(--line);
+      padding: 14px 28px 22px;
+      background: rgba(16, 23, 33, 0.82);
+      backdrop-filter: blur(18px);
+    }
+
+    .chips {
+      max-width: 860px;
+      margin: 0 auto 11px;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .chip {
+      border: 1px solid rgba(211, 170, 84, 0.28);
+      background: rgba(211, 170, 84, 0.08);
+      color: var(--ink);
+      border-radius: 999px;
+      padding: 8px 12px;
+      cursor: pointer;
+      font-size: 13px;
+    }
+
+    .chip:hover {
+      background: rgba(211, 170, 84, 0.15);
+      border-color: rgba(211, 170, 84, 0.5);
+    }
+
+    .composer {
+      max-width: 860px;
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 10px;
+      align-items: end;
+    }
+
+    textarea {
+      width: 100%;
+      min-height: 52px;
+      max-height: 140px;
+      resize: vertical;
+      border: 1px solid var(--line);
+      background: rgba(242, 236, 223, 0.055);
+      color: var(--ink);
+      border-radius: 10px;
+      padding: 12px 13px;
+      line-height: 1.5;
+      outline: none;
+    }
+
+    textarea:focus {
+      border-color: rgba(211, 170, 84, 0.55);
+      box-shadow: 0 0 0 3px rgba(211, 170, 84, 0.1);
+    }
+
+    textarea::placeholder {
+      color: var(--quiet);
+    }
+
+    .send {
+      min-height: 52px;
+      padding-inline: 18px;
+    }
+
+    .panel-title {
+      margin: 0 0 10px;
+      color: var(--gold);
+      font-family: ui-sans-serif, system-ui, sans-serif;
+      font-size: 12px;
+      font-weight: 800;
+    }
+
+    .inspector-section {
+      padding: 0 0 18px;
+      margin-bottom: 18px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    .inspector-section:last-child {
+      border-bottom: 0;
+    }
+
+    .inspector h3 {
+      margin: 0 0 8px;
+      font-size: 18px;
+      line-height: 1.25;
+    }
+
+    .inspector p,
+    .inspector li {
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    .inspector ul {
+      margin: 8px 0 0;
+      padding-left: 18px;
+    }
+
+    .visual {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: rgba(242, 236, 223, 0.045);
+      padding: 14px;
+      box-shadow: var(--shadow);
+    }
+
+    .visual h4 {
+      margin: 0 0 12px;
+      font-size: 15px;
+    }
+
+    .flow {
+      display: grid;
+      gap: 8px;
+    }
+
+    .flow-item,
+    .layer-item,
+    .grid-item,
+    .contrast-cell,
+    .formula {
+      border: 1px solid rgba(242, 236, 223, 0.12);
+      background: rgba(16, 23, 33, 0.45);
+      border-radius: 8px;
+      padding: 10px;
+      color: var(--ink);
+    }
+
+    .flow-item {
+      position: relative;
+    }
+
+    .flow-item:not(:last-child)::after {
+      content: "";
+      display: block;
+      width: 1px;
+      height: 8px;
+      background: rgba(211, 170, 84, 0.55);
+      position: absolute;
+      left: 18px;
+      bottom: -9px;
+    }
+
+    .contrast {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+    }
+
+    .contrast-label,
+    .grid-label {
+      color: var(--gold);
+      font-size: 12px;
+      font-family: ui-sans-serif, system-ui, sans-serif;
+      font-weight: 800;
+      margin-bottom: 5px;
+    }
+
+    .grid-visual {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .formula {
+      text-align: center;
+      color: var(--gold);
+      font-size: 18px;
+      line-height: 1.4;
+    }
+
+    .source-card {
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      padding: 10px;
+      background: rgba(242, 236, 223, 0.04);
+      margin-top: 8px;
+    }
+
+    .source-card strong {
+      display: block;
+      color: var(--ink);
+      font-size: 12px;
+      margin-bottom: 5px;
+      font-family: ui-sans-serif, system-ui, sans-serif;
+    }
+
+    .source-card p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.55;
+    }
+
+    .summary {
+      display: grid;
+      gap: 10px;
+    }
+
+    .summary-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      color: var(--muted);
+      font-size: 13px;
+      font-family: ui-sans-serif, system-ui, sans-serif;
+    }
+
+    .summary-row strong {
+      color: var(--ink);
+    }
+
+    .empty {
+      color: var(--quiet);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    @media (max-width: 1120px) {
+      .app {
+        grid-template-columns: 260px minmax(0, 1fr);
+      }
+
+      .inspector {
+        display: none;
+      }
+    }
+
+    @media (max-width: 780px) {
+      .app {
+        display: block;
+      }
+
+      .sidebar {
+        position: relative;
+        height: auto;
+        border-right: 0;
+        border-bottom: 1px solid var(--line);
+      }
+
+      .module-list {
+        grid-template-columns: 1fr 1fr;
+      }
+
+      .topbar {
+        align-items: flex-start;
+        flex-direction: column;
+        padding: 18px 18px 14px;
+      }
+
+      .top-actions {
+        width: 100%;
+      }
+
+      .top-actions button {
+        flex: 1;
+      }
+
+      .stream,
+      .composer-wrap {
+        padding-left: 18px;
+        padding-right: 18px;
+      }
+
+      .composer {
+        grid-template-columns: 1fr;
+      }
+
+      .bubble,
+      .bubble.user {
+        max-width: 100%;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div id="app" class="app">
+    <aside class="sidebar">
+      <div class="brand">
+        <svg class="mark" viewBox="0 0 44 44" aria-hidden="true">
+          <circle cx="22" cy="22" r="19" fill="none" stroke="rgba(211,170,84,.72)" stroke-width="1.2" />
+          <circle cx="22" cy="22" r="2.4" fill="#d3aa54" />
+          <ellipse cx="22" cy="22" rx="15" ry="5.5" fill="none" stroke="rgba(119,170,196,.75)" stroke-width="1" />
+          <ellipse cx="22" cy="22" rx="5.5" ry="15" fill="none" stroke="rgba(119,170,196,.55)" stroke-width="1" />
+        </svg>
+        <div>
+          <h1>티마이오스 학습</h1>
+          <p>017-section.md 기반 test system</p>
+        </div>
+      </div>
+      <div class="progress">
+        <div class="progress-top">
+          <span id="progressLabel">0 / 6 modules</span>
+          <span id="progressPct">0%</span>
+        </div>
+        <div class="bar"><div class="fill" id="progressFill"></div></div>
+      </div>
+      <div class="module-list" id="moduleList"></div>
+    </aside>
+
+    <main class="stage">
+      <header class="topbar">
+        <div>
+          <h2 id="courseTitle">티마이오스: 세계의 탄생</h2>
+          <p id="courseSubtitle">러셀의 플라톤 우주생성론을 대화형으로 따라갑니다.</p>
+        </div>
+        <div class="top-actions">
+          <button class="ghost" id="prevBtn">이전</button>
+          <button class="ghost" id="nextBtn">다음</button>
+          <button class="primary" id="resetBtn">처음부터</button>
+        </div>
+      </header>
+
+      <section class="stream" id="stream">
+        <div class="message-list" id="messageList"></div>
+      </section>
+
+      <footer class="composer-wrap">
+        <div class="chips" id="choiceChips"></div>
+        <div class="composer">
+          <textarea id="answerInput" rows="2" placeholder="답하거나 되물어 보세요. Enter로 전송, Shift+Enter로 줄바꿈"></textarea>
+          <button class="primary send" id="sendBtn">보내기</button>
+        </div>
+      </footer>
+    </main>
+
+    <aside class="inspector">
+      <section class="inspector-section">
+        <div class="panel-title">CURRENT MODULE</div>
+        <h3 id="inspectorTitle"></h3>
+        <p id="inspectorGoal"></p>
+      </section>
+      <section class="inspector-section">
+        <div class="panel-title">VISUAL</div>
+        <div id="visualPanel"></div>
+      </section>
+      <section class="inspector-section">
+        <div class="panel-title">SOURCE</div>
+        <div id="sourcePanel"></div>
+      </section>
+      <section class="inspector-section">
+        <div class="panel-title">SESSION</div>
+        <div class="summary" id="summaryPanel"></div>
+      </section>
+    </aside>
+  </div>
+
+  <script>
+    const STORAGE_KEY = "interactive-learning-test:timaeus-adaptive-v2";
+
+    let artifacts;
+    let state;
+    let providerStatus = { adaptive: false };
+    let loading = false;
+
+    const els = {
+      moduleList: document.getElementById("moduleList"),
+      messageList: document.getElementById("messageList"),
+      stream: document.getElementById("stream"),
+      choiceChips: document.getElementById("choiceChips"),
+      answerInput: document.getElementById("answerInput"),
+      sendBtn: document.getElementById("sendBtn"),
+      prevBtn: document.getElementById("prevBtn"),
+      nextBtn: document.getElementById("nextBtn"),
+      resetBtn: document.getElementById("resetBtn"),
+      progressLabel: document.getElementById("progressLabel"),
+      progressPct: document.getElementById("progressPct"),
+      progressFill: document.getElementById("progressFill"),
+      courseTitle: document.getElementById("courseTitle"),
+      courseSubtitle: document.getElementById("courseSubtitle"),
+      inspectorTitle: document.getElementById("inspectorTitle"),
+      inspectorGoal: document.getElementById("inspectorGoal"),
+      visualPanel: document.getElementById("visualPanel"),
+      sourcePanel: document.getElementById("sourcePanel"),
+      summaryPanel: document.getElementById("summaryPanel")
+    };
+
+    function defaultState() {
+      return {
+        moduleIndex: 0,
+        phases: {},
+        completed: [],
+        answers: [],
+        misconceptions: [],
+        messagesByModule: {}
+      };
+    }
+
+    function loadState() {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (!raw) return defaultState();
+        return { ...defaultState(), ...JSON.parse(raw) };
+      } catch {
+        return defaultState();
+      }
+    }
+
+    function saveState() {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+    }
+
+    function modules() {
+      return artifacts.course_plan.modules;
+    }
+
+    function currentModule() {
+      return modules()[state.moduleIndex];
+    }
+
+    function moduleMessages(moduleId = currentModule().id) {
+      if (!state.messagesByModule[moduleId]) state.messagesByModule[moduleId] = [];
+      return state.messagesByModule[moduleId];
+    }
+
+    function currentPhase(moduleId = currentModule().id) {
+      return state.phases[moduleId] || "orient";
+    }
+
+    function setPhase(phase, moduleId = currentModule().id) {
+      state.phases[moduleId] = phase;
+    }
+
+    function sourceById(id) {
+      return artifacts.source_chunks.find((chunk) => chunk.id === id);
+    }
+
+    function visualById(id) {
+      return artifacts.visuals.find((visual) => visual.id === id);
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll('"', "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+    function addMessage(role, text, refs = [], visualId = null, choices = []) {
+      moduleMessages().push({
+        role,
+        text,
+        refs,
+        visualId,
+        choices,
+        at: new Date().toISOString()
+      });
+      saveState();
+      render();
+      requestAnimationFrame(() => {
+        els.stream.scrollTop = els.stream.scrollHeight;
+      });
+    }
+
+    function addLoadingMessage() {
+      const messages = moduleMessages();
+      if (messages.some((message) => message.role === "loading")) return;
+      messages.push({
+        role: "loading",
+        text: "튜터가 답변을 준비하고 있습니다...",
+        refs: [],
+        visualId: null,
+        choices: [],
+        at: new Date().toISOString()
+      });
+      render();
+    }
+
+    function removeLoadingMessage() {
+      const messages = moduleMessages();
+      const index = messages.findIndex((message) => message.role === "loading");
+      if (index !== -1) messages.splice(index, 1);
+    }
+
+    async function ensureModuleStarted() {
+      const module = currentModule();
+      const messages = moduleMessages(module.id);
+      if (messages.length > 0) return;
+      setPhase("orient", module.id);
+      await requestTutor({ event: "start_module" });
+    }
+
+    async function handleUserText(text) {
+      const trimmed = text.trim();
+      if (!trimmed || loading) return;
+      const module = currentModule();
+      addMessage("user", trimmed);
+      state.answers.push({ module_id: module.id, phase: currentPhase(), text: trimmed });
+      saveState();
+      await requestTutor({ event: "user_message", userText: trimmed });
+    }
+
+    async function requestTutor(extra) {
+      const module = currentModule();
+      loading = true;
+      addLoadingMessage();
+      try {
+        const response = await fetch("/api/tutor", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            ...extra,
+            moduleId: module.id,
+            phase: currentPhase(module.id),
+            completed: state.completed,
+            answers: state.answers.slice(-20),
+            misconceptions: state.misconceptions.slice(-20),
+            history: moduleMessages(module.id).filter((message) => message.role === "tutor" || message.role === "user")
+          })
+        });
+
+        if (!response.ok) {
+          const detail = await response.json().catch(() => ({ error: response.statusText }));
+          throw new Error(detail.error || response.statusText);
+        }
+
+        const output = await response.json();
+        applyTutorOutput(output);
+      } catch (error) {
+        removeLoadingMessage();
+        moduleMessages().push({
+          role: "tutor",
+          text: providerStatus.adaptive
+            ? `지금 튜터 응답을 생성하지 못했습니다. 오류는 다음과 같습니다: ${error.message}`
+            : "이 prototype은 이제 AI 튜터 서버가 필요합니다. `OPENAI_API_KEY`가 설정된 상태로 `node test-learning-system/server.mjs`를 실행해 주세요.",
+          refs: module.source_chunk_ids,
+          visualId: null,
+          choices: [],
+          at: new Date().toISOString()
+        });
+        saveState();
+      } finally {
+        loading = false;
+        removeLoadingMessage();
+        saveState();
+        render();
+        requestAnimationFrame(() => {
+          els.stream.scrollTop = els.stream.scrollHeight;
+        });
+      }
+    }
+
+    function applyTutorOutput(output) {
+      const module = currentModule();
+      const update = output.state_update || {};
+      removeLoadingMessage();
+
+      if (update.next_phase) setPhase(update.next_phase, module.id);
+      if (update.detected_misconception) {
+        state.misconceptions.push({
+          module_id: module.id,
+          answer: update.detected_misconception,
+          at: new Date().toISOString()
+        });
+      }
+      if (update.checkpoint_passed && !state.completed.includes(module.id)) {
+        state.completed.push(module.id);
+        setPhase("complete", module.id);
+      }
+
+      const choices = Array.isArray(output.choices) ? output.choices : [];
+      const next = modules()[state.moduleIndex + 1];
+      const finalChoices = update.advance_module && next
+        ? [...choices.filter((choice) => choice !== "다음으로 넘어가기").slice(0, 2), "다음 module로 이동"]
+        : choices;
+
+      moduleMessages().push({
+        role: "tutor",
+        text: output.message,
+        refs: output.source_refs || module.source_chunk_ids,
+        visualId: output.diagram || null,
+        choices: finalChoices.slice(0, 3),
+        at: new Date().toISOString()
+      });
+    }
+
+    async function goToModule(index) {
+      state.moduleIndex = Math.max(0, Math.min(index, modules().length - 1));
+      saveState();
+      render();
+      await ensureModuleStarted();
+      render();
+    }
+
+    async function resetAll() {
+      state = defaultState();
+      saveState();
+      render();
+      await ensureModuleStarted();
+      render();
+    }
+
+    async function maybeHandleChoice(choice) {
+      if (choice === "다음 module로 이동") {
+        goToModule(state.moduleIndex + 1);
+        return;
+      }
+      if (choice === "처음 module 다시 보기") {
+        goToModule(0);
+        return;
+      }
+      if (choice === "약점만 복습하기") {
+        const weak = state.misconceptions.at(-1);
+        if (weak) {
+          const idx = modules().findIndex((module) => module.id === weak.module_id);
+          goToModule(Math.max(0, idx));
+        }
+        return;
+      }
+      await handleUserText(choice);
+    }
+
+    function render() {
+      const course = artifacts.course_plan;
+      const module = currentModule();
+      const completedCount = state.completed.length;
+      const pct = Math.round((completedCount / modules().length) * 100);
+
+      els.courseTitle.textContent = course.title;
+      els.courseSubtitle.textContent = course.subtitle;
+      els.progressLabel.textContent = `${completedCount} / ${modules().length} modules`;
+      els.progressPct.textContent = `${pct}%`;
+      els.progressFill.style.width = `${pct}%`;
+
+      renderModuleList();
+      renderMessages();
+      renderChoices();
+      renderInspector();
+    }
+
+    function renderModuleList() {
+      els.moduleList.innerHTML = modules().map((module, index) => {
+        const active = index === state.moduleIndex ? "active" : "";
+        const done = state.completed.includes(module.id) ? "done" : "";
+        return `
+          <button class="module-button ${active} ${done}" data-index="${index}">
+            <span class="num">${state.completed.includes(module.id) ? "✓" : index + 1}</span>
+            <span>
+              <span class="module-title">${escapeHtml(module.title)}</span>
+              <span class="module-goal">${escapeHtml(module.learning_goal)}</span>
+            </span>
+          </button>
+        `;
+      }).join("");
+      els.moduleList.querySelectorAll("button").forEach((button) => {
+        button.addEventListener("click", () => goToModule(Number(button.dataset.index)));
+      });
+    }
+
+    function renderMessages() {
+      const messages = moduleMessages();
+      els.messageList.innerHTML = messages.map((message) => {
+      const refs = (message.refs || []).map((ref) => `<span class="ref-chip">${escapeHtml(ref)}</span>`).join("");
+      const text = escapeHtml(message.text).split("\n\n").map((paragraph) => {
+          const body = paragraph.includes("\n- ")
+            ? paragraph.replaceAll("\n", "<br>")
+            : paragraph.replaceAll("\n", "<br>");
+          return `<p>${body}</p>`;
+        }).join("");
+        return `
+          <div class="message ${message.role}">
+            <div class="bubble ${message.role}">
+              ${message.role === "tutor" || message.role === "loading" ? '<div class="speaker">튜터</div>' : ""}
+              ${text}
+              ${refs ? `<div class="source-line">${refs}</div>` : ""}
+            </div>
+          </div>
+        `;
+      }).join("");
+    }
+
+    function renderChoices() {
+      const messages = moduleMessages();
+      const lastTutor = [...messages].reverse().find((message) => message.role === "tutor");
+      const choices = lastTutor?.choices || [];
+      els.choiceChips.innerHTML = choices.map((choice) => {
+        return `<button class="chip" data-choice="${escapeHtml(choice)}" ${loading ? "disabled" : ""}>${escapeHtml(choice)}</button>`;
+      }).join("");
+      els.choiceChips.querySelectorAll("button").forEach((button) => {
+        button.addEventListener("click", () => maybeHandleChoice(button.dataset.choice));
+      });
+    }
+
+    function renderInspector() {
+      const module = currentModule();
+      els.inspectorTitle.textContent = module.title;
+      els.inspectorGoal.textContent = module.learning_goal;
+
+      const visual = visualById(module.visual_id);
+      els.visualPanel.innerHTML = visual ? renderVisual(visual) : '<p class="empty">아직 표시할 도해가 없습니다.</p>';
+
+      els.sourcePanel.innerHTML = module.source_chunk_ids.map((id) => {
+        const chunk = sourceById(id);
+        if (!chunk) return "";
+        return `
+          <div class="source-card">
+            <strong>${escapeHtml(chunk.id)} · ${escapeHtml(chunk.locator)}</strong>
+            <p>${escapeHtml(chunk.text)}</p>
+          </div>
+        `;
+      }).join("");
+
+      const weakForModule = state.misconceptions.filter((item) => item.module_id === module.id).length;
+      els.summaryPanel.innerHTML = `
+        <div class="summary-row"><span>현재 단계</span><strong>${escapeHtml(currentPhase())}</strong></div>
+        <div class="summary-row"><span>답변 수</span><strong>${state.answers.length}</strong></div>
+        <div class="summary-row"><span>이 module 재시도</span><strong>${weakForModule}</strong></div>
+        <div class="summary-row"><span>완료</span><strong>${state.completed.includes(module.id) ? "yes" : "no"}</strong></div>
+      `;
+    }
+
+    function renderVisual(visual) {
+      if (visual.type === "flow") {
+        return `
+          <div class="visual">
+            <h4>${escapeHtml(visual.title)}</h4>
+            <div class="flow">${visual.items.map((item) => `<div class="flow-item">${escapeHtml(item)}</div>`).join("")}</div>
+          </div>
+        `;
+      }
+      if (visual.type === "formula") {
+        return `
+          <div class="visual">
+            <h4>${escapeHtml(visual.title)}</h4>
+            <div class="formula">${escapeHtml(visual.formula)}</div>
+          </div>
+        `;
+      }
+      if (visual.type === "contrast") {
+        return `
+          <div class="visual">
+            <h4>${escapeHtml(visual.title)}</h4>
+            <div class="contrast">
+              <div class="contrast-cell">
+                <div class="contrast-label">${escapeHtml(visual.left.label)}</div>
+                ${escapeHtml(visual.left.body)}
+              </div>
+              <div class="contrast-cell">
+                <div class="contrast-label">${escapeHtml(visual.right.label)}</div>
+                ${escapeHtml(visual.right.body)}
+              </div>
+            </div>
+          </div>
+        `;
+      }
+      if (visual.type === "layers") {
+        return `
+          <div class="visual">
+            <h4>${escapeHtml(visual.title)}</h4>
+            <div class="flow">${visual.items.map((item) => `<div class="layer-item">${escapeHtml(item)}</div>`).join("")}</div>
+          </div>
+        `;
+      }
+      if (visual.type === "grid") {
+        return `
+          <div class="visual">
+            <h4>${escapeHtml(visual.title)}</h4>
+            <div class="grid-visual">
+              ${visual.items.map((item) => `
+                <div class="grid-item">
+                  <div class="grid-label">${escapeHtml(item.label)}</div>
+                  ${escapeHtml(item.value)}
+                </div>
+              `).join("")}
+            </div>
+          </div>
+        `;
+      }
+      return '<p class="empty">No visual</p>';
+    }
+
+    async function boot() {
+      const response = await fetch("./course_artifacts.json");
+      artifacts = await response.json();
+      providerStatus = await fetch("/api/status").then((res) => res.json()).catch(() => ({ adaptive: false }));
+      state = loadState();
+
+      els.sendBtn.addEventListener("click", () => {
+        if (loading) return;
+        const text = els.answerInput.value;
+        els.answerInput.value = "";
+        handleUserText(text);
+      });
+      els.answerInput.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" && !event.shiftKey) {
+          event.preventDefault();
+          els.sendBtn.click();
+        }
+      });
+      els.prevBtn.addEventListener("click", () => goToModule(state.moduleIndex - 1));
+      els.nextBtn.addEventListener("click", () => goToModule(state.moduleIndex + 1));
+      els.resetBtn.addEventListener("click", resetAll);
+
+      render();
+      await ensureModuleStarted();
+      render();
+    }
+
+    boot().catch((error) => {
+      document.body.innerHTML = `
+        <main style="max-width:720px;margin:80px auto;color:#f2ecdf;font:16px/1.6 system-ui;padding:24px">
+          <h1>학습 시스템을 불러오지 못했습니다.</h1>
+          <p>이 버전은 AI tutor endpoint가 필요합니다. 아래 서버로 실행해 주세요.</p>
+          <pre style="background:#17202c;padding:16px;border-radius:8px;overflow:auto">node test-learning-system/server.mjs</pre>
+          <p>${escapeHtml(error.message)}</p>
+        </main>
+      `;
+    });
+  </script>
+</body>
+</html>

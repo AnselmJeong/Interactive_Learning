@@ -1,0 +1,38 @@
+{
+  "name": "interactive-learning",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "INTERACTIVE_LEARNING_PROJECT_ROOT=$PWD electrobun dev",
+    "dev:watch": "INTERACTIVE_LEARNING_PROJECT_ROOT=$PWD electrobun dev --watch",
+    "start": "INTERACTIVE_LEARNING_PROJECT_ROOT=$PWD electrobun run",
+    "build:dev": "bun install && electrobun build",
+    "build:stable": "electrobun build --env=stable",
+    "typecheck": "tsc --noEmit",
+    "test:python": "cd python && uv run pytest",
+    "smoke:python": "INTERACTIVE_LEARNING_PROJECT_ROOT=$PWD bun run scripts/smoke-python.ts"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^4.5.2",
+    "electrobun": "^1.18.1",
+    "katex": "^0.17.0",
+    "lucide-react": "^0.468.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-markdown": "^10.1.0",
+    "rehype-katex": "^7.0.1",
+    "remark-gfm": "^4.0.1",
+    "remark-math": "^6.0.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@types/three": "^0.181.0",
+    "typescript": "^5.7.2"
+  },
+  "peerDependencies": {
+    "typescript": "^5.0.0"
+  }
+}
