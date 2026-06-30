@@ -4,6 +4,7 @@ node_modules/
 # Build output
 build/
 dist/
+artifacts/
 
 # Tooling / caches
 .playwright-mcp/
@@ -18,3 +19,8 @@ __pycache__/
 # Local env
 .env
 .env.local
+
+# Local diagnostics / scratch notes
+error_messages.md
+session_store.md
+source_paragraphs.md
