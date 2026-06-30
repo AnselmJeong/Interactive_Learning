@@ -1,9 +1,14 @@
-import { cp, mkdir, rename, rm } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { getDb } from "./project-db";
 import { dataPath, projectDirAt } from "./paths";
-import type { ProjectSummary } from "../shared/rpc-types";
+import { CourseArtifactService } from "./course-artifact-service";
+import type { MaterialArtifacts } from "../shared/artifact-types";
+import type { ProjectArchiveExport, ProjectSummary } from "../shared/rpc-types";
+import type { TutorContentBlock } from "../shared/tutor-types";
 import { SettingsService } from "./settings-service";
 
 type ProjectRow = {
@@ -15,6 +20,59 @@ type ProjectRow = {
   updated_at: number;
   last_opened_at: number | null;
   archived_at: number | null;
+};
+
+type SourceRow = {
+  id: string;
+  project_id: string;
+  title: string;
+  source_type: string;
+  original_file_name: string;
+  original_file_path: string | null;
+  imported_file_path: string;
+  content_hash: string;
+  quality_status: string;
+  created_at: number;
+  updated_at: number;
+};
+
+type MaterialRow = {
+  id: string;
+  project_id: string;
+  title: string;
+  material_type: string;
+  status: string;
+  generation_error: string | null;
+  created_at: number;
+  updated_at: number;
+};
+
+type SessionRow = {
+  id: string;
+  project_id: string;
+  material_id: string;
+  title: string;
+  status: "active" | "completed" | "archived";
+  current_module_id: string | null;
+  completed_module_ids_json: string;
+  model: string | null;
+  created_at: number;
+  updated_at: number;
+};
+
+type MessageRow = {
+  id: string;
+  session_id: string;
+  role: "user" | "assistant" | "system";
+  content: string;
+  module_id: string | null;
+  source_refs_json: string;
+  choices_json: string;
+  blocks_json: string;
+  visual_id: string | null;
+  state_update_json: string | null;
+  created_at: number;
+  ordinal: number;
 };
 
 function toProject(row: ProjectRow): ProjectSummary {
@@ -30,8 +88,92 @@ function toProject(row: ProjectRow): ProjectSummary {
   };
 }
 
+function jsonArray(raw: string | null): string[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.map(String) : [];
+  } catch {
+    return [];
+  }
+}
+
+function jsonBlocks(raw: string | null): TutorContentBlock[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? (parsed as TutorContentBlock[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function safeFilePart(value: string, fallback = "untitled") {
+  return (
+    value
+      .replace(/[\\/:*?"<>|#{}\[\]`]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 90) || fallback
+  );
+}
+
+function stamp(date = new Date()) {
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}-${pad(date.getHours())}${pad(date.getMinutes())}`;
+}
+
+function isoTime(value: number) {
+  return new Date(value).toISOString();
+}
+
+function sourceExcerpt(text: string, maxWords = 36) {
+  return text.replace(/\s+/g, " ").trim().split(/\s+/).slice(0, maxWords).join(" ");
+}
+
+function blocksToMarkdown(blocks: TutorContentBlock[], fallback: string) {
+  if (!blocks.length) return fallback.trim();
+  return blocks
+    .map((block) => {
+      if (block.type === "hook") return `> ${block.body}`;
+      if (block.type === "guided_reading") return block.sourceRef ? `${block.body}\n\n_Source: ${block.sourceRef}_` : block.body;
+      if (block.type === "paragraph") return block.body;
+      if (block.type === "bullets") return `${block.title ? `**${block.title}**\n\n` : ""}${block.items.map((item) => `- ${item}`).join("\n")}`;
+      if (block.type === "compare_table") {
+        const header = `| ${block.columns.join(" | ")} |`;
+        const divider = `| ${block.columns.map(() => "---").join(" | ")} |`;
+        const rows = block.rows.map((row) => `| ${block.columns.map((column) => row[column] || "").join(" | ")} |`);
+        return [block.title ? `**${block.title}**` : "", header, divider, ...rows].filter(Boolean).join("\n");
+      }
+      if (block.type === "source_quote") return `> ${block.quote}\n\n_Source: ${block.sourceRef}${block.attribution ? `, ${block.attribution}` : ""}_`;
+      if (block.type === "reflection") return `**Reflection**\n\n${block.body}`;
+      if (block.type === "misconception") return `**${block.title || "Clarification"}**\n\n${block.body}\n\n${block.repair}`;
+      if (block.type === "bridge") return `_${block.body}_`;
+      return "";
+    })
+    .filter(Boolean)
+    .join("\n\n");
+}
+
+function coursePlanMarkdown(artifacts: MaterialArtifacts) {
+  return [
+    `# ${artifacts.coursePlan.title}`,
+    artifacts.coursePlan.subtitle,
+    "",
+    `Estimated time: ${artifacts.coursePlan.estimatedTimeMinutes} minutes`,
+    "",
+    "## Modules",
+    "",
+    ...artifacts.coursePlan.modules.map((module, index) => `${index + 1}. **${module.title}**\n   ${module.learningGoal}`),
+    "",
+  ]
+    .filter((line) => line !== undefined)
+    .join("\n");
+}
+
 export class ProjectService {
   private readonly settings = new SettingsService();
+  private readonly artifacts = new CourseArtifactService();
 
   async create(input: { title: string; description?: string }) {
     const title = input.title.trim();
@@ -74,6 +216,120 @@ export class ProjectService {
     const now = Date.now();
     getDb().query("UPDATE projects SET archived_at = ?, updated_at = ? WHERE id = ?").run(now, now, projectId);
     return true;
+  }
+
+  async exportArchive(projectId: string, destinationFolder?: string): Promise<ProjectArchiveExport> {
+    const project = this.open(projectId);
+    const settings = await this.settings.get();
+    const outDir = destinationFolder || settings.defaultDownloadFolder;
+    await mkdir(outDir, { recursive: true });
+
+    const staging = await mkdtemp(join(tmpdir(), "interactive-learning-archive-"));
+    const sourcesDir = join(staging, "sources");
+    const materialsDir = join(staging, "materials");
+    await mkdir(sourcesDir, { recursive: true });
+    await mkdir(materialsDir, { recursive: true });
+
+    try {
+      const sources = getDb().query<SourceRow, [string]>("SELECT * FROM project_sources WHERE project_id = ? ORDER BY created_at ASC").all(projectId);
+      const materials = getDb().query<MaterialRow, [string]>("SELECT * FROM learning_materials WHERE project_id = ? ORDER BY created_at ASC").all(projectId);
+      const sessions = getDb().query<SessionRow, [string]>("SELECT * FROM learning_sessions WHERE project_id = ? ORDER BY created_at ASC").all(projectId);
+
+      await writeFile(join(staging, "README.md"), `# ${project.title} Learning Archive\n\nExported: ${new Date().toISOString()}\nSessions: ${sessions.length}\n`, "utf8");
+      await writeFile(join(staging, "project.json"), `${JSON.stringify(project, null, 2)}\n`, "utf8");
+      await writeFile(
+        join(sourcesDir, "sources.json"),
+        `${JSON.stringify(
+          sources.map((source) => ({
+            id: source.id,
+            title: source.title,
+            sourceType: source.source_type,
+            originalFileName: source.original_file_name,
+            qualityStatus: source.quality_status,
+            createdAt: source.created_at,
+            updatedAt: source.updated_at,
+          })),
+          null,
+          2
+        )}\n`,
+        "utf8"
+      );
+
+      let sessionCount = 0;
+      for (const [materialIndex, material] of materials.entries()) {
+        const materialDir = join(materialsDir, `${String(materialIndex + 1).padStart(2, "0")}-${safeFilePart(material.title)}`);
+        const sessionsDir = join(materialDir, "sessions");
+        await mkdir(sessionsDir, { recursive: true });
+        await writeFile(join(materialDir, "material.json"), `${JSON.stringify(material, null, 2)}\n`, "utf8");
+
+        let artifacts: MaterialArtifacts | null = null;
+        try {
+          artifacts = await this.artifacts.getArtifacts(material.id);
+          await writeFile(join(materialDir, "course_plan.md"), coursePlanMarkdown(artifacts), "utf8");
+        } catch (error) {
+          await writeFile(join(materialDir, "course_plan.md"), `# ${material.title}\n\nMaterial artifacts could not be loaded: ${(error as Error).message}\n`, "utf8");
+        }
+
+        const materialSessions = sessions.filter((session) => session.material_id === material.id);
+        for (const [sessionIndex, session] of materialSessions.entries()) {
+          const fileName = `${stamp(new Date(session.created_at))}-${String(sessionIndex + 1).padStart(2, "0")}-${safeFilePart(session.title, "session")}.md`;
+          const messages = getDb()
+            .query<MessageRow, [string]>("SELECT * FROM learning_messages WHERE session_id = ? ORDER BY ordinal ASC")
+            .all(session.id);
+          const markdown = this.sessionMarkdown(project, material, session, messages, artifacts);
+          await writeFile(join(sessionsDir, fileName), markdown, "utf8");
+          sessionCount += 1;
+        }
+      }
+
+      const fileName = `${safeFilePart(project.title, "project")}-learning-archive-${stamp()}.zip`;
+      const zipPath = join(outDir, fileName);
+      if (existsSync(zipPath)) await rm(zipPath, { force: true });
+      const result = spawnSync("/usr/bin/zip", ["-qr", zipPath, "."], { cwd: staging, encoding: "utf8" });
+      if (result.status !== 0) throw new Error(result.stderr || result.stdout || "zip command failed");
+      return { zipPath, fileName, sessionCount };
+    } finally {
+      await rm(staging, { recursive: true, force: true });
+    }
+  }
+
+  private sessionMarkdown(project: ProjectSummary, material: MaterialRow, session: SessionRow, messages: MessageRow[], artifacts: MaterialArtifacts | null) {
+    const completedModuleIds = jsonArray(session.completed_module_ids_json);
+    const totalModuleCount = artifacts?.coursePlan.modules.length || 0;
+    const currentModuleTitle = artifacts?.coursePlan.modules.find((module) => module.id === session.current_module_id)?.title || "";
+    const sourceById = new Map((artifacts?.sourceChunks || []).map((chunk) => [chunk.id, chunk]));
+    const index = artifacts?.sourceIndex || {};
+    const lines = [
+      `# ${session.title}`,
+      "",
+      `Project: ${project.title}`,
+      `Material: ${material.title}`,
+      `Status: ${session.status}`,
+      `Model: ${session.model || ""}`,
+      `Created: ${isoTime(session.created_at)}`,
+      `Updated: ${isoTime(session.updated_at)}`,
+      `Progress: ${completedModuleIds.length}/${totalModuleCount || "?"} modules`,
+      currentModuleTitle ? `Current module: ${currentModuleTitle}` : "",
+      "",
+      "## Conversation",
+      "",
+    ].filter(Boolean);
+
+    for (const message of messages) {
+      lines.push(`### ${message.role === "assistant" ? "Assistant" : message.role === "user" ? "User" : "System"}`, "");
+      lines.push(blocksToMarkdown(jsonBlocks(message.blocks_json), message.content), "");
+      const refs = jsonArray(message.source_refs_json);
+      if (refs.length) {
+        lines.push("Sources:");
+        for (const refId of refs) {
+          const chunk = sourceById.get(refId);
+          const meta = index[refId];
+          lines.push(`- ${meta?.title || refId}${meta?.locator ? `, ${meta.locator}` : ""}${chunk?.text ? `: "${sourceExcerpt(chunk.text)}"` : ""}`);
+        }
+        lines.push("");
+      }
+    }
+    return `${lines.join("\n").trim()}\n`;
   }
 
   folder(projectId?: string) {

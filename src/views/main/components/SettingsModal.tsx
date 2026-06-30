@@ -93,6 +93,22 @@ export function SettingsModal({
     }
   }
 
+  async function chooseDownloadFolder() {
+    setBusy(true);
+    try {
+      const next = (await request("settings.chooseDownloadFolder", {})) as AppSettings;
+      if (next.defaultDownloadFolder !== draftRef.current.defaultDownloadFolder) {
+        updateDraft({ defaultDownloadFolder: next.defaultDownloadFolder });
+        setStatusText("Download folder updated");
+      } else {
+        setStatusText("Download folder unchanged");
+      }
+      await onUpdated();
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <div className="modal-backdrop">
       <div className="modal">
@@ -119,6 +135,15 @@ export function SettingsModal({
             <div className="folder-picker-row">
               <input value={draft.projectRootFolder} onChange={(event) => updateDraft({ projectRootFolder: event.target.value })} />
               <button className="icon-button" type="button" onClick={chooseProjectRoot} title="Choose project root folder">
+                <FolderOpen size={17} />
+              </button>
+            </div>
+          </label>
+          <label className="folder-field">
+            <span>Default download folder</span>
+            <div className="folder-picker-row">
+              <input value={draft.defaultDownloadFolder} onChange={(event) => updateDraft({ defaultDownloadFolder: event.target.value })} />
+              <button className="icon-button" type="button" onClick={chooseDownloadFolder} title="Choose default download folder">
                 <FolderOpen size={17} />
               </button>
             </div>

@@ -76,6 +76,22 @@ export type TutorMessage = {
   ordinal: number;
 };
 
+export type SessionSummary = {
+  id: string;
+  projectId: string;
+  materialId: string;
+  title: string;
+  status: "active" | "completed" | "archived";
+  currentModuleId: string | null;
+  currentModuleTitle: string | null;
+  completedModuleCount: number;
+  totalModuleCount: number;
+  messageCount: number;
+  model: string;
+  createdAt: number;
+  updatedAt: number;
+};
+
 export type SessionSnapshot = {
   id: string;
   projectId: string;
@@ -84,8 +100,13 @@ export type SessionSnapshot = {
   status: "active" | "completed" | "archived";
   currentModuleId: string | null;
   completedModuleIds: string[];
+  // Paragraph-level progress. The learner advances one source paragraph (chunk) at a time, so a
+  // small source that is a single module of many paragraphs still has fine-grained progression.
+  currentChunkId: string | null;
+  coveredChunkIds: string[];
   model: string;
   messages: TutorMessage[];
+  createdAt: number;
   updatedAt: number;
 };
 

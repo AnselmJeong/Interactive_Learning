@@ -1,7 +1,7 @@
 import type { RPCSchema } from "electrobun/bun";
 import type { MaterialArtifacts, MaterialStatus, QualityStatus, SourceType } from "./artifact-types";
 import type { AiProviderStatus, AppSettings, ProviderModel, PublicAiProviderUpdate } from "./settings-types";
-import type { SessionSnapshot, TutorContext, TutorTurnOutput } from "./tutor-types";
+import type { SessionSnapshot, SessionSummary, TutorContext, TutorTurnOutput } from "./tutor-types";
 
 export type ProjectSummary = {
   id: string;
@@ -53,6 +53,12 @@ export type GenerationProgress = {
   progress: number;
 };
 
+export type ProjectArchiveExport = {
+  zipPath: string;
+  fileName: string;
+  sessionCount: number;
+};
+
 export type AppRPC = {
   bun: RPCSchema<{
     requests: {
@@ -60,6 +66,7 @@ export type AppRPC = {
       "projects.list": { params: {}; response: ProjectSummary[] };
       "projects.open": { params: { projectId: string }; response: ProjectSummary };
       "projects.archive": { params: { projectId: string }; response: boolean };
+      "projects.exportArchive": { params: { projectId: string; destinationFolder?: string }; response: ProjectArchiveExport };
       "projects.openFolder": { params: { projectId?: string }; response: boolean };
       "sources.importPaths": { params: { projectId: string; paths: string[] }; response: SourceSummary[] };
       "sources.openDialog": { params: { projectId: string }; response: string[] };
@@ -68,13 +75,14 @@ export type AppRPC = {
       "materials.generate": { params: { projectId: string; sourceIds: string[] }; response: MaterialSummary };
       "materials.list": { params: { projectId: string }; response: MaterialSummary[] };
       "materials.getArtifacts": { params: { materialId: string }; response: MaterialArtifacts };
-      "sessions.list": { params: { materialId: string }; response: SessionSnapshot[] };
+      "sessions.list": { params: { materialId: string }; response: SessionSummary[] };
       "sessions.start": { params: { materialId: string; mode: "new" | "continue"; sessionId?: string }; response: { session: SessionSnapshot; context: TutorContext; firstTurn?: TutorTurnOutput } };
       "sessions.load": { params: { sessionId: string }; response: { session: SessionSnapshot; context: TutorContext } };
       "tutor.sendTurn": { params: { sessionId: string; userText: string }; response: { session: SessionSnapshot; context: TutorContext; output: TutorTurnOutput } };
       "settings.getPublic": { params: {}; response: AppSettings };
       "settings.updatePublic": { params: Partial<AppSettings>; response: AppSettings };
       "settings.chooseProjectRootFolder": { params: {}; response: AppSettings };
+      "settings.chooseDownloadFolder": { params: {}; response: AppSettings };
       "aiProvider.status": { params: {}; response: AiProviderStatus };
       "aiProvider.updateSettings": { params: PublicAiProviderUpdate; response: AiProviderStatus };
       "aiProvider.listModels": { params: {}; response: ProviderModel[] };

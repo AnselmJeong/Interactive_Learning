@@ -74,6 +74,8 @@ export function getDb() {
       status TEXT NOT NULL CHECK (status IN ('active', 'completed', 'archived')),
       current_module_id TEXT,
       completed_module_ids_json TEXT NOT NULL DEFAULT '[]',
+      current_chunk_id TEXT,
+      covered_chunk_ids_json TEXT NOT NULL DEFAULT '[]',
       model TEXT,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
@@ -132,6 +134,13 @@ export function getDb() {
   }
   if (!messageColumns.includes("blocks_json")) {
     db.exec("ALTER TABLE learning_messages ADD COLUMN blocks_json TEXT NOT NULL DEFAULT '[]';");
+  }
+  const sessionColumns = db.query<{ name: string }, []>("PRAGMA table_info(learning_sessions)").all().map((column) => column.name);
+  if (!sessionColumns.includes("current_chunk_id")) {
+    db.exec("ALTER TABLE learning_sessions ADD COLUMN current_chunk_id TEXT;");
+  }
+  if (!sessionColumns.includes("covered_chunk_ids_json")) {
+    db.exec("ALTER TABLE learning_sessions ADD COLUMN covered_chunk_ids_json TEXT NOT NULL DEFAULT '[]';");
   }
   const materialColumns = db.query<{ name: string }, []>("PRAGMA table_info(learning_materials)").all().map((column) => column.name);
   if (!materialColumns.includes("lecture_plan_path")) {

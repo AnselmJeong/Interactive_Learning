@@ -1,14 +1,15 @@
-import { useEffect, useMemo, useState } from "react";
-import { Archive, BookOpen, Check, Database, FilePlus2, KeyRound, Loader2, MessageSquare, Play, Plus, RefreshCw, Send, Settings, Sparkles } from "lucide-react";
-import type { MaterialSummary, ProjectSummary, SourceSummary } from "../../shared/rpc-types";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Archive, BookOpen, Check, Loader2, MessageSquare, Play, Send, Settings, Upload } from "lucide-react";
+import type { MaterialSummary, ProjectArchiveExport, ProjectSummary, SourceSummary } from "../../shared/rpc-types";
 import type { AppSettings, AiProviderStatus, ProviderModel } from "../../shared/settings-types";
 import type { MaterialArtifacts } from "../../shared/artifact-types";
-import type { SessionSnapshot, TutorContext } from "../../shared/tutor-types";
+import type { SessionSnapshot, SessionSummary, SourceRef, TutorContext } from "../../shared/tutor-types";
 import { SettingsModal } from "./components/SettingsModal";
-import { SourceInspector } from "./components/SourceInspector";
 import { VisualRenderer } from "./components/VisualRenderer";
 import { MarkdownContent } from "./components/MarkdownContent";
 import { TutorBlockRenderer } from "./components/TutorBlockRenderer";
+import { NewProjectModal } from "./components/NewProjectModal";
+import { ProjectDropdown } from "./components/ProjectDropdown";
 
 type RpcRequest = (method: string, params: unknown) => Promise<unknown>;
 
@@ -16,10 +17,32 @@ type LoadState = {
   projects: ProjectSummary[];
   sources: SourceSummary[];
   materials: MaterialSummary[];
-  sessions: SessionSnapshot[];
+  sessions: SessionSummary[];
 };
 
 type CoursePlanModule = MaterialArtifacts["coursePlan"]["modules"][number];
+
+const NEXT_PROGRESS_CHOICE = "다음 진도로 넘어가주세요.";
+const FALLBACK_CHOICES = ["힌트를 하나만 더 주세요.", "예시 답변을 하나 보여주세요.", "이 질문을 더 쉽게 다시 물어봐 주세요.", NEXT_PROGRESS_CHOICE];
+
+function normalizeChoiceText(choice: string) {
+  if (!choice) return "";
+  if (choice.includes("원래 흐름") || choice.includes("돌아갈게요")) return NEXT_PROGRESS_CHOICE;
+  return choice;
+}
+
+function learnerChoices(choices: string[]) {
+  const seen = new Set<string>();
+  const exploratory = choices
+    .map((choice) => normalizeChoiceText(choice.trim()))
+    .filter((choice) => {
+      if (!choice || choice === NEXT_PROGRESS_CHOICE || seen.has(choice)) return false;
+      seen.add(choice);
+      return true;
+    })
+    .slice(0, 3);
+  return [...exploratory, NEXT_PROGRESS_CHOICE];
+}
 
 function displayableLearningGoal(module: CoursePlanModule) {
   const goal = module.learningGoal.trim();
@@ -39,6 +62,25 @@ function isTeachingGuideVisual(visual: MaterialArtifacts["visuals"][number] | nu
   );
 }
 
+function cleanLocator(locator: string) {
+  return locator.replace(/^before\s+/i, "").replace(/^document$/i, "").trim();
+}
+
+function AnswerSourceRefs({ refs }: { refs: SourceRef[] }) {
+  if (!refs.length) return null;
+  return (
+    <div className="answer-source-list">
+      {refs.map((ref) => (
+        <article key={ref.chunkId} className="answer-source-ref">
+          <strong>{ref.title}</strong>
+          {cleanLocator(ref.locator) ? <small>{cleanLocator(ref.locator)}</small> : null}
+          <MarkdownContent content={ref.text} compact />
+        </article>
+      ))}
+    </div>
+  );
+}
+
 export function App({ request }: { request: RpcRequest }) {
   const [state, setState] = useState<LoadState>({ projects: [], sources: [], materials: [], sessions: [] });
   const [activeProject, setActiveProject] = useState<ProjectSummary | null>(null);
@@ -46,10 +88,10 @@ export function App({ request }: { request: RpcRequest }) {
   const [artifacts, setArtifacts] = useState<MaterialArtifacts | null>(null);
   const [session, setSession] = useState<SessionSnapshot | null>(null);
   const [context, setContext] = useState<TutorContext | null>(null);
-  const [newProjectTitle, setNewProjectTitle] = useState("");
+  const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [sourceNotice, setSourceNotice] = useState("");
-  const [selectedSourceIds, setSelectedSourceIds] = useState<Set<string>>(new Set());
   const [answer, setAnswer] = useState("");
+  const [expandedSourceMessages, setExpandedSourceMessages] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [tutorThinking, setTutorThinking] = useState(false);
   const [status, setStatus] = useState("Ready");
@@ -57,6 +99,9 @@ export function App({ request }: { request: RpcRequest }) {
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [providerStatus, setProviderStatus] = useState<AiProviderStatus | null>(null);
   const [models, setModels] = useState<ProviderModel[]>([]);
+  const [viewMode, setViewMode] = useState<"chat" | "source">("chat");
+  const chatLogRef = useRef<HTMLDivElement | null>(null);
+  const currentChunkRef = useRef<HTMLElement | null>(null);
 
   async function refreshProjects() {
       const projects = (await request("projects.list", {})) as ProjectSummary[];
@@ -72,7 +117,6 @@ export function App({ request }: { request: RpcRequest }) {
     ]);
     setActiveProject(opened);
     setState((current) => ({ ...current, sources, materials, sessions: [] }));
-    setSelectedSourceIds(new Set());
     setActiveMaterial(null);
     setArtifacts(null);
     setSession(null);
@@ -110,19 +154,6 @@ export function App({ request }: { request: RpcRequest }) {
     };
   }, []);
 
-  async function createProject() {
-    if (!newProjectTitle.trim()) return;
-    setBusy(true);
-    try {
-      const project = (await request("projects.create", { title: newProjectTitle.trim() })) as ProjectSummary;
-      setNewProjectTitle("");
-      await refreshProjects();
-      await openProject(project);
-    } finally {
-      setBusy(false);
-    }
-  }
-
   async function chooseAndImportSources() {
     if (!activeProject) return;
     setBusy(true);
@@ -130,7 +161,6 @@ export function App({ request }: { request: RpcRequest }) {
       const beforeCount = state.sources.length;
       const sources = (await request("sources.chooseAndImport", { projectId: activeProject.id })) as SourceSummary[];
       setState((current) => ({ ...current, sources }));
-      setSelectedSourceIds(new Set(sources.map((source) => source.id)));
       const added = Math.max(0, sources.length - beforeCount);
       setSourceNotice(added ? `${added} source${added === 1 ? "" : "s"} imported` : "No new files selected");
     } catch (error) {
@@ -140,44 +170,85 @@ export function App({ request }: { request: RpcRequest }) {
     }
   }
 
-  async function generateMaterial() {
-    if (!activeProject || selectedSourceIds.size === 0) return;
+  // Pick a source and prepare its learning material. Reuses the material for that source if one
+  // already exists (materials.generate deduplicates by source set), otherwise generates it on the
+  // fly, then selects it so the course outline appears. It deliberately does NOT start a session:
+  // auto-starting spawned a brand-new session on every source click. The learner now explicitly
+  // chooses "Continue latest" or "Start" to begin.
+  async function learnFromSource(sourceId: string) {
+    if (!activeProject) return;
     setBusy(true);
+    setStatus("학습 자료 준비 중");
     try {
-      const material = (await request("materials.generate", { projectId: activeProject.id, sourceIds: [...selectedSourceIds] })) as MaterialSummary;
+      const material = (await request("materials.generate", { projectId: activeProject.id, sourceIds: [sourceId] })) as MaterialSummary;
       const materials = (await request("materials.list", { projectId: activeProject.id })) as MaterialSummary[];
       setState((current) => ({ ...current, materials }));
       await selectMaterial(material);
+      setStatus("Ready");
+    } catch (error) {
+      setStatus((error as Error).message);
     } finally {
       setBusy(false);
     }
+  }
+
+  async function refreshSessions(materialId = activeMaterial?.id) {
+    if (!materialId) return [];
+    const sessions = (await request("sessions.list", { materialId })) as SessionSummary[];
+    setState((current) => ({ ...current, sessions }));
+    return sessions;
   }
 
   async function selectMaterial(material: MaterialSummary) {
     setActiveMaterial(material);
     const [nextArtifacts, sessions] = await Promise.all([
       request("materials.getArtifacts", { materialId: material.id }) as Promise<MaterialArtifacts>,
-      request("sessions.list", { materialId: material.id }) as Promise<SessionSnapshot[]>,
+      request("sessions.list", { materialId: material.id }) as Promise<SessionSummary[]>,
     ]);
     setArtifacts(nextArtifacts);
     setState((current) => ({ ...current, sessions }));
     setSession(null);
     setContext(null);
+    setAnswer("");
+    setExpandedSourceMessages(new Set());
+  }
+
+  // Core session starter, independent of activeMaterial state so it can be called right after
+  // selectMaterial without waiting for a state tick. Both startSession and learnFromSource use it.
+  async function beginSession(materialId: string, mode: "new" | "continue") {
+    setTutorThinking(true);
+    try {
+      const result = (await request("sessions.start", { materialId, mode })) as { session: SessionSnapshot; context: TutorContext };
+      setSession(result.session);
+      setContext(result.context);
+      setExpandedSourceMessages(new Set());
+      await refreshSessions(materialId);
+    } catch (error) {
+      setStatus((error as Error).message);
+    } finally {
+      setTutorThinking(false);
+    }
   }
 
   async function startSession(mode: "new" | "continue") {
     if (!activeMaterial) return;
     setBusy(true);
-    setTutorThinking(true);
+    await beginSession(activeMaterial.id, mode);
+    setBusy(false);
+  }
+
+  async function loadSession(sessionId: string) {
+    setBusy(true);
     try {
-      const result = (await request("sessions.start", { materialId: activeMaterial.id, mode })) as { session: SessionSnapshot; context: TutorContext };
+      const result = (await request("sessions.load", { sessionId })) as { session: SessionSnapshot; context: TutorContext };
       setSession(result.session);
       setContext(result.context);
-      const sessions = (await request("sessions.list", { materialId: activeMaterial.id })) as SessionSnapshot[];
-      setState((current) => ({ ...current, sessions }));
+      setAnswer("");
+      setExpandedSourceMessages(new Set());
+    } catch (error) {
+      setStatus((error as Error).message);
     } finally {
       setBusy(false);
-      setTutorThinking(false);
     }
   }
 
@@ -190,130 +261,217 @@ export function App({ request }: { request: RpcRequest }) {
       setSession(result.session);
       setContext(result.context);
       setAnswer("");
+      await refreshSessions(result.session.materialId);
+    } catch (error) {
+      // The turn was killed server-side (timeout/connection error). Surface it and re-sync so the
+      // dangling user message is gone, the spinner stops, and the learner can resubmit their input
+      // (we intentionally keep their text in the composer).
+      setStatus(`튜터 응답 실패: ${(error as Error).message}`);
+      try {
+        const reload = (await request("sessions.load", { sessionId: session.id })) as { session: SessionSnapshot; context: TutorContext };
+        setSession(reload.session);
+        setContext(reload.context);
+      } catch {
+        /* keep current state if reload also fails */
+      }
     } finally {
       setBusy(false);
       setTutorThinking(false);
     }
   }
 
+  async function exportProjectArchive() {
+    if (!activeProject) return;
+    setBusy(true);
+    try {
+      const result = (await request("projects.exportArchive", { projectId: activeProject.id })) as ProjectArchiveExport;
+      setStatus(`Exported ${result.sessionCount} sessions to ${result.fileName}`);
+    } catch (error) {
+      setStatus(`Archive export failed: ${(error as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const currentMessages = session?.messages || [];
-  const currentProgress = context?.session.completedModuleIds.length || 0;
-  const progressText = artifacts ? `${currentProgress}/${artifacts.coursePlan.modules.length}` : "0/0";
+  const sessionReadOnly = session?.status === "completed" || session?.status === "archived";
+
+  useEffect(() => {
+    chatLogRef.current?.scrollTo({ top: chatLogRef.current.scrollHeight, behavior: "smooth" });
+  }, [currentMessages.length, tutorThinking]);
+
+  // Progress is measured in source paragraphs (chunks), not modules: a small source is a single
+  // module of many paragraphs, so module-based progress would read 0/1 the entire session.
+  const totalChunks = artifacts?.sourceChunks.length || 0;
+  const coveredChunks = context?.session.coveredChunkIds.length || 0;
+  // "Reached" = paragraphs finished plus the one being taught right now, so the indicator reflects
+  // the learner's current position and advances with each new paragraph the tutor opens.
+  const currentChunkId = context?.session.currentChunkId || null;
+  const reachedChunks = coveredChunks + (currentChunkId && !context?.session.coveredChunkIds.includes(currentChunkId) ? 1 : 0);
+  const progressText = artifacts ? `${reachedChunks}/${totalChunks}` : "0/0";
   const activeModule = context?.moduleOutline.find((item) => item.status === "in_progress");
-  const progressPercent = artifacts ? Math.round((currentProgress / Math.max(1, artifacts.coursePlan.modules.length)) * 100) : 0;
+  const progressPercent = totalChunks ? Math.round((reachedChunks / totalChunks) * 100) : 0;
   const latestAssistant = [...currentMessages].reverse().find((message) => message.role === "assistant");
+  // Once every paragraph is covered, the tutor offers an explicit "마칠게요 / 더 질문 있어요" pair.
+  // Don't run those through learnerChoices, which would append "다음 진도로 넘어가주세요" — that
+  // choice reads as "next paragraph" yet, at the very end, would re-trip the finish flow.
+  const allModulesCovered = totalChunks > 0 && coveredChunks >= totalChunks;
   const latestChoices = latestAssistant
+    && !sessionReadOnly
     ? latestAssistant.choices.length
-      ? latestAssistant.choices
-      : ["힌트를 하나만 더 주세요.", "예시 답변을 하나 보여주세요.", "이 질문을 더 쉽게 다시 물어봐 주세요."]
+      ? allModulesCovered
+        ? latestAssistant.choices
+        : learnerChoices(latestAssistant.choices)
+      : FALLBACK_CHOICES
     : [];
   const visibleVisual = isTeachingGuideVisual(context?.visual) ? null : context?.visual;
+  const activeSessions = useMemo(() => state.sessions.filter((item) => item.status === "active"), [state.sessions]);
+  // Per-source material lookup. A source is "ready to learn" when a material built from exactly
+  // that source exists and is ready; this drives the status hint shown on each source row.
+  const materialForSource = useMemo(() => {
+    const map = new Map<string, MaterialSummary | undefined>();
+    for (const source of state.sources) {
+      map.set(
+        source.id,
+        state.materials.find((material) => material.sourceIds.length === 1 && material.sourceIds[0] === source.id && material.status === "ready"),
+      );
+    }
+    return map;
+  }, [state.sources, state.materials]);
+  const activeSourceId = activeMaterial && activeMaterial.sourceIds.length === 1 ? activeMaterial.sourceIds[0] : null;
+  const sourceRefById = useMemo(() => {
+    const refs = new Map<string, SourceRef>();
+    for (const ref of context?.sourceRefs || []) refs.set(ref.chunkId, ref);
+    if (artifacts) {
+      for (const chunk of artifacts.sourceChunks) {
+        const meta = artifacts.sourceIndex[chunk.id];
+        refs.set(chunk.id, {
+          chunkId: chunk.id,
+          title: meta?.title || chunk.headingPath.join(" > ") || "Source",
+          locator: meta?.locator || chunk.locator,
+          text: chunk.text,
+        });
+      }
+    }
+    return refs;
+  }, [artifacts, context?.sourceRefs]);
 
-  const sourceCountLabel = useMemo(() => {
-    const count = selectedSourceIds.size;
-    return count ? `${count} selected` : "Select sources";
-  }, [selectedSourceIds]);
+  // Source-coverage model, driven by the paragraph cursor. Each source paragraph (chunk) is
+  // "covered" (already taught and stepped past), "current" (the paragraph being taught right now),
+  // or "upcoming" (not reached yet). This drives both the highlighted source document and the
+  // progression bar, so the learner sees exactly how much of the source has been taught — and
+  // notices if the tutor wraps up while paragraphs are still untouched.
+  const sourceProgress = useMemo(() => {
+    if (!artifacts) return null;
+    const chunks = artifacts.sourceChunks;
+    const total = chunks.length;
+    const coveredIds = new Set(session?.coveredChunkIds || []);
+    const currentId = session?.currentChunkId || null;
+    const statusFor = (id: string): "covered" | "current" | "upcoming" =>
+      id === currentId ? "current" : coveredIds.has(id) ? "covered" : "upcoming";
+    const reached = chunks.filter((chunk) => statusFor(chunk.id) !== "upcoming").length;
+    const coveredCount = chunks.filter((chunk) => statusFor(chunk.id) === "covered").length;
+    const firstCurrentIndex = chunks.findIndex((chunk) => statusFor(chunk.id) === "current");
+    return { total, reached, coveredCount, percent: total ? Math.round((reached / total) * 100) : 0, statusFor, firstCurrentIndex };
+  }, [artifacts, session?.coveredChunkIds, session?.currentChunkId]);
+
+  // Center the source document on the part being discussed whenever the learner opens the
+  // source view or the conversation moves to a new chunk.
+  useEffect(() => {
+    if (viewMode === "source") currentChunkRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }, [viewMode, sourceProgress?.firstCurrentIndex]);
+
+  const importedSourceLabel = `${state.sources.length} source${state.sources.length === 1 ? "" : "s"} imported`;
+  const inspectorModules = useMemo(() => {
+    if (context?.moduleOutline.length) return context.moduleOutline;
+    return (artifacts?.coursePlan.modules || []).map((module, index) => ({
+      id: module.id,
+      title: module.title,
+      status: index === 0 ? "in_progress" : "not_started",
+    }));
+  }, [artifacts?.coursePlan.modules, context?.moduleOutline]);
 
   return (
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand-row">
-          <BookOpen size={28} />
+          <div className="brand-mark" aria-hidden="true">il</div>
           <div>
             <h1>Interactive Learning</h1>
-            <p>Project-based source-grounded tutoring</p>
+            <p>Source-grounded tutoring</p>
           </div>
-          <button className="icon-button" onClick={() => setSettingsOpen(true)} title="Settings">
-            <Settings size={18} />
-          </button>
         </div>
 
         <section className="pane-section">
           <div className="section-heading">
-            <h2>Projects</h2>
-            <button className="icon-button" onClick={refreshProjects} title="Refresh projects">
-              <RefreshCw size={16} />
-            </button>
+            <h2>Project</h2>
           </div>
-          <div className="inline-form">
-            <input value={newProjectTitle} onChange={(event) => setNewProjectTitle(event.target.value)} placeholder="New project title" />
-            <button className="icon-button primary" onClick={createProject} disabled={busy || !newProjectTitle.trim()} title="Create project">
-              <Plus size={17} />
-            </button>
-          </div>
-          <div className="list">
-            {state.projects.map((project) => (
-              <button key={project.id} className={`list-item ${activeProject?.id === project.id ? "active" : ""}`} onClick={() => openProject(project)}>
-                <span>{project.title}</span>
-                <small>{new Date(project.updatedAt).toLocaleDateString()}</small>
-              </button>
-            ))}
-          </div>
+          <ProjectDropdown
+            projects={state.projects}
+            activeProject={activeProject}
+            busy={busy}
+            onSelect={(project) => void openProject(project)}
+            onCreate={() => setNewProjectOpen(true)}
+          />
         </section>
 
-        <section className="pane-section">
+        <section className="pane-section sources-section">
           <div className="section-heading">
             <h2>Sources</h2>
-            <span>{sourceCountLabel}</span>
+            <button className="icon-button ghost" onClick={chooseAndImportSources} disabled={!activeProject || busy} title="소스 추가">
+              <Upload size={16} />
+            </button>
           </div>
-          <button
-            className="file-picker-card"
-            onClick={chooseAndImportSources}
-            disabled={!activeProject || busy}
-          >
-            <FilePlus2 size={22} />
-            <span>Choose source files</span>
-            <small>{activeProject ? "Select one or more Markdown, text, or PDF files" : "Create or open a project first"}</small>
-          </button>
           {sourceNotice ? <p className="source-notice">{sourceNotice}</p> : null}
-          <div className="list compact">
-            {state.sources.map((source) => (
-              <label key={source.id} className="check-row">
-                <input
-                  type="checkbox"
-                  checked={selectedSourceIds.has(source.id)}
-                  onChange={(event) => {
-                    const next = new Set(selectedSourceIds);
-                    if (event.target.checked) next.add(source.id);
-                    else next.delete(source.id);
-                    setSelectedSourceIds(next);
-                  }}
-                />
-                <span>{source.title}</span>
-                <small>{source.qualityStatus}</small>
-              </label>
-            ))}
+          <div className="list source-list-fill">
+            {state.sources.map((source) => {
+              const ready = materialForSource.get(source.id);
+              const isActive = activeSourceId === source.id;
+              return (
+                <button
+                  key={source.id}
+                  className={`list-item source-learn-row ${isActive ? "active" : ""}`}
+                  onClick={() => learnFromSource(source.id)}
+                  disabled={!activeProject || busy}
+                  title={ready ? "학습 자료 열기" : "학습 자료 생성하기"}
+                >
+                  <span>{source.title}</span>
+                  {ready ? <small>ready</small> : null}
+                </button>
+              );
+            })}
+            {!state.sources.length ? (
+              <p className="muted-copy">{activeProject ? "아직 가져온 소스가 없습니다. + 버튼으로 소스를 추가하세요." : "프로젝트를 열면 소스를 추가할 수 있습니다."}</p>
+            ) : null}
           </div>
-          <button className="wide-button primary" onClick={generateMaterial} disabled={!activeProject || busy || selectedSourceIds.size === 0}>
-            <Sparkles size={16} /> Generate material
-          </button>
         </section>
 
-        <section className="pane-section">
-          <div className="section-heading">
-            <h2>Materials</h2>
-            <Database size={16} />
-          </div>
-          <div className="list">
-            {state.materials.map((material) => (
-              <button key={material.id} className={`list-item ${activeMaterial?.id === material.id ? "active" : ""}`} onClick={() => selectMaterial(material)}>
-                <span>{material.title}</span>
-                <small>{material.status}</small>
-              </button>
-            ))}
-          </div>
-        </section>
+        <div className="sidebar-footer">
+          <button className="wide-button" onClick={() => setSettingsOpen(true)}>
+            <Settings size={16} /> Settings
+          </button>
+        </div>
       </aside>
 
       <main className="workspace">
         <header className="topbar">
           <div>
-            <p className="eyebrow">{activeProject?.title || "No project open"}</p>
-            <h2>{activeMaterial?.title || "Create a project, import sources, generate material"}</h2>
+            {activeMaterial ? (
+              <>
+                <p className="eyebrow">{activeProject?.title || "Project"}</p>
+                <h2>{activeMaterial.title}</h2>
+              </>
+            ) : activeProject ? (
+              <h2>{activeProject.title}</h2>
+            ) : (
+              <h2>Learning Workspace</h2>
+            )}
           </div>
-          <div className="status-pill">
-            {busy ? <Loader2 size={16} className="spin" /> : <Check size={16} />}
-            {status}
+          <div className="topbar-actions">
+            <div className="status-pill">
+              {busy ? <Loader2 size={16} className="spin" /> : <Check size={16} />}
+              {status}
+            </div>
           </div>
         </header>
 
@@ -323,21 +481,73 @@ export function App({ request }: { request: RpcRequest }) {
               <span>Course outline</span>
               <strong>{artifacts.coursePlan.modules.length} modules</strong>
             </div>
-            <div>
-              <span>Progress</span>
-              <strong>{progressText}</strong>
+            <div className="course-progress">
+              <span>Progress · {progressText} 문단 ({progressPercent}%)</span>
+              <div className="lesson-bar">
+                <i style={{ width: `${progressPercent}%` }} />
+              </div>
             </div>
-            <button className="wide-button" onClick={() => startSession("continue")} disabled={busy || state.sessions.length === 0}>
+            <span className="strip-divider" aria-hidden="true" />
+            <div className="segmented-control" aria-label="View mode">
+              <button type="button" className={viewMode === "source" ? "active" : ""} onClick={() => setViewMode("source")}>
+                학습 자료
+              </button>
+              <button type="button" className={viewMode === "chat" ? "active" : ""} onClick={() => setViewMode("chat")}>
+                대화
+              </button>
+            </div>
+            <button className="wide-button topbar-button" onClick={() => startSession("continue")} disabled={busy || activeSessions.length === 0}>
               <Play size={16} /> Continue latest
             </button>
-            <button className="wide-button primary" onClick={() => startSession("new")} disabled={busy}>
-              <MessageSquare size={16} /> Start fresh
+            <button className="wide-button topbar-button primary" onClick={() => startSession("new")} disabled={busy}>
+              <MessageSquare size={16} /> Start
             </button>
           </section>
         ) : null}
 
         <section className="tutor-surface">
-          {session ? (
+          {viewMode === "source" && artifacts ? (
+            <div className="source-view">
+              <div className="source-progress-head">
+                <div>
+                  <p className="eyebrow">원문 진행</p>
+                  <h3>{sourceProgress?.percent || 0}% 다룸</h3>
+                </div>
+                <div className="source-progress-meta">
+                  <span>{sourceProgress ? `${sourceProgress.reached}/${sourceProgress.total}` : "0/0"} 단락</span>
+                  <div className="lesson-bar">
+                    <i style={{ width: `${sourceProgress?.percent || 0}%` }} />
+                  </div>
+                  <div className="source-legend">
+                    <span className="covered">다룸</span>
+                    <span className="current">진행 중</span>
+                    <span className="upcoming">예정</span>
+                  </div>
+                </div>
+              </div>
+              {sessionReadOnly && sourceProgress && sourceProgress.percent < 90 ? (
+                <p className="source-incomplete-note">아직 다루지 않은 원문이 남아 있습니다. 새 세션을 시작해 이어서 학습할 수 있습니다.</p>
+              ) : null}
+              <div className="source-doc">
+                {artifacts.sourceChunks.map((chunk, index) => {
+                  const status = sourceProgress?.statusFor(chunk.id) || "upcoming";
+                  const heading = chunk.headingPath.join(" › ");
+                  const prevHeading = index > 0 ? (artifacts.sourceChunks[index - 1]?.headingPath.join(" › ") || "") : "";
+                  const showHeading = Boolean(heading) && heading !== prevHeading;
+                  return (
+                    <article
+                      key={chunk.id}
+                      className={`source-chunk ${status}`}
+                      ref={index === sourceProgress?.firstCurrentIndex ? currentChunkRef : undefined}
+                    >
+                      {showHeading ? <h4 className="source-heading">{heading}</h4> : null}
+                      <MarkdownContent content={chunk.text} />
+                    </article>
+                  );
+                })}
+              </div>
+            </div>
+          ) : session ? (
             <>
               <div className="lesson-header">
                 <div>
@@ -351,7 +561,7 @@ export function App({ request }: { request: RpcRequest }) {
                   </div>
                 </div>
               </div>
-              <div className="chat-log">
+              <div className="chat-log" ref={chatLogRef}>
                 {currentMessages.map((message) => (
                   <div key={message.id} className={`bubble ${message.role}`}>
                     {message.role === "assistant" && message.blocks?.length ? (
@@ -359,6 +569,27 @@ export function App({ request }: { request: RpcRequest }) {
                     ) : (
                       <MarkdownContent content={message.content} />
                     )}
+                    {message.role === "assistant" && message.sourceRefs.length ? (
+                      <div className="answer-sources">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setExpandedSourceMessages((current) => {
+                              const next = new Set(current);
+                              if (next.has(message.id)) next.delete(message.id);
+                              else next.add(message.id);
+                              return next;
+                            })
+                          }
+                        >
+                          <BookOpen size={15} />
+                          {expandedSourceMessages.has(message.id) ? "근거 닫기" : "근거 보기"}
+                        </button>
+                        {expandedSourceMessages.has(message.id) ? (
+                          <AnswerSourceRefs refs={message.sourceRefs.map((id) => sourceRefById.get(id)).filter((ref): ref is SourceRef => Boolean(ref))} />
+                        ) : null}
+                      </div>
+                    ) : null}
                   </div>
                 ))}
                 {tutorThinking ? (
@@ -381,12 +612,33 @@ export function App({ request }: { request: RpcRequest }) {
                   </div>
                 </div>
               ) : null}
-              <div className="composer">
-                <textarea value={answer} onChange={(event) => setAnswer(event.target.value)} placeholder="궁금한 점을 묻거나 위 탐색 경로 중 하나를 선택하세요" rows={3} />
-                <button className="icon-button primary send" onClick={() => sendAnswer()} disabled={busy || !answer.trim()} title="Send answer">
-                  <Send size={19} />
-                </button>
-              </div>
+              {sessionReadOnly ? (
+                <div className="read-only-session">
+                  <p>{session.status === "completed" ? "Completed session opened for review." : "Archived session opened for review."}</p>
+                  <button className="wide-button primary" onClick={() => startSession("new")} disabled={busy}>
+                    <MessageSquare size={16} /> Start new from this material
+                  </button>
+                </div>
+              ) : (
+                <div className="composer">
+                  <textarea
+                    value={answer}
+                    onChange={(event) => setAnswer(event.target.value)}
+                    onKeyDown={(event) => {
+                      if ((event.altKey || event.metaKey) && event.key === "Enter") {
+                        event.preventDefault();
+                        const text = event.currentTarget.value;
+                        if (!busy && text.trim()) void sendAnswer(text);
+                      }
+                    }}
+                    placeholder="궁금한 점을 묻거나 위 탐색 경로 중 하나를 선택하세요"
+                    rows={3}
+                  />
+                  <button className="icon-button primary send" onClick={() => sendAnswer()} disabled={busy || !answer.trim()} title="Send answer">
+                    <Send size={19} />
+                  </button>
+                </div>
+              )}
             </>
           ) : artifacts ? (
             <div className="empty-state">
@@ -406,8 +658,7 @@ export function App({ request }: { request: RpcRequest }) {
             </div>
           ) : (
             <div className="empty-state">
-              <h3>Project-first learning workspace</h3>
-              <p>Import Markdown or text sources, generate reusable material, then run adaptive sessions without regenerating artifacts.</p>
+              <h3>Learning Workspace</h3>
             </div>
           )}
         </section>
@@ -417,33 +668,45 @@ export function App({ request }: { request: RpcRequest }) {
         <div className="section-heading">
           <h2>Inspector</h2>
         </div>
-        {context ? (
+        {activeMaterial ? (
           <>
-            <SourceInspector refs={context.sourceRefs} />
             <section className="inspector-section">
               <p className="eyebrow">Modules</p>
               <div className="outline-list">
-                {context.moduleOutline.map((item) => (
+                {inspectorModules.map((item) => (
                   <div key={item.id} className={`outline-row ${item.status}`}>
                     <span>{item.title}</span>
-                    <small>{item.status}</small>
+                    <small>{item.status.replace(/_/g, " ")}</small>
                   </div>
                 ))}
               </div>
             </section>
+            <section className="inspector-section">
+              <p className="eyebrow">Sessions</p>
+              <div className="session-list">
+                {state.sessions.length ? (
+                  state.sessions.map((item) => (
+                    <button key={item.id} className={`session-row ${session?.id === item.id ? "active" : ""}`} onClick={() => loadSession(item.id)} disabled={busy}>
+                      <span>
+                        <strong>{item.title}</strong>
+                        <small>{item.currentModuleTitle || "No current module"}</small>
+                      </span>
+                      <em className={item.status}>{item.status}</em>
+                      <small>{new Date(item.updatedAt).toLocaleString()}</small>
+                      <small>
+                        {item.completedModuleCount}/{item.totalModuleCount || "?"} modules · {item.messageCount} messages
+                      </small>
+                    </button>
+                  ))
+                ) : (
+                  <p className="muted-copy">No sessions for this material yet.</p>
+                )}
+              </div>
+            </section>
           </>
-        ) : providerStatus ? (
-          <section className="inspector-section">
-            <p className="eyebrow">AI Provider</p>
-            <h3>{providerStatus.selectedModel || "No model selected"}</h3>
-            <p>{providerStatus.hasApiKey ? "API key saved outside renderer" : "API key not configured"}</p>
-            <button className="wide-button" onClick={() => setSettingsOpen(true)}>
-              <KeyRound size={16} /> Provider settings
-            </button>
-          </section>
         ) : null}
-        <button className="wide-button danger" onClick={() => activeProject && request("projects.archive", { projectId: activeProject.id }).then(refreshProjects)} disabled={!activeProject}>
-          <Archive size={16} /> Archive project
+        <button className="wide-button archive-action" onClick={exportProjectArchive} disabled={!activeProject || busy}>
+          <Archive size={16} /> Export project archive
         </button>
       </aside>
 
@@ -457,6 +720,17 @@ export function App({ request }: { request: RpcRequest }) {
           onClose={() => setSettingsOpen(false)}
           onUpdated={async () => {
             await refreshSettings();
+          }}
+        />
+      ) : null}
+
+      {newProjectOpen ? (
+        <NewProjectModal
+          request={request}
+          onClose={() => setNewProjectOpen(false)}
+          onCreated={async (project) => {
+            await refreshProjects();
+            await openProject(project);
           }}
         />
       ) : null}

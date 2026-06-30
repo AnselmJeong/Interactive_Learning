@@ -6,6 +6,7 @@ export type AppSettings = {
   selectedModel: string;
   ollamaBaseUrl: string;
   projectRootFolder: string;
+  defaultDownloadFolder: string;
   tutorLanguage: TutorLanguage;
   autoAdvanceOnMastery: boolean;
   showSourceInspector: boolean;

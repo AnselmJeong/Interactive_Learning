@@ -36,6 +36,12 @@ type MaterialRow = {
   updated_at: number;
 };
 
+type LearningSection = {
+  title: string;
+  chunks: SourceChunk[];
+  text: string;
+};
+
 function toMaterial(row: MaterialRow, sourceIds: string[]): MaterialSummary {
   return {
     id: row.id,
@@ -76,6 +82,21 @@ function chunkTitle(chunk: SourceChunk, fallback: string) {
   return chunk.headingPath.at(-1) || fallback;
 }
 
+function learningSections(chunks: SourceChunk[]): LearningSection[] {
+  const sections: LearningSection[] = [];
+  for (const chunk of chunks) {
+    const title = chunk.headingPath.join(" > ") || chunkTitle(chunk, `학습 단계 ${sections.length + 1}`);
+    const current = sections.at(-1);
+    if (current?.title === title) {
+      current.chunks.push(chunk);
+      current.text = `${current.text}\n\n${chunk.text}`;
+    } else {
+      sections.push({ title, chunks: [chunk], text: chunk.text });
+    }
+  }
+  return sections.length ? sections : chunks.map((chunk, index) => ({ title: chunkTitle(chunk, `학습 단계 ${index + 1}`), chunks: [chunk], text: chunk.text }));
+}
+
 function buildConcepts(chunks: SourceChunk[]): Concept[] {
   return chunks.slice(0, 12).map((chunk, index) => {
     const name = chunk.headingPath.at(-1) || `핵심 개념 ${index + 1}`;
@@ -94,24 +115,29 @@ function buildConcepts(chunks: SourceChunk[]): Concept[] {
 }
 
 function buildCoursePlan(title: string, chunks: SourceChunk[], concepts: Concept[]): CoursePlan {
-  const selectedChunks = chunks.slice(0, Math.max(3, Math.min(8, chunks.length)));
-  const modules: CourseModule[] = selectedChunks.map((chunk, index) => ({
-    id: `module-${String(index + 1).padStart(2, "0")}`,
-    title: chunk.headingPath.at(-1) || `학습 단계 ${index + 1}`,
-    learningGoal: `원문을 직접 읽지 않아도 ${chunkTitle(chunk, `학습 단계 ${index + 1}`)}의 핵심 주장과 긴장을 설명할 수 있다.`,
-    conceptIds: [concepts[index]?.id || concepts[0]?.id || "concept-1"],
-    sourceChunkIds: [chunk.id],
-    visualIds: [],
-    hookIntent: "원문을 읽지 않은 학습자가 궁금해할 긴장으로 열고, 바로 핵심 문맥을 대신 읽어 준다.",
-    checkpointRubric: "사용자가 정답을 맞혔는지가 아니라, 설명된 구조를 자기 말로 만져 볼 준비가 되었는지를 본다.",
-    masterySignals: signalsFromText(chunk.text),
-    misconceptionSignals: ["모름", "상관없", "그냥", "전부", "아무것도"],
-    remediationStrategy: "오답을 지적하지 말고, 원문 조각을 더 짧게 의역한 뒤 표나 비유로 설명을 다시 조직한다.",
-    mode: "guided_lecture",
-    understandingSignals: signalsFromText(chunk.text),
-    confusionSignals: ["모름", "헷갈", "어려", "상관없", "그냥"],
-    teacherRepairStrategy: "학습자의 직관을 출발점으로 삼고, 빠진 원문 구조를 먼저 가르친 뒤 짧은 반성 질문으로 연결한다.",
-  }));
+  const sections = learningSections(chunks);
+  const selectedSections = sections.slice(0, Math.max(3, Math.min(8, sections.length)));
+  const modules: CourseModule[] = selectedSections.map((section, index) => {
+    const sourceChunkIds = section.chunks.map((chunk) => chunk.id);
+    const conceptIds = concepts.filter((concept) => concept.sourceChunkIds.some((id) => sourceChunkIds.includes(id))).map((concept) => concept.id);
+    return {
+      id: `module-${String(index + 1).padStart(2, "0")}`,
+      title: section.title,
+      learningGoal: `원문을 직접 읽지 않아도 ${section.title}의 핵심 주장과 긴장을 설명할 수 있다.`,
+      conceptIds: conceptIds.length ? conceptIds : [concepts[index]?.id || concepts[0]?.id || "concept-1"],
+      sourceChunkIds,
+      visualIds: [],
+      hookIntent: "원문을 읽지 않은 학습자가 궁금해할 긴장으로 열고, 바로 핵심 문맥을 대신 읽어 준다.",
+      checkpointRubric: "사용자가 정답을 맞혔는지가 아니라, 설명된 구조를 자기 말로 만져 볼 준비가 되었는지를 본다.",
+      masterySignals: signalsFromText(section.text),
+      misconceptionSignals: ["모름", "상관없", "그냥", "전부", "아무것도"],
+      remediationStrategy: "오답을 지적하지 말고, 원문 조각을 더 짧게 의역한 뒤 표나 비유로 설명을 다시 조직한다.",
+      mode: "guided_lecture",
+      understandingSignals: signalsFromText(section.text),
+      confusionSignals: ["모름", "헷갈", "어려", "상관없", "그냥"],
+      teacherRepairStrategy: "학습자의 직관을 출발점으로 삼고, 빠진 원문 구조를 먼저 가르친 뒤 짧은 반성 질문으로 연결한다.",
+    };
+  });
 
   return {
     id: `course-${crypto.randomUUID()}`,
@@ -124,7 +150,7 @@ function buildCoursePlan(title: string, chunks: SourceChunk[], concepts: Concept
 }
 
 function buildVisuals(chunks: SourceChunk[]): VisualSpec[] {
-  const labels = chunks.slice(0, 5).map((chunk, index) => chunk.headingPath.at(-1) || `단계 ${index + 1}`);
+  const labels = learningSections(chunks).slice(0, 5).map((section, index) => section.title || `단계 ${index + 1}`);
   return [
     {
       id: "visual-course-map",
@@ -136,14 +162,15 @@ function buildVisuals(chunks: SourceChunk[]): VisualSpec[] {
 }
 
 function buildLecturePlan(materialId: string, chunks: SourceChunk[]): LecturePlan {
-  const selectedChunks = chunks.slice(0, Math.max(3, Math.min(8, chunks.length)));
+  const sections = learningSections(chunks);
+  const selectedSections = sections.slice(0, Math.max(3, Math.min(8, sections.length)));
   return {
     materialId,
     generatedAt: new Date().toISOString(),
-    modules: selectedChunks.map((chunk, index) => {
+    modules: selectedSections.map((section, index) => {
       const moduleId = `module-${String(index + 1).padStart(2, "0")}`;
-      const title = chunkTitle(chunk, `학습 단계 ${index + 1}`);
-      const firstSentence = sentences(chunk.text)[0] || compactText(chunk.text, 140);
+      const title = section.title || `학습 단계 ${index + 1}`;
+      const firstSentence = sentences(section.text)[0] || compactText(section.text, 140);
       return {
         moduleId,
         intrigue: {
@@ -172,10 +199,11 @@ function buildLecturePlan(materialId: string, chunks: SourceChunk[]): LecturePla
 }
 
 function buildPresentationPlan(materialId: string, chunks: SourceChunk[]): PresentationPlan {
-  const selectedChunks = chunks.slice(0, Math.max(3, Math.min(8, chunks.length)));
+  const sections = learningSections(chunks);
+  const selectedSections = sections.slice(0, Math.max(3, Math.min(8, sections.length)));
   return {
     materialId,
-    modules: selectedChunks.map((_, index) => ({
+    modules: selectedSections.map((_, index) => ({
       moduleId: `module-${String(index + 1).padStart(2, "0")}`,
       defaultTurnShape: ["hook", "guided_reading", "bullets", "reflection"],
       recapShape: ["bullets", "bridge"],
@@ -219,6 +247,9 @@ export class CourseArtifactService {
 
   async generate(projectId: string, sourceIds: string[]) {
     if (!sourceIds.length) throw new Error("At least one source is required");
+    const existing = this.findBySourceSet(projectId, sourceIds).find((material) => material.status === "ready" || material.status === "generating");
+    if (existing) return existing;
+
     const id = crypto.randomUUID();
     const now = Date.now();
     const rows = sourceIds.map((sourceId) => this.sources.getRow(sourceId));
@@ -324,6 +355,14 @@ export class CourseArtifactService {
       .query<MaterialRow, [string]>("SELECT * FROM learning_materials WHERE project_id = ? ORDER BY updated_at DESC")
       .all(projectId);
     return rows.map((row) => toMaterial(row, this.sourceIds(row.id)));
+  }
+
+  findBySourceSet(projectId: string, sourceIds: string[]) {
+    const expected = [...new Set(sourceIds)].sort();
+    return this.list(projectId).filter((material) => {
+      const actual = [...new Set(material.sourceIds)].sort();
+      return actual.length === expected.length && actual.every((sourceId, index) => sourceId === expected[index]);
+    });
   }
 
   getSummary(materialId: string) {

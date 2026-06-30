@@ -94,6 +94,7 @@ const rpc = BrowserView.defineRPC<AppRPC>({
       "projects.list": () => projects.list(),
       "projects.open": ({ projectId }) => projects.open(projectId),
       "projects.archive": ({ projectId }) => projects.archive(projectId),
+      "projects.exportArchive": ({ projectId, destinationFolder }) => projects.exportArchive(projectId, destinationFolder),
       "projects.openFolder": ({ projectId }) => openPath(projects.folder(projectId)),
       "sources.openDialog": () => chooseSourcePaths(),
       "sources.chooseAndImport": async ({ projectId }) => {
@@ -155,6 +156,19 @@ const rpc = BrowserView.defineRPC<AppRPC>({
         const next = await settings.update({ projectRootFolder: folder });
         await projects.migrateUnsetProjectRoots(next.projectRootFolder);
         return next;
+      },
+      "settings.chooseDownloadFolder": async () => {
+        const current = await settings.get();
+        const chosen = await Utils.openFileDialog({
+          startingFolder: existsSync(current.defaultDownloadFolder) ? current.defaultDownloadFolder : Utils.paths.home,
+          allowedFileTypes: "*",
+          canChooseFiles: false,
+          canChooseDirectory: true,
+          allowsMultipleSelection: false,
+        });
+        const folder = firstSelectedPath(chosen);
+        if (!folder) return current;
+        return settings.update({ defaultDownloadFolder: folder });
       },
       "aiProvider.status": () => providerStatus(),
       "aiProvider.updateSettings": async (patch) => {
