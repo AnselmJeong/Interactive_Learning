@@ -3,8 +3,8 @@ import pkg from "./package.json";
 
 export default {
   app: {
-    name: "Interactive Learning",
-    identifier: "dev.aquatope.interactive-learning",
+    name: "Learnie",
+    identifier: "dev.aquatope.learnie",
     version: pkg.version,
   },
   runtime: {
@@ -24,6 +24,7 @@ export default {
       "src/views/main/styles/app.css": "views/main/app.css",
       "node_modules/katex/dist/katex.min.css": "views/main/katex.min.css",
       "python/pyproject.toml": "python/pyproject.toml",
+      "python/uv.lock": "python/uv.lock",
       "python/src": "python/src",
     },
     mac: {

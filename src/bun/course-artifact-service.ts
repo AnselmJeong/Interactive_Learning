@@ -82,10 +82,20 @@ function chunkTitle(chunk: SourceChunk, fallback: string) {
   return chunk.headingPath.at(-1) || fallback;
 }
 
+function cleanHeadingParts(parts: string[]) {
+  const normalized = parts.map((part) => part.replace(/\s+course$/i, "").trim()).filter(Boolean);
+  if (normalized.length > 1 && /^chapter\s+\d+\b/i.test(normalized[0] || "")) return normalized.slice(1);
+  return normalized;
+}
+
+function sectionTitle(chunk: SourceChunk, fallback: string) {
+  return cleanHeadingParts(chunk.headingPath).join(" > ") || chunkTitle(chunk, fallback);
+}
+
 function learningSections(chunks: SourceChunk[]): LearningSection[] {
   const sections: LearningSection[] = [];
   for (const chunk of chunks) {
-    const title = chunk.headingPath.join(" > ") || chunkTitle(chunk, `학습 단계 ${sections.length + 1}`);
+    const title = sectionTitle(chunk, `학습 단계 ${sections.length + 1}`);
     const current = sections.at(-1);
     if (current?.title === title) {
       current.chunks.push(chunk);
@@ -253,7 +263,7 @@ export class CourseArtifactService {
     const id = crypto.randomUUID();
     const now = Date.now();
     const rows = sourceIds.map((sourceId) => this.sources.getRow(sourceId));
-    const title = rows.length === 1 ? `${rows[0]!.title} course` : `${rows[0]!.title} 외 ${rows.length - 1}개 source course`;
+    const title = rows.length === 1 ? rows[0]!.title : `${rows[0]!.title} 외 ${rows.length - 1}개`;
     const dir = materialDirAt(this.projectRoot(projectId), projectId, id);
     await mkdir(dir, { recursive: true });
 
@@ -292,7 +302,7 @@ export class CourseArtifactService {
           chunk.id,
           {
             sourceId: sourceIds.find((sourceId) => chunk.id.startsWith(sourceId)) || sourceIds[0]!,
-            title: chunk.headingPath.join(" > ") || title,
+            title: sectionTitle(chunk, title),
             locator: chunk.locator,
           },
         ])

@@ -1,9 +1,20 @@
 [project]
 name = "learning-backend"
 version = "0.2.0"
-description = "Document ingestion backend for Interactive Learning"
-requires-python = ">=3.11"
-dependencies = []
+description = "Document ingestion backend for Learnie"
+requires-python = ">=3.12"
+dependencies = [
+  "beautifulsoup4>=4.12",
+  "click>=8",
+  "docling>=2",
+  "ebooklib>=0.18",
+  "markdownify>=0.13",
+  "pillow>=10",
+  "pymupdf>=1.24",
+  "pydantic>=2",
+  "rich>=14",
+  "typer>=0.16",
+]
 
 [project.optional-dependencies]
 pdf = ["pymupdf>=1.24.0", "pypdf>=4.0.0"]
@@ -14,4 +25,4 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/learning_backend"]
+packages = ["src/learning_backend", "src/preppy"]

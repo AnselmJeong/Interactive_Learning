@@ -1,17 +1,17 @@
 {
-  "name": "interactive-learning",
+  "name": "learnie",
   "version": "0.2.0",
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "INTERACTIVE_LEARNING_PROJECT_ROOT=$PWD electrobun dev",
-    "dev:watch": "INTERACTIVE_LEARNING_PROJECT_ROOT=$PWD electrobun dev --watch",
-    "start": "INTERACTIVE_LEARNING_PROJECT_ROOT=$PWD electrobun run",
+    "dev": "LEARNIE_PROJECT_ROOT=$PWD electrobun dev",
+    "dev:watch": "LEARNIE_PROJECT_ROOT=$PWD electrobun dev --watch",
+    "start": "LEARNIE_PROJECT_ROOT=$PWD electrobun run",
     "build:dev": "bun install && electrobun build",
     "build:stable": "electrobun build --env=stable",
     "typecheck": "tsc --noEmit",
     "test:python": "cd python && uv run pytest",
-    "smoke:python": "INTERACTIVE_LEARNING_PROJECT_ROOT=$PWD bun run scripts/smoke-python.ts"
+    "smoke:python": "LEARNIE_PROJECT_ROOT=$PWD bun run scripts/smoke-python.ts"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^4.5.2",

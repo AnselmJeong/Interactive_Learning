@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Archive, BookOpen, Check, Loader2, MessageSquare, Play, Send, Settings, Upload } from "lucide-react";
-import type { MaterialSummary, ProjectArchiveExport, ProjectSummary, SourceSummary } from "../../shared/rpc-types";
+import type { MaterialSummary, PreparedSourceImport, ProjectArchiveExport, ProjectSummary, SourceSummary } from "../../shared/rpc-types";
 import type { AppSettings, AiProviderStatus, ProviderModel } from "../../shared/settings-types";
 import type { MaterialArtifacts } from "../../shared/artifact-types";
 import type { SessionSnapshot, SessionSummary, SourceRef, TutorContext } from "../../shared/tutor-types";
@@ -10,6 +10,7 @@ import { MarkdownContent } from "./components/MarkdownContent";
 import { TutorBlockRenderer } from "./components/TutorBlockRenderer";
 import { NewProjectModal } from "./components/NewProjectModal";
 import { ProjectDropdown } from "./components/ProjectDropdown";
+import { SourceImportModal } from "./components/SourceImportModal";
 
 type RpcRequest = (method: string, params: unknown) => Promise<unknown>;
 
@@ -21,13 +22,14 @@ type LoadState = {
 };
 
 type CoursePlanModule = MaterialArtifacts["coursePlan"]["modules"][number];
+type ModuleStatus = TutorContext["moduleOutline"][number]["status"];
 
-const NEXT_PROGRESS_CHOICE = "다음 진도로 넘어가주세요.";
-const FALLBACK_CHOICES = ["힌트를 하나만 더 주세요.", "예시 답변을 하나 보여주세요.", "이 질문을 더 쉽게 다시 물어봐 주세요.", NEXT_PROGRESS_CHOICE];
+const PROGRESSION_CHOICES = new Set(["다음 진도로 넘어가주세요.", "다음 문단으로 넘어가주세요.", "다음 모듈로 넘어가주세요."]);
+const FALLBACK_CHOICES = ["힌트를 하나만 더 주세요.", "예시 답변을 하나 보여주세요.", "이 질문을 더 쉽게 다시 물어봐 주세요."];
 
 function normalizeChoiceText(choice: string) {
   if (!choice) return "";
-  if (choice.includes("원래 흐름") || choice.includes("돌아갈게요")) return NEXT_PROGRESS_CHOICE;
+  if (choice.includes("원래 흐름") || choice.includes("돌아갈게요")) return "이 설명을 원문 흐름과 다시 연결해 주세요.";
   return choice;
 }
 
@@ -36,12 +38,12 @@ function learnerChoices(choices: string[]) {
   const exploratory = choices
     .map((choice) => normalizeChoiceText(choice.trim()))
     .filter((choice) => {
-      if (!choice || choice === NEXT_PROGRESS_CHOICE || seen.has(choice)) return false;
+      if (!choice || PROGRESSION_CHOICES.has(choice) || seen.has(choice)) return false;
       seen.add(choice);
       return true;
     })
     .slice(0, 3);
-  return [...exploratory, NEXT_PROGRESS_CHOICE];
+  return exploratory.length ? exploratory : FALLBACK_CHOICES;
 }
 
 function displayableLearningGoal(module: CoursePlanModule) {
@@ -49,6 +51,45 @@ function displayableLearningGoal(module: CoursePlanModule) {
   if (!goal) return "";
   const boilerplate = /^원문을\s*직접\s*읽지\s*않아도\s*.+의\s*핵심\s*주장과\s*긴장을\s*설명할\s*수\s*있다\.?$/;
   return boilerplate.test(goal) ? "" : goal;
+}
+
+function displayableCourseTitle(title: string) {
+  return title.replace(/\s+course$/i, "").trim();
+}
+
+function cleanHeadingParts(parts: string[]) {
+  const normalized = parts.map((part) => displayableCourseTitle(part.trim())).filter(Boolean);
+  if (normalized.length > 1 && /^chapter\s+\d+\b/i.test(normalized[0] || "")) return normalized.slice(1);
+  return normalized;
+}
+
+function displayableHeadingPath(parts: string[], separator = " › ") {
+  return cleanHeadingParts(parts).join(separator);
+}
+
+function displayableOutlineTitle(title: string) {
+  return displayableCourseTitle(title)
+    .replace(/^chapter\s+\d+\s*(?:>|›|:|-)\s*/i, "")
+    .replace(/\s*(?:>|›)\s*/g, " › ")
+    .trim();
+}
+
+function stripRepeatedSourceHeading(content: string, heading: string) {
+  const lines = content.replace(/\r\n/g, "\n").split("\n");
+  const firstContentIndex = lines.findIndex((line) => line.trim());
+  if (firstContentIndex < 0) return content;
+  const firstHeading = /^(#{1,6})\s+(.+)$/.exec(lines[firstContentIndex]!.trim());
+  if (!firstHeading) return content;
+
+  const firstTitle = displayableOutlineTitle(firstHeading[2] || "") || displayableCourseTitle(firstHeading[2] || "");
+  const currentTitle = displayableOutlineTitle(heading) || displayableCourseTitle(heading);
+  const isRepeated = Boolean(currentTitle) && firstTitle.toLowerCase() === currentTitle.toLowerCase();
+  const isBareChapter = /^chapter\s+\d+\b/i.test(firstTitle);
+  if (!isRepeated && !isBareChapter) return content;
+
+  const nextLines = lines.slice(0, firstContentIndex).concat(lines.slice(firstContentIndex + 1));
+  while (nextLines[0]?.trim() === "") nextLines.shift();
+  return nextLines.join("\n").trim();
 }
 
 function isTeachingGuideVisual(visual: MaterialArtifacts["visuals"][number] | null | undefined) {
@@ -90,6 +131,7 @@ export function App({ request }: { request: RpcRequest }) {
   const [context, setContext] = useState<TutorContext | null>(null);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [sourceNotice, setSourceNotice] = useState("");
+  const [preparedImport, setPreparedImport] = useState<PreparedSourceImport | null>(null);
   const [answer, setAnswer] = useState("");
   const [expandedSourceMessages, setExpandedSourceMessages] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
@@ -100,13 +142,27 @@ export function App({ request }: { request: RpcRequest }) {
   const [providerStatus, setProviderStatus] = useState<AiProviderStatus | null>(null);
   const [models, setModels] = useState<ProviderModel[]>([]);
   const [viewMode, setViewMode] = useState<"chat" | "source">("chat");
+  const [selectedModuleId, setSelectedModuleId] = useState<string | null>(null);
   const chatLogRef = useRef<HTMLDivElement | null>(null);
   const currentChunkRef = useRef<HTMLElement | null>(null);
 
   async function refreshProjects() {
-      const projects = (await request("projects.list", {})) as ProjectSummary[];
+    const projects = (await request("projects.list", {})) as ProjectSummary[];
     setState((current) => ({ ...current, projects }));
-    if (!activeProject && projects[0]) await openProject(projects[0]);
+    const currentProject = activeProject ? projects.find((project) => project.id === activeProject.id) : null;
+    if (currentProject) {
+      setActiveProject(currentProject);
+    } else if (projects[0]) {
+      await openProject(projects[0]);
+    } else {
+      setActiveProject(null);
+      setActiveMaterial(null);
+      setArtifacts(null);
+      setSession(null);
+      setContext(null);
+      setSelectedModuleId(null);
+      setState((current) => ({ ...current, projects, sources: [], materials: [], sessions: [] }));
+    }
   }
 
   async function openProject(project: ProjectSummary) {
@@ -121,6 +177,7 @@ export function App({ request }: { request: RpcRequest }) {
     setArtifacts(null);
     setSession(null);
     setContext(null);
+    setSelectedModuleId(null);
   }
 
   async function refreshSettings() {
@@ -158,16 +215,37 @@ export function App({ request }: { request: RpcRequest }) {
     if (!activeProject) return;
     setBusy(true);
     try {
-      const beforeCount = state.sources.length;
-      const sources = (await request("sources.chooseAndImport", { projectId: activeProject.id })) as SourceSummary[];
-      setState((current) => ({ ...current, sources }));
-      const added = Math.max(0, sources.length - beforeCount);
-      setSourceNotice(added ? `${added} source${added === 1 ? "" : "s"} imported` : "No new files selected");
+      const paths = (await request("sources.openDialog", { projectId: activeProject.id })) as string[];
+      if (!paths.length) {
+        setSourceNotice("No files selected");
+        return;
+      }
+      const prepared = (await request("sources.prepareImport", { projectId: activeProject.id, paths })) as PreparedSourceImport;
+      setPreparedImport(prepared);
+      setSourceNotice("");
     } catch (error) {
       setSourceNotice(`Import failed: ${(error as Error).message}`);
     } finally {
       setBusy(false);
     }
+  }
+
+  async function finishPreparedImport(imported: SourceSummary[]) {
+    if (!activeProject) return;
+    const [sources, materials] = await Promise.all([
+      request("sources.list", { projectId: activeProject.id }) as Promise<SourceSummary[]>,
+      request("materials.list", { projectId: activeProject.id }) as Promise<MaterialSummary[]>,
+    ]);
+    setState((current) => ({ ...current, sources, materials }));
+    setPreparedImport(null);
+    setSourceNotice(imported.length ? `${imported.length} source${imported.length === 1 ? "" : "s"} imported` : "No sources imported");
+  }
+
+  async function cancelPreparedImport() {
+    if (activeProject && preparedImport) {
+      await request("sources.cancelPreparedImport", { projectId: activeProject.id, importId: preparedImport.id });
+    }
+    setPreparedImport(null);
   }
 
   // Pick a source and prepare its learning material. Reuses the material for that source if one
@@ -209,6 +287,7 @@ export function App({ request }: { request: RpcRequest }) {
     setState((current) => ({ ...current, sessions }));
     setSession(null);
     setContext(null);
+    setSelectedModuleId(null);
     setAnswer("");
     setExpandedSourceMessages(new Set());
   }
@@ -221,10 +300,13 @@ export function App({ request }: { request: RpcRequest }) {
       const result = (await request("sessions.start", { materialId, mode })) as { session: SessionSnapshot; context: TutorContext };
       setSession(result.session);
       setContext(result.context);
+      setSelectedModuleId(result.session.currentModuleId);
       setExpandedSourceMessages(new Set());
       await refreshSessions(materialId);
+      return result;
     } catch (error) {
       setStatus((error as Error).message);
+      return null;
     } finally {
       setTutorThinking(false);
     }
@@ -243,6 +325,7 @@ export function App({ request }: { request: RpcRequest }) {
       const result = (await request("sessions.load", { sessionId })) as { session: SessionSnapshot; context: TutorContext };
       setSession(result.session);
       setContext(result.context);
+      setSelectedModuleId(result.session.currentModuleId);
       setAnswer("");
       setExpandedSourceMessages(new Set());
     } catch (error) {
@@ -260,6 +343,7 @@ export function App({ request }: { request: RpcRequest }) {
       const result = (await request("tutor.sendTurn", { sessionId: session.id, userText: text.trim() })) as { session: SessionSnapshot; context: TutorContext };
       setSession(result.session);
       setContext(result.context);
+      setSelectedModuleId(result.session.currentModuleId);
       setAnswer("");
       await refreshSessions(result.session.materialId);
     } catch (error) {
@@ -271,9 +355,68 @@ export function App({ request }: { request: RpcRequest }) {
         const reload = (await request("sessions.load", { sessionId: session.id })) as { session: SessionSnapshot; context: TutorContext };
         setSession(reload.session);
         setContext(reload.context);
+        setSelectedModuleId(reload.session.currentModuleId);
       } catch {
         /* keep current state if reload also fails */
       }
+    } finally {
+      setBusy(false);
+      setTutorThinking(false);
+    }
+  }
+
+  async function advanceLearning(mode: "paragraph" | "module") {
+    if (!session || sessionReadOnly) return;
+    setBusy(true);
+    setTutorThinking(true);
+    try {
+      const result = (await request("sessions.advance", { sessionId: session.id, mode })) as { session: SessionSnapshot; context: TutorContext };
+      setSession(result.session);
+      setContext(result.context);
+      setSelectedModuleId(result.session.currentModuleId);
+      setAnswer("");
+      await refreshSessions(result.session.materialId);
+    } catch (error) {
+      setStatus(`진행 실패: ${(error as Error).message}`);
+    } finally {
+      setBusy(false);
+      setTutorThinking(false);
+    }
+  }
+
+  async function selectModuleFromOutline(moduleId: string, status: ModuleStatus) {
+    if (!session) {
+      setStatus("먼저 세션을 시작한 뒤 module을 선택하세요.");
+      return;
+    }
+    setSelectedModuleId(moduleId);
+    setExpandedSourceMessages(new Set());
+    if (status === "completed" || status === "needs_review" || sessionReadOnly) return;
+    setBusy(true);
+    try {
+      const result = (await request("sessions.selectModule", { sessionId: session.id, moduleId })) as { session: SessionSnapshot; context: TutorContext };
+      setSession(result.session);
+      setContext(result.context);
+      await refreshSessions(result.session.materialId);
+    } catch (error) {
+      setStatus(`Module 선택 실패: ${(error as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function openSelectedModule() {
+    if (!session || !selectedModuleId || sessionReadOnly) return;
+    setBusy(true);
+    setTutorThinking(true);
+    try {
+      const result = (await request("sessions.openModule", { sessionId: session.id, moduleId: selectedModuleId })) as { session: SessionSnapshot; context: TutorContext };
+      setSession(result.session);
+      setContext(result.context);
+      setSelectedModuleId(result.session.currentModuleId);
+      await refreshSessions(result.session.materialId);
+    } catch (error) {
+      setStatus(`Module 시작 실패: ${(error as Error).message}`);
     } finally {
       setBusy(false);
       setTutorThinking(false);
@@ -293,8 +436,23 @@ export function App({ request }: { request: RpcRequest }) {
     }
   }
 
-  const currentMessages = session?.messages || [];
+  const allSessionMessages = session?.messages || [];
+  const currentMessages = selectedModuleId ? allSessionMessages.filter((message) => message.moduleId === selectedModuleId) : allSessionMessages;
   const sessionReadOnly = session?.status === "completed" || session?.status === "archived";
+  const selectedModule = selectedModuleId
+    ? context?.moduleOutline.find((item) => item.id === selectedModuleId) || artifacts?.coursePlan.modules.find((module) => module.id === selectedModuleId)
+    : null;
+  const selectedModuleStatus = context?.moduleOutline.find((item) => item.id === selectedModuleId)?.status || null;
+  const selectedModuleReadOnly = selectedModuleStatus === "completed" || selectedModuleStatus === "needs_review";
+  const selectedModuleWaiting = Boolean(
+    session
+      && selectedModuleId
+      && !sessionReadOnly
+      && currentMessages.length === 0
+      && selectedModuleStatus !== "completed"
+      && selectedModuleStatus !== "needs_review"
+  );
+  const selectedModuleTitle = selectedModule ? displayableOutlineTitle(selectedModule.title) || selectedModule.title : "";
 
   useEffect(() => {
     chatLogRef.current?.scrollTo({ top: chatLogRef.current.scrollHeight, behavior: "smooth" });
@@ -313,11 +471,12 @@ export function App({ request }: { request: RpcRequest }) {
   const progressPercent = totalChunks ? Math.round((reachedChunks / totalChunks) * 100) : 0;
   const latestAssistant = [...currentMessages].reverse().find((message) => message.role === "assistant");
   // Once every paragraph is covered, the tutor offers an explicit "마칠게요 / 더 질문 있어요" pair.
-  // Don't run those through learnerChoices, which would append "다음 진도로 넘어가주세요" — that
-  // choice reads as "next paragraph" yet, at the very end, would re-trip the finish flow.
+  // Normal turns show three exploratory choices, while paragraph/module progression lives in
+  // separate command buttons below the choices.
   const allModulesCovered = totalChunks > 0 && coveredChunks >= totalChunks;
   const latestChoices = latestAssistant
     && !sessionReadOnly
+    && !selectedModuleReadOnly
     ? latestAssistant.choices.length
       ? allModulesCovered
         ? latestAssistant.choices
@@ -326,19 +485,16 @@ export function App({ request }: { request: RpcRequest }) {
     : [];
   const visibleVisual = isTeachingGuideVisual(context?.visual) ? null : context?.visual;
   const activeSessions = useMemo(() => state.sessions.filter((item) => item.status === "active"), [state.sessions]);
-  // Per-source material lookup. A source is "ready to learn" when a material built from exactly
-  // that source exists and is ready; this drives the status hint shown on each source row.
-  const materialForSource = useMemo(() => {
-    const map = new Map<string, MaterialSummary | undefined>();
-    for (const source of state.sources) {
-      map.set(
-        source.id,
-        state.materials.find((material) => material.sourceIds.length === 1 && material.sourceIds[0] === source.id && material.status === "ready"),
-      );
-    }
-    return map;
-  }, [state.sources, state.materials]);
   const activeSourceId = activeMaterial && activeMaterial.sourceIds.length === 1 ? activeMaterial.sourceIds[0] : null;
+  const courseTitle = artifacts ? displayableCourseTitle(artifacts.coursePlan.title) : "";
+  const overviewModules = useMemo(() => {
+    if (!artifacts) return [];
+    return artifacts.coursePlan.modules.filter((module) => {
+      const learningGoal = displayableLearningGoal(module);
+      const moduleTitle = displayableCourseTitle(module.title);
+      return moduleTitle !== courseTitle || Boolean(learningGoal);
+    });
+  }, [artifacts, courseTitle]);
   const sourceRefById = useMemo(() => {
     const refs = new Map<string, SourceRef>();
     for (const ref of context?.sourceRefs || []) refs.set(ref.chunkId, ref);
@@ -347,7 +503,7 @@ export function App({ request }: { request: RpcRequest }) {
         const meta = artifacts.sourceIndex[chunk.id];
         refs.set(chunk.id, {
           chunkId: chunk.id,
-          title: meta?.title || chunk.headingPath.join(" > ") || "Source",
+          title: displayableOutlineTitle(meta?.title || displayableHeadingPath(chunk.headingPath, " > ") || "Source") || "Source",
           locator: meta?.locator || chunk.locator,
           text: chunk.text,
         });
@@ -383,11 +539,16 @@ export function App({ request }: { request: RpcRequest }) {
 
   const importedSourceLabel = `${state.sources.length} source${state.sources.length === 1 ? "" : "s"} imported`;
   const inspectorModules = useMemo(() => {
-    if (context?.moduleOutline.length) return context.moduleOutline;
+    if (context?.moduleOutline.length) {
+      return context.moduleOutline.map((item) => ({
+        ...item,
+        title: displayableOutlineTitle(item.title) || item.title,
+      }));
+    }
     return (artifacts?.coursePlan.modules || []).map((module, index) => ({
       id: module.id,
-      title: module.title,
-      status: index === 0 ? "in_progress" : "not_started",
+      title: displayableOutlineTitle(module.title) || module.title,
+      status: (index === 0 ? "in_progress" : "not_started") as ModuleStatus,
     }));
   }, [artifacts?.coursePlan.modules, context?.moduleOutline]);
 
@@ -395,9 +556,9 @@ export function App({ request }: { request: RpcRequest }) {
     <div className="app-shell">
       <aside className="sidebar">
         <div className="brand-row">
-          <div className="brand-mark" aria-hidden="true">il</div>
+          <div className="brand-mark" aria-hidden="true">lr</div>
           <div>
-            <h1>Interactive Learning</h1>
+            <h1>Learnie</h1>
             <p>Source-grounded tutoring</p>
           </div>
         </div>
@@ -425,7 +586,6 @@ export function App({ request }: { request: RpcRequest }) {
           {sourceNotice ? <p className="source-notice">{sourceNotice}</p> : null}
           <div className="list source-list-fill">
             {state.sources.map((source) => {
-              const ready = materialForSource.get(source.id);
               const isActive = activeSourceId === source.id;
               return (
                 <button
@@ -433,10 +593,9 @@ export function App({ request }: { request: RpcRequest }) {
                   className={`list-item source-learn-row ${isActive ? "active" : ""}`}
                   onClick={() => learnFromSource(source.id)}
                   disabled={!activeProject || busy}
-                  title={ready ? "학습 자료 열기" : "학습 자료 생성하기"}
+                  title={source.title}
                 >
                   <span>{source.title}</span>
-                  {ready ? <small>ready</small> : null}
                 </button>
               );
             })}
@@ -447,7 +606,7 @@ export function App({ request }: { request: RpcRequest }) {
         </section>
 
         <div className="sidebar-footer">
-          <button className="wide-button" onClick={() => setSettingsOpen(true)}>
+          <button className="wide-button settings-button" onClick={() => setSettingsOpen(true)}>
             <Settings size={16} /> Settings
           </button>
         </div>
@@ -456,16 +615,7 @@ export function App({ request }: { request: RpcRequest }) {
       <main className="workspace">
         <header className="topbar">
           <div>
-            {activeMaterial ? (
-              <>
-                <p className="eyebrow">{activeProject?.title || "Project"}</p>
-                <h2>{activeMaterial.title}</h2>
-              </>
-            ) : activeProject ? (
-              <h2>{activeProject.title}</h2>
-            ) : (
-              <h2>Learning Workspace</h2>
-            )}
+            <p className="project-title">{activeProject?.title || "Learning Workspace"}</p>
           </div>
           <div className="topbar-actions">
             <div className="status-pill">
@@ -477,31 +627,34 @@ export function App({ request }: { request: RpcRequest }) {
 
         {artifacts ? (
           <section className="course-strip">
-            <div>
-              <span>Course outline</span>
-              <strong>{artifacts.coursePlan.modules.length} modules</strong>
-            </div>
-            <div className="course-progress">
-              <span>Progress · {progressText} 문단 ({progressPercent}%)</span>
-              <div className="lesson-bar">
-                <i style={{ width: `${progressPercent}%` }} />
+            <div className="course-strip-summary">
+              <div className="course-outline-stat">
+                <span>Course outline</span>
+                <strong>{artifacts.coursePlan.modules.length} modules</strong>
+              </div>
+              <div className="course-progress">
+                <span>Progress · {progressText} 문단 ({progressPercent}%)</span>
+                <div className="lesson-bar">
+                  <i style={{ width: `${progressPercent}%` }} />
+                </div>
               </div>
             </div>
-            <span className="strip-divider" aria-hidden="true" />
-            <div className="segmented-control" aria-label="View mode">
-              <button type="button" className={viewMode === "source" ? "active" : ""} onClick={() => setViewMode("source")}>
-                학습 자료
+            <div className="course-strip-actions">
+              <div className="segmented-control" aria-label="View mode">
+                <button type="button" className={viewMode === "source" ? "active" : ""} onClick={() => setViewMode("source")}>
+                  학습 자료
+                </button>
+                <button type="button" className={viewMode === "chat" ? "active" : ""} onClick={() => setViewMode("chat")}>
+                  대화
+                </button>
+              </div>
+              <button className="wide-button topbar-button" onClick={() => startSession("continue")} disabled={busy || activeSessions.length === 0}>
+                <Play size={16} /> Continue latest
               </button>
-              <button type="button" className={viewMode === "chat" ? "active" : ""} onClick={() => setViewMode("chat")}>
-                대화
+              <button className="wide-button topbar-button primary" onClick={() => startSession("new")} disabled={busy}>
+                <MessageSquare size={16} /> Start
               </button>
             </div>
-            <button className="wide-button topbar-button" onClick={() => startSession("continue")} disabled={busy || activeSessions.length === 0}>
-              <Play size={16} /> Continue latest
-            </button>
-            <button className="wide-button topbar-button primary" onClick={() => startSession("new")} disabled={busy}>
-              <MessageSquare size={16} /> Start
-            </button>
           </section>
         ) : null}
 
@@ -531,9 +684,10 @@ export function App({ request }: { request: RpcRequest }) {
               <div className="source-doc">
                 {artifacts.sourceChunks.map((chunk, index) => {
                   const status = sourceProgress?.statusFor(chunk.id) || "upcoming";
-                  const heading = chunk.headingPath.join(" › ");
-                  const prevHeading = index > 0 ? (artifacts.sourceChunks[index - 1]?.headingPath.join(" › ") || "") : "";
+                  const heading = displayableHeadingPath(chunk.headingPath);
+                  const prevHeading = index > 0 ? displayableHeadingPath(artifacts.sourceChunks[index - 1]?.headingPath || []) : "";
                   const showHeading = Boolean(heading) && heading !== prevHeading;
+                  const sourceText = stripRepeatedSourceHeading(chunk.text, heading || chunk.headingPath.at(-1) || "");
                   return (
                     <article
                       key={chunk.id}
@@ -541,7 +695,7 @@ export function App({ request }: { request: RpcRequest }) {
                       ref={index === sourceProgress?.firstCurrentIndex ? currentChunkRef : undefined}
                     >
                       {showHeading ? <h4 className="source-heading">{heading}</h4> : null}
-                      <MarkdownContent content={chunk.text} />
+                      {sourceText ? <MarkdownContent content={sourceText} /> : null}
                     </article>
                   );
                 })}
@@ -552,7 +706,7 @@ export function App({ request }: { request: RpcRequest }) {
               <div className="lesson-header">
                 <div>
                   <p className="eyebrow">Learning Session</p>
-                  <h3>{activeModule?.title || activeMaterial?.title || session.title}</h3>
+                  <h3>{selectedModuleTitle || activeModule?.title || activeMaterial?.title || session.title}</h3>
                 </div>
                 <div className="lesson-progress">
                   <span>{progressText}</span>
@@ -561,6 +715,16 @@ export function App({ request }: { request: RpcRequest }) {
                   </div>
                 </div>
               </div>
+              {selectedModuleWaiting ? (
+                <div className="module-standby">
+                  <p className="eyebrow">{selectedModuleStatus === "in_progress" ? "Module selected" : "Ready to start"}</p>
+                  <h3>{selectedModuleTitle}</h3>
+                  <p>이 module은 아직 대화가 시작되지 않았습니다. 시작하면 해당 module의 첫 문단부터 학습합니다.</p>
+                  <button className="wide-button primary" onClick={openSelectedModule} disabled={busy}>
+                    <MessageSquare size={16} /> 이 module 시작
+                  </button>
+                </div>
+              ) : null}
               <div className="chat-log" ref={chatLogRef}>
                 {currentMessages.map((message) => (
                   <div key={message.id} className={`bubble ${message.role}`}>
@@ -600,19 +764,37 @@ export function App({ request }: { request: RpcRequest }) {
                 ) : null}
               </div>
               {visibleVisual ? <VisualRenderer visual={visibleVisual} /> : null}
-              {latestChoices.length ? (
+              {latestChoices.length || (!sessionReadOnly && !selectedModuleReadOnly && !allModulesCovered) ? (
                 <div className="answer-options">
-                  <p>다음으로 탐색</p>
-                  <div>
-                    {latestChoices.map((choice) => (
-                      <button key={choice} onClick={() => sendAnswer(choice)} disabled={busy}>
-                        {choice}
+                  {latestChoices.length ? (
+                    <>
+                      <p>다음으로 탐색</p>
+                      <div className="choice-grid">
+                        {latestChoices.map((choice) => (
+                          <button key={choice} onClick={() => sendAnswer(choice)} disabled={busy || selectedModuleWaiting}>
+                            {choice}
+                          </button>
+                        ))}
+                      </div>
+                    </>
+                  ) : null}
+                  {!sessionReadOnly && !selectedModuleReadOnly && !allModulesCovered ? (
+                    <div className="progress-actions" aria-label="학습 진행">
+                      <button type="button" onClick={() => advanceLearning("paragraph")} disabled={busy || selectedModuleWaiting}>
+                        다음 문단으로
                       </button>
-                    ))}
-                  </div>
+                      <button type="button" onClick={() => advanceLearning("module")} disabled={busy || selectedModuleWaiting}>
+                        다음 모듈로
+                      </button>
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
-              {sessionReadOnly ? (
+              {selectedModuleReadOnly && !sessionReadOnly ? (
+                <div className="read-only-session">
+                  <p>완료된 module의 과거 대화입니다.</p>
+                </div>
+              ) : sessionReadOnly ? (
                 <div className="read-only-session">
                   <p>{session.status === "completed" ? "Completed session opened for review." : "Archived session opened for review."}</p>
                   <button className="wide-button primary" onClick={() => startSession("new")} disabled={busy}>
@@ -631,10 +813,11 @@ export function App({ request }: { request: RpcRequest }) {
                         if (!busy && text.trim()) void sendAnswer(text);
                       }
                     }}
-                    placeholder="궁금한 점을 묻거나 위 탐색 경로 중 하나를 선택하세요"
+                    placeholder={selectedModuleWaiting ? "이 module을 시작하면 질문할 수 있습니다" : "궁금한 점을 묻거나 위 탐색 경로 중 하나를 선택하세요"}
+                    disabled={selectedModuleWaiting}
                     rows={3}
                   />
-                  <button className="icon-button primary send" onClick={() => sendAnswer()} disabled={busy || !answer.trim()} title="Send answer">
+                  <button className="icon-button primary send" onClick={() => sendAnswer()} disabled={busy || selectedModuleWaiting || !answer.trim()} title="Send answer">
                     <Send size={19} />
                   </button>
                 </div>
@@ -642,19 +825,23 @@ export function App({ request }: { request: RpcRequest }) {
             </>
           ) : artifacts ? (
             <div className="empty-state">
-              <h3>{artifacts.coursePlan.title}</h3>
+              <h3>{courseTitle}</h3>
               <p>{artifacts.coursePlan.subtitle}</p>
-              <div className="module-grid">
-                {artifacts.coursePlan.modules.map((module) => {
-                  const learningGoal = displayableLearningGoal(module);
-                  return (
-                    <div key={module.id} className="module-tile">
-                      <strong>{module.title}</strong>
-                      {learningGoal ? <span>{learningGoal}</span> : null}
-                    </div>
-                  );
-                })}
-              </div>
+              {overviewModules.length ? (
+                <div className="module-grid">
+                  {overviewModules.map((module) => {
+                    const learningGoal = displayableLearningGoal(module);
+                    return (
+                      <div key={module.id} className="module-tile">
+                        <strong title={displayableOutlineTitle(module.title) || displayableCourseTitle(module.title)}>
+                          {displayableOutlineTitle(module.title) || displayableCourseTitle(module.title)}
+                        </strong>
+                        {learningGoal ? <span>{learningGoal}</span> : null}
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : null}
             </div>
           ) : (
             <div className="empty-state">
@@ -674,10 +861,17 @@ export function App({ request }: { request: RpcRequest }) {
               <p className="eyebrow">Modules</p>
               <div className="outline-list">
                 {inspectorModules.map((item) => (
-                  <div key={item.id} className={`outline-row ${item.status}`}>
+                  <button
+                    key={item.id}
+                    type="button"
+                    className={`outline-row ${item.status} ${selectedModuleId === item.id ? "active" : ""}`}
+                    onClick={() => selectModuleFromOutline(item.id, item.status)}
+                    disabled={busy}
+                    title={item.title}
+                  >
                     <span>{item.title}</span>
                     <small>{item.status.replace(/_/g, " ")}</small>
-                  </div>
+                  </button>
                 ))}
               </div>
             </section>
@@ -720,6 +914,7 @@ export function App({ request }: { request: RpcRequest }) {
           onClose={() => setSettingsOpen(false)}
           onUpdated={async () => {
             await refreshSettings();
+            await refreshProjects();
           }}
         />
       ) : null}
@@ -733,6 +928,9 @@ export function App({ request }: { request: RpcRequest }) {
             await openProject(project);
           }}
         />
+      ) : null}
+      {preparedImport ? (
+        <SourceImportModal request={request} prepared={preparedImport} onCancel={cancelPreparedImport} onImported={finishPreparedImport} />
       ) : null}
     </div>
   );

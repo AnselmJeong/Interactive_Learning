@@ -45,9 +45,9 @@ async function chooseSourcePaths() {
   const startingFolder = existsSync(appSettings.projectRootFolder) ? appSettings.projectRootFolder : Utils.paths.home;
   const selected = await Utils.openFileDialog({
     startingFolder,
-    allowedFileTypes: "*",
+    allowedFileTypes: "pdf,epub,md,txt",
     canChooseFiles: true,
-    canChooseDirectory: false,
+    canChooseDirectory: true,
     allowsMultipleSelection: true,
   });
   return normalizeSelectedPaths(selected);
@@ -105,6 +105,19 @@ const rpc = BrowserView.defineRPC<AppRPC>({
         sendToView("sources.ingestionProgress", { projectId, stage: "complete", message: "Sources imported", progress: 100 });
         return sources.list(projectId);
       },
+      "sources.prepareImport": async ({ projectId, paths }) => {
+        sendToView("sources.ingestionProgress", { projectId, stage: "extracting", message: "Preparing source preview", progress: 20 });
+        const result = await sources.prepareImport(projectId, paths);
+        sendToView("sources.ingestionProgress", { projectId, stage: "indexing", message: "Source preview ready", progress: 80 });
+        return result;
+      },
+      "sources.commitPreparedImport": async ({ projectId, importId, selectedItemIds }) => {
+        sendToView("sources.ingestionProgress", { projectId, stage: "copying", message: "Importing selected sources", progress: 60 });
+        const result = await sources.commitPreparedImport(projectId, importId, selectedItemIds);
+        sendToView("sources.ingestionProgress", { projectId, stage: "complete", message: "Sources imported", progress: 100 });
+        return result;
+      },
+      "sources.cancelPreparedImport": ({ projectId, importId }) => sources.cancelPreparedImport(projectId, importId),
       "sources.importPaths": async ({ projectId, paths }) => {
         sendToView("sources.ingestionProgress", { projectId, stage: "extracting", message: "Importing sources", progress: 20 });
         const result = await sources.importPaths(projectId, paths);
@@ -123,6 +136,9 @@ const rpc = BrowserView.defineRPC<AppRPC>({
       "sessions.list": ({ materialId }) => tutor.listSessions(materialId),
       "sessions.start": ({ materialId, mode, sessionId }) => tutor.start(materialId, { mode, sessionId }),
       "sessions.load": ({ sessionId }) => tutor.load(sessionId),
+      "sessions.advance": ({ sessionId, mode }) => tutor.advance(sessionId, mode),
+      "sessions.selectModule": ({ sessionId, moduleId }) => tutor.selectModule(sessionId, moduleId),
+      "sessions.openModule": ({ sessionId, moduleId }) => tutor.openModule(sessionId, moduleId),
       "tutor.sendTurn": async ({ sessionId, userText }) => {
         sendToView("tutor.turnStarted", { sessionId });
         try {

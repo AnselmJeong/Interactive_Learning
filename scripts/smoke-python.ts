@@ -1,8 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 
-const root = process.env.INTERACTIVE_LEARNING_PROJECT_ROOT || process.cwd();
-const result = spawnSync("uv", ["run", "python", "-m", "learning_backend.cli", "--help"], {
+const root = process.env.LEARNIE_PROJECT_ROOT || process.env.INTERACTIVE_LEARNING_PROJECT_ROOT || process.cwd();
+const result = spawnSync("uv", ["run", "python", "-m", "preppy.cli", "--help"], {
   cwd: join(root, "python"),
   encoding: "utf8",
 });

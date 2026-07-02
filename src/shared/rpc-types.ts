@@ -25,6 +25,26 @@ export type SourceSummary = {
   updatedAt: number;
 };
 
+export type PreparedSourceImportItem = {
+  id: string;
+  title: string;
+  fileName: string;
+  relativePath: string;
+  kind: string | null;
+  charCount: number;
+  preview: string;
+  selected: boolean;
+};
+
+export type PreparedSourceImport = {
+  id: string;
+  projectId: string;
+  sourceName: string;
+  sourcePath: string;
+  itemCount: number;
+  items: PreparedSourceImportItem[];
+};
+
 export type MaterialSummary = {
   id: string;
   projectId: string;
@@ -69,6 +89,9 @@ export type AppRPC = {
       "projects.exportArchive": { params: { projectId: string; destinationFolder?: string }; response: ProjectArchiveExport };
       "projects.openFolder": { params: { projectId?: string }; response: boolean };
       "sources.importPaths": { params: { projectId: string; paths: string[] }; response: SourceSummary[] };
+      "sources.prepareImport": { params: { projectId: string; paths: string[] }; response: PreparedSourceImport };
+      "sources.commitPreparedImport": { params: { projectId: string; importId: string; selectedItemIds: string[] }; response: SourceSummary[] };
+      "sources.cancelPreparedImport": { params: { projectId: string; importId: string }; response: boolean };
       "sources.openDialog": { params: { projectId: string }; response: string[] };
       "sources.chooseAndImport": { params: { projectId: string }; response: SourceSummary[] };
       "sources.list": { params: { projectId: string }; response: SourceSummary[] };
@@ -78,6 +101,9 @@ export type AppRPC = {
       "sessions.list": { params: { materialId: string }; response: SessionSummary[] };
       "sessions.start": { params: { materialId: string; mode: "new" | "continue"; sessionId?: string }; response: { session: SessionSnapshot; context: TutorContext; firstTurn?: TutorTurnOutput } };
       "sessions.load": { params: { sessionId: string }; response: { session: SessionSnapshot; context: TutorContext } };
+      "sessions.advance": { params: { sessionId: string; mode: "paragraph" | "module" }; response: { session: SessionSnapshot; context: TutorContext; output: TutorTurnOutput } };
+      "sessions.selectModule": { params: { sessionId: string; moduleId: string }; response: { session: SessionSnapshot; context: TutorContext } };
+      "sessions.openModule": { params: { sessionId: string; moduleId: string }; response: { session: SessionSnapshot; context: TutorContext; output: TutorTurnOutput } };
       "tutor.sendTurn": { params: { sessionId: string; userText: string }; response: { session: SessionSnapshot; context: TutorContext; output: TutorTurnOutput } };
       "settings.getPublic": { params: {}; response: AppSettings };
       "settings.updatePublic": { params: Partial<AppSettings>; response: AppSettings };

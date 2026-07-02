@@ -1,6 +1,7 @@
 import { useState } from "react";
-import { Check, FileText, Loader2, Plus, Upload, X } from "lucide-react";
-import type { ProjectSummary, SourceSummary } from "../../../shared/rpc-types";
+import { Check, FileText, Loader2, Plus, X } from "lucide-react";
+import type { PreparedSourceImport, ProjectSummary, SourceSummary } from "../../../shared/rpc-types";
+import { SourceImportModal } from "./SourceImportModal";
 
 type RpcRequest = (method: string, params: unknown) => Promise<unknown>;
 
@@ -20,6 +21,7 @@ export function NewProjectModal({
   const [projectName, setProjectName] = useState("");
   const [project, setProject] = useState<ProjectSummary | null>(null);
   const [sources, setSources] = useState<SourceSummary[]>([]);
+  const [preparedImport, setPreparedImport] = useState<PreparedSourceImport | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
 
@@ -45,14 +47,37 @@ export function NewProjectModal({
     setBusy(true);
     setNotice("");
     try {
-      const imported = (await request("sources.chooseAndImport", { projectId: project.id })) as SourceSummary[];
-      setSources(imported);
-      setNotice(imported.length ? `${imported.length}개 소스를 가져왔습니다` : "선택된 파일이 없습니다");
+      const paths = (await request("sources.openDialog", { projectId: project.id })) as string[];
+      if (!paths.length) {
+        setNotice("선택된 파일이 없습니다");
+        return;
+      }
+      const prepared = (await request("sources.prepareImport", { projectId: project.id, paths })) as PreparedSourceImport;
+      setPreparedImport(prepared);
     } catch (error) {
       setNotice((error as Error).message);
     } finally {
       setBusy(false);
     }
+  }
+
+  async function finishPreparedImport(imported: SourceSummary[]) {
+    if (!project) return;
+    const nextSources = (await request("sources.list", { projectId: project.id })) as SourceSummary[];
+    setSources(nextSources);
+    setPreparedImport(null);
+    setNotice(imported.length ? `${imported.length}개 소스를 가져왔습니다` : "가져온 소스가 없습니다");
+    if (imported.length) {
+      await onCreated(project);
+      onClose();
+    }
+  }
+
+  async function cancelPreparedImport() {
+    if (project && preparedImport) {
+      await request("sources.cancelPreparedImport", { projectId: project.id, importId: preparedImport.id });
+    }
+    setPreparedImport(null);
   }
 
   async function finish() {
@@ -114,11 +139,11 @@ export function NewProjectModal({
                 </div>
               ))}
               {!sources.length && created ? (
-                <div className="np-dropzone">
-                  <Upload size={26} />
-                  <p>소스를 추가해 학습을 시작하세요</p>
-                  <small>Markdown · TXT · PDF</small>
-                </div>
+                <button className={`np-source-picker ${busy ? "busy" : ""}`} onClick={addSources} disabled={busy} type="button">
+                  {busy ? <Loader2 size={30} className="spin" /> : <Plus size={24} />}
+                  <p>{busy ? "소스 처리 중" : "소스 선택"}</p>
+                  <small>PDF · EPUB · Folder · MD · TXT</small>
+                </button>
               ) : null}
               {!created ? (
                 <div className="np-locked-hint">
@@ -128,7 +153,7 @@ export function NewProjectModal({
             </div>
             {created ? (
               <button className="np-add-link" onClick={addSources} disabled={busy}>
-                {busy ? <Loader2 size={15} className="spin" /> : <Plus size={15} />} 소스 파일 추가
+                {busy ? <Loader2 size={17} className="spin" /> : <Plus size={15} />} {busy ? "소스 처리 중" : "소스 추가"}
               </button>
             ) : null}
           </div>
@@ -149,6 +174,9 @@ export function NewProjectModal({
           )}
         </footer>
       </div>
+      {preparedImport ? (
+        <SourceImportModal request={request} prepared={preparedImport} onCancel={cancelPreparedImport} onImported={finishPreparedImport} />
+      ) : null}
     </div>
   );
 }

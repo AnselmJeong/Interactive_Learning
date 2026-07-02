@@ -10,6 +10,7 @@ import type { MaterialArtifacts } from "../shared/artifact-types";
 import type { ProjectArchiveExport, ProjectSummary } from "../shared/rpc-types";
 import type { TutorContentBlock } from "../shared/tutor-types";
 import { SettingsService } from "./settings-service";
+import { syncProjectRootToDb, writeProjectManifest } from "./project-bundle-sync";
 
 type ProjectRow = {
   id: string;
@@ -190,17 +191,23 @@ export class ProjectService {
          VALUES (?, ?, ?, ?, ?, ?, ?)`
       )
       .run(id, title, input.description?.trim() || null, rootPath, now, now, now);
-    return this.open(id);
+    const project = this.open(id);
+    await writeProjectManifest(project);
+    return project;
   }
 
-  list() {
+  async list() {
+    const appSettings = await this.settings.get();
+    const rootPath = appSettings.projectRootFolder || dataPath("projects");
+    await syncProjectRootToDb(rootPath);
     const rows = getDb()
-      .query<ProjectRow, []>(
+      .query<ProjectRow, [string]>(
         `SELECT * FROM projects
          WHERE archived_at IS NULL
+           AND root_path = ?
          ORDER BY COALESCE(last_opened_at, updated_at) DESC`
       )
-      .all();
+      .all(rootPath);
     return rows.map(toProject);
   }
 
@@ -215,6 +222,8 @@ export class ProjectService {
   archive(projectId: string) {
     const now = Date.now();
     getDb().query("UPDATE projects SET archived_at = ?, updated_at = ? WHERE id = ?").run(now, now, projectId);
+    const row = getDb().query<ProjectRow, [string]>("SELECT * FROM projects WHERE id = ?").get(projectId);
+    if (row) void writeProjectManifest(toProject(row));
     return true;
   }
 
@@ -224,7 +233,7 @@ export class ProjectService {
     const outDir = destinationFolder || settings.defaultDownloadFolder;
     await mkdir(outDir, { recursive: true });
 
-    const staging = await mkdtemp(join(tmpdir(), "interactive-learning-archive-"));
+    const staging = await mkdtemp(join(tmpdir(), "learnie-archive-"));
     const sourcesDir = join(staging, "sources");
     const materialsDir = join(staging, "materials");
     await mkdir(sourcesDir, { recursive: true });
@@ -360,7 +369,9 @@ export class ProjectService {
         await mkdir(newDir, { recursive: true });
       }
       getDb().query("UPDATE projects SET root_path = ?, updated_at = ? WHERE id = ?").run(newRootPath, Date.now(), row.id);
+      await writeProjectManifest(toProject({ ...row, root_path: newRootPath, updated_at: Date.now() }));
     }
+    await syncProjectRootToDb(newRootPath);
   }
 }
 

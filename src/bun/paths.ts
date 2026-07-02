@@ -2,7 +2,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { Utils } from "electrobun/bun";
 
-const APP_DATA_DIR_NAME = "interactive-learning";
+const APP_DATA_DIR_NAME = "learnie";
 
 function ensureDir(path: string) {
   if (!existsSync(path)) {
@@ -21,7 +21,7 @@ export function dataPath(...parts: string[]) {
 }
 
 export function projectRoot() {
-  return resolve(process.env.INTERACTIVE_LEARNING_PROJECT_ROOT || process.cwd());
+  return resolve(process.env.LEARNIE_PROJECT_ROOT || process.env.INTERACTIVE_LEARNING_PROJECT_ROOT || process.cwd());
 }
 
 export function projectDir(projectId: string) {

@@ -3,16 +3,18 @@ import { CourseArtifactService } from "./course-artifact-service";
 import { SettingsService } from "./settings-service";
 import { AiProviderSettingsService } from "./ai-provider-settings";
 import { OpenAICompatibleClient } from "./openai-compatible-client";
+import { dataPath } from "./paths";
+import { syncProjectRootToDb, writeSessionSnapshot } from "./project-bundle-sync";
 import type { CourseModule, LectureModulePlan, MaterialArtifacts, PresentationModulePlan, SourceChunk, VisualSpec } from "../shared/artifact-types";
 import type { SessionSnapshot, SessionSummary, SourceRef, TutorContentBlock, TutorContext, TutorIntent, TutorMessage, TutorStateUpdate, TutorTurnOutput } from "../shared/tutor-types";
 
-// "start_module": open the first paragraph of a (new) module with a hook. "next_chunk": continue
-// to the next paragraph within the same module. "user_message": the learner replied.
+// "start_module": open the first paragraph of a (new) module with a content summary. "next_chunk":
+// continue to the next paragraph within the same module. "user_message": the learner replied.
 type TurnPayload = { event: "start_module" | "next_chunk" | "user_message"; userText?: string };
 
 const VALID_INTENTS: TutorIntent[] = ["start", "answer", "question", "off_topic", "deeper", "meta_complaint", "satisfied"];
 const DIGRESSION_INTENTS = new Set<TutorIntent>(["question", "off_topic", "deeper", "meta_complaint"]);
-const NEXT_PROGRESS_CHOICE = "다음 진도로 넘어가주세요.";
+const PROGRESSION_CHOICES = new Set(["다음 진도로 넘어가주세요.", "다음 문단으로 넘어가주세요.", "다음 모듈로 넘어가주세요."]);
 
 // A lightweight Korean-aware heuristic. It is only a hint and a fallback; when the model
 // returns its own userIntent we trust that instead. The point is that a substantive
@@ -27,6 +29,11 @@ function classifyIntent(userText: string, event: "start_module" | "next_chunk" |
   if (has("더 풀어", "더 자세", "예시", "예를", "구체적", "쉽게 바꿔", "쉽게 설명", "더 알고", "더 설명", "자세히")) return "deeper";
   if (t.endsWith("?") || t.endsWith("까요") || t.endsWith("나요") || t.endsWith("인가요") || t.endsWith("건가요") || has("있을까", "있나요", "어떻게", "무엇", "뭔가요", "왜 ", "궁금", "무슨", "어떤")) return "question";
   return "answer";
+}
+
+function normalizeChoiceText(choice: string) {
+  if (choice.includes("원래 흐름") || choice.includes("돌아갈게요")) return "이 설명을 원문 흐름과 다시 연결해 주세요.";
+  return choice;
 }
 
 // Detects an explicit learner confirmation to end the session after all modules are done.
@@ -173,12 +180,6 @@ function splitProse(text: string, maxLen = 240): string[] {
   return pieces;
 }
 
-function normalizeChoiceText(choice: string) {
-  if (!choice) return "";
-  if (choice.includes("원래 흐름") || choice.includes("돌아갈게요")) return NEXT_PROGRESS_CHOICE;
-  return choice;
-}
-
 function uniqueStrings(values: string[]) {
   const seen = new Set<string>();
   return values.filter((value) => {
@@ -230,6 +231,8 @@ export class TutorService {
   private readonly secrets = new AiProviderSettingsService();
 
   async listSessions(materialId: string): Promise<SessionSummary[]> {
+    const material = this.artifacts.getRow(materialId);
+    await syncProjectRootToDb(this.projectRoot(material.project_id));
     const rows = getDb()
       .query<SessionRow, [string]>("SELECT * FROM learning_sessions WHERE material_id = ? ORDER BY updated_at DESC")
       .all(materialId);
@@ -270,6 +273,7 @@ export class TutorService {
       .run(id, material.project_id, materialId, material.title, firstModule.id, firstChunk?.id || null, settings.selectedModel, now, now);
 
     const firstTurn = await this.createTutorTurn(id, { event: "start_module" });
+    await this.persistSessionSnapshot(id);
     return { session: this.snapshot(id), context: await this.context(id), firstTurn };
   }
 
@@ -293,13 +297,78 @@ export class TutorService {
     });
     try {
       const output = await this.createTutorTurn(sessionId, { event: "user_message", userText: text });
+      await this.persistSessionSnapshot(sessionId);
       return { session: this.snapshot(sessionId), context: await this.context(sessionId), output };
     } catch (error) {
       // Kill the failed turn: drop the dangling user message so the learner can resubmit cleanly
       // (instead of a spinner that never resolves), and surface the error to the caller.
       getDb().query("DELETE FROM learning_messages WHERE session_id = ? AND ordinal = ? AND role = 'user'").run(sessionId, ordinal);
+      await this.persistSessionSnapshot(sessionId).catch(() => undefined);
       throw error;
     }
+  }
+
+  async advance(sessionId: string, mode: "paragraph" | "module") {
+    const session = this.snapshot(sessionId);
+    if (session.status !== "active") throw new Error("This session is not active");
+    const artifacts = await this.artifacts.getArtifacts(session.materialId);
+    const curriculum = this.orderedCurriculum(artifacts);
+    const covered = new Set(session.coveredChunkIds);
+    const focusChunk = this.currentChunkOf(artifacts, session);
+    const currentModule = this.ownerModuleOf(artifacts, focusChunk?.id);
+    if (!focusChunk) throw new Error("No current paragraph is available");
+
+    let nextChunk: SourceChunk | undefined;
+    if (mode === "module") {
+      for (const id of currentModule.sourceChunkIds) covered.add(id);
+      nextChunk = this.firstChunkOfNextModule(artifacts, currentModule.id);
+    } else {
+      covered.add(focusChunk.id);
+      const index = curriculum.findIndex((chunk) => chunk.id === focusChunk.id);
+      nextChunk = curriculum[index + 1];
+    }
+
+    if (!nextChunk) {
+      this.persistCursor(sessionId, artifacts, focusChunk.id, [...covered]);
+      const output = this.finishPromptTurn(sessionId, currentModule);
+      await this.persistSessionSnapshot(sessionId);
+      return { session: this.snapshot(sessionId), context: await this.context(sessionId), output };
+    }
+
+    this.persistCursor(sessionId, artifacts, nextChunk.id, [...covered]);
+    const nextModule = this.ownerModuleOf(artifacts, nextChunk.id);
+    const output = await this.createTutorTurn(sessionId, { event: mode === "module" || nextModule.id !== currentModule.id ? "start_module" : "next_chunk" });
+    await this.persistSessionSnapshot(sessionId);
+    return { session: this.snapshot(sessionId), context: await this.context(sessionId), output };
+  }
+
+  async selectModule(sessionId: string, moduleId: string) {
+    const session = this.snapshot(sessionId);
+    if (session.status !== "active") throw new Error("This session is not active");
+    const artifacts = await this.artifacts.getArtifacts(session.materialId);
+    const module = this.moduleById(artifacts, moduleId);
+    const firstChunk = this.firstChunkOfModule(artifacts, module);
+    if (!firstChunk) throw new Error("This module has no source paragraph");
+    this.persistCursor(sessionId, artifacts, firstChunk.id, session.coveredChunkIds);
+    await this.persistSessionSnapshot(sessionId);
+    return { session: this.snapshot(sessionId), context: await this.context(sessionId) };
+  }
+
+  async openModule(sessionId: string, moduleId: string) {
+    await this.selectModule(sessionId, moduleId);
+    const output = await this.createTutorTurn(sessionId, { event: "start_module" });
+    await this.persistSessionSnapshot(sessionId);
+    return { session: this.snapshot(sessionId), context: await this.context(sessionId), output };
+  }
+
+  private projectRoot(projectId: string) {
+    const row = getDb().query<{ root_path: string | null }, [string]>("SELECT root_path FROM projects WHERE id = ?").get(projectId);
+    return row?.root_path || dataPath("projects");
+  }
+
+  private async persistSessionSnapshot(sessionId: string) {
+    const snapshot = this.snapshot(sessionId);
+    await writeSessionSnapshot(this.projectRoot(snapshot.projectId), snapshot);
   }
 
   private latestSessionId(materialId: string) {
@@ -427,7 +496,7 @@ export class TutorService {
     const allComplete = totalChunks > 0 && covered.size >= totalChunks;
 
     // Completion gate: the session never auto-completes. Only an EXPLICIT "yes, let's finish"
-    // confirmation ends it. "다음 진도로 넘어가주세요" means "next paragraph", not "finish".
+    // confirmation ends it.
     if (allComplete && payload.event === "user_message" && isFinishConfirmation(payload.userText || "")) {
       getDb().query("UPDATE learning_sessions SET status = 'completed', updated_at = ? WHERE id = ?").run(Date.now(), sessionId);
       const farewell: TutorTurnOutput = {
@@ -466,7 +535,9 @@ export class TutorService {
       return farewell;
     }
 
-    // Progression is PER PARAGRAPH. "다음 진도로 넘어가주세요" (heuristic intent "satisfied")
+    // Progression is PER PARAGRAPH when typed as free text. The dedicated UI buttons use
+    // advance("paragraph" | "module") above so their behavior is explicit.
+    // A typed "넘어가" request (heuristic intent "satisfied")
     // marks the current paragraph covered and steps to the next one, then teaches it. A small
     // source is one module of many paragraphs, so advancing by module would finish the whole
     // source in a single click — which is exactly the bug this replaces.
@@ -525,8 +596,9 @@ export class TutorService {
     const sanitized = this.sanitizeOutput(artifacts, currentModule, focusChunk, session, payload, output);
     sanitized.progress = totalChunks ? Math.round((covered.size / totalChunks) * 100) : 0;
 
-    // Once the whole source is covered, offer an explicit finish-or-continue pair instead of the
-    // plain "다음 진도로" progression. Keep the session active until the learner confirms.
+    // Once the whole source is covered, offer an explicit finish-or-continue pair instead of
+    // showing the normal paragraph/module progression commands. Keep the session active until
+    // the learner confirms.
     if (allComplete) {
       sanitized.choices = ["네, 마칠게요.", "아니요, 더 질문이 있어요."];
     }
@@ -586,8 +658,7 @@ export class TutorService {
     return turn;
   }
 
-  // The learner's progression walks the source paragraphs (chunks) in document order. This is the
-  // "진도" sequence: each "다음 진도로" advances one paragraph.
+  // The learner's paragraph progression walks source chunks in document order.
   private orderedCurriculum(artifacts: MaterialArtifacts): SourceChunk[] {
     return artifacts.sourceChunks;
   }
@@ -609,6 +680,27 @@ export class TutorService {
 
   private ownerModuleOf(artifacts: MaterialArtifacts, chunkId: string | null | undefined): CourseModule {
     return (chunkId ? this.chunkModuleMap(artifacts).get(chunkId) : undefined) || artifacts.coursePlan.modules[0]!;
+  }
+
+  private moduleById(artifacts: MaterialArtifacts, moduleId: string): CourseModule {
+    const module = artifacts.coursePlan.modules.find((item) => item.id === moduleId);
+    if (!module) throw new Error("Module not found");
+    return module;
+  }
+
+  private firstChunkOfModule(artifacts: MaterialArtifacts, module: CourseModule): SourceChunk | undefined {
+    const byId = new Map(artifacts.sourceChunks.map((chunk) => [chunk.id, chunk]));
+    return module.sourceChunkIds.map((id) => byId.get(id)).find((chunk): chunk is SourceChunk => Boolean(chunk));
+  }
+
+  private firstChunkOfNextModule(artifacts: MaterialArtifacts, moduleId: string): SourceChunk | undefined {
+    const modules = artifacts.coursePlan.modules;
+    const index = modules.findIndex((module) => module.id === moduleId);
+    for (const module of modules.slice(index + 1)) {
+      const chunk = this.firstChunkOfModule(artifacts, module);
+      if (chunk) return chunk;
+    }
+    return undefined;
   }
 
   private currentChunkOf(artifacts: MaterialArtifacts, session: SessionSnapshot): SourceChunk | undefined {
@@ -703,8 +795,8 @@ Detected learner intent for this turn: ${intent}. Handle it as follows:
 BE CONCISE AND VISUAL. The whole point of this app is to understand WITHOUT reading long text. Do not be discursive, speculative, or long-winded. Prefer compact, scannable structure over prose: use bullets, compare_table, misconception, and a diagram (when an allowed visual id fits) FIRST, and keep any paragraph/guided_reading to 2-3 short sentences. Each block should be tight; never write a wall of text. If an idea can be a table or a short list, make it one instead of a paragraph.
 Return 2-4 content blocks. Do not return paragraph-only output unless the learner asked a narrow factual question.
 You teach the source ONE PARAGRAPH AT A TIME, in order. Teach only the current paragraph below this turn; do not summarize or race ahead to later paragraphs. The learner steps to the next paragraph by choosing the progression option.
-When starting a new module (or the very first paragraph), open with hook + guided_reading before any reflective question. When simply continuing to the next paragraph of the same module, open with a one-line bridge and a guided_reading of the new paragraph — do not repeat a hook every time. Do not open by showing a raw source sentence unless the learner explicitly asks for the exact wording.
-Always provide 3 choices that work as complete learner replies or exploration paths, phrased as learner continuations, not exam answers or UI commands. The app will add a fourth fixed progression choice, "${NEXT_PROGRESS_CHOICE}", so do not include that exact choice yourself.
+When starting a new module (or the very first paragraph), open with a hook block whose body starts with "핵심은" and summarizes the module's actual content. It must NOT give study advice or talk about how to read. Then provide guided_reading before any reflective question. When simply continuing to the next paragraph of the same module, open with a one-line bridge and a guided_reading of the new paragraph — do not repeat a hook every time. Do not open by showing a raw source sentence unless the learner explicitly asks for the exact wording.
+Always provide exactly 3 choices that work as complete learner replies or exploration paths, phrased as learner continuations, not exam answers or UI commands. Do NOT include progression commands such as "다음 문단으로", "다음 모듈로", or "다음 진도로"; the app shows those separately.
 Current course: ${artifacts.coursePlan.title}
 Current topic title: ${module.title}
 Internal objective: ${module.learningGoal}
@@ -734,8 +826,8 @@ Output schema: {"message":"plain text fallback summary","blocks":[/* 2-4 blocks 
           content:
             payload.event === "start_module"
               ? isSourceOpening
-                ? "This is the very first turn. Open with a hook that summarizes the whole source in one short paragraph (what it covers and what the learner will understand by the end), then teach the first paragraph with a guided_reading and invite reflection."
-                : "Open this module's first paragraph as a guided lecture: hook, then guided_reading of the current paragraph, then invite reflection."
+                ? "This is the very first turn. Open with a hook that starts with '핵심은' and summarizes the actual content of the source/module in one short paragraph, then teach the first paragraph with a guided_reading and invite reflection."
+                : "Open this module's first paragraph as a guided lecture: first a content-summary hook starting with '핵심은', then guided_reading of the current paragraph, then invite reflection."
               : payload.event === "next_chunk"
                 ? "Continue to the next paragraph. Open with a one-line bridge from the previous paragraph, then teach the current paragraph with a guided_reading, then invite reflection. Do not repeat a hook."
                 : `Learner just said: ${payload.userText}\nIntent looks like: ${intent}. Respond to what they actually said. If it is a question or complaint, answer it this turn; do not move on. Use their words as material, not as an exam submission.`,
@@ -915,12 +1007,13 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${chunk.text}`
     const firstChunk = focusChunk || chunks[0];
     const lecturePlan = this.lectureModule(artifacts, module);
     const isOpening = payload.event === "start_module" || payload.event === "next_chunk";
-    const cleaned = Array.isArray(blocks)
+    const rawCleaned = Array.isArray(blocks)
       ? blocks
           .map((block) => this.sanitizeBlock(block, allowedRefs, payload.event === "user_message"))
           .filter((block): block is TutorContentBlock => Boolean(block))
           .slice(0, 5)
       : [];
+    const cleaned = payload.event === "start_module" ? rawCleaned.filter((block) => block.type !== "hook") : rawCleaned;
 
     const hasHook = cleaned.some((block) => block.type === "hook");
     const hasGuidedReading = cleaned.some((block) => block.type === "guided_reading");
@@ -930,7 +1023,7 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${chunk.text}`
     if (payload.event === "start_module" && !hasHook) {
       requiredStartBlocks.push({
         type: "hook",
-        body: lecturePlan?.intrigue.surpriseLine || `${module.title}은 먼저 궁금증을 만들고 나서 읽어야 하는 대목입니다.`,
+        body: this.moduleContentSummary(module, firstChunk, lecturePlan),
       });
     }
     if (isOpening && !hasGuidedReading) {
@@ -953,6 +1046,12 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${chunk.text}`
     // scannable pieces. This is deterministic, so it holds even when the model ignores the
     // "be concise / use bullets" instruction or the turn was salvaged from prose.
     return this.splitWallOfText(assembled).slice(0, 10);
+  }
+
+  private moduleContentSummary(module: CourseModule, focusChunk: SourceChunk | undefined, lecturePlan: LectureModulePlan | undefined) {
+    const basis = lecturePlan?.guidedReading.plainParaphrase || focusChunk?.text || module.learningGoal || module.title;
+    const summary = trimSentence(basis.replace(/\s+/g, " "), 230);
+    return summary.startsWith("핵심은") ? summary : `핵심은 ${summary}`;
   }
 
   private splitWallOfText(blocks: TutorContentBlock[]): TutorContentBlock[] {
@@ -1175,23 +1274,22 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${chunk.text}`
       ? uniqueStrings(
           choices
             .map((choice) => normalizeChoiceText(String(choice).trim()))
-            .filter((choice) => choice.length > 0 && choice.length <= 140 && choice !== NEXT_PROGRESS_CHOICE)
+            .filter((choice) => choice.length > 0 && choice.length <= 140 && !PROGRESSION_CHOICES.has(choice))
         ).slice(0, 3)
       : [];
-    const defaults = this.defaultChoices(module, passed, isDigression).filter((choice) => choice !== NEXT_PROGRESS_CHOICE);
-    return [...uniqueStrings([...cleaned, ...defaults]).slice(0, 3), NEXT_PROGRESS_CHOICE];
+    const defaults = this.defaultChoices(module, passed, isDigression).filter((choice) => !PROGRESSION_CHOICES.has(choice));
+    return uniqueStrings([...cleaned, ...defaults]).slice(0, 3);
   }
 
   private defaultChoices(module: CourseModule, passed: boolean, isDigression = false) {
     if (passed) {
-      return ["방금 내용을 한 문장으로 정리해 주세요.", "예시를 하나만 더 보고 넘어갈게요.", "관련된 원문 근거를 다시 보여 주세요.", NEXT_PROGRESS_CHOICE];
+      return ["방금 내용을 한 문장으로 정리해 주세요.", "예시를 하나만 더 보고 싶어요.", "관련된 원문 근거를 다시 보여 주세요."];
     }
     if (isDigression) {
       return [
         "방금 그 부분을 조금 더 자세히 설명해 주세요.",
         "관련된 다른 예시도 하나 들어 주세요.",
         "방금 설명을 원문 표현과 연결해 주세요.",
-        NEXT_PROGRESS_CHOICE,
       ];
     }
     const signal = (module.understandingSignals || module.masterySignals).find((item) => item.length > 1) || "핵심 단서";
@@ -1199,7 +1297,6 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${chunk.text}`
       `${signal}이 왜 중요한지 조금 더 풀어 주세요.`,
       "이 대목을 표로 비교해서 보고 싶어요.",
       "아직 감이 흐릿해요. 핵심 문장을 더 쉽게 바꿔 주세요.",
-      NEXT_PROGRESS_CHOICE,
     ];
   }
 
