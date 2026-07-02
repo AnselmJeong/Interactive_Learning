@@ -1,13 +1,14 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Archive, BookOpen, Check, Loader2, MessageSquare, Play, Send, Settings, Upload } from "lucide-react";
 import type { MaterialSummary, PreparedSourceImport, ProjectArchiveExport, ProjectSummary, SourceSummary } from "../../shared/rpc-types";
 import type { AppSettings, AiProviderStatus, ProviderModel } from "../../shared/settings-types";
 import type { MaterialArtifacts } from "../../shared/artifact-types";
-import type { SessionSnapshot, SessionSummary, SourceRef, TutorContext } from "../../shared/tutor-types";
+import type { SessionSnapshot, SessionSummary, SourceRef, TutorContext, TutorMessage } from "../../shared/tutor-types";
 import { SettingsModal } from "./components/SettingsModal";
 import { VisualRenderer } from "./components/VisualRenderer";
 import { MarkdownContent } from "./components/MarkdownContent";
 import { TutorBlockRenderer } from "./components/TutorBlockRenderer";
+import { ImmersiveSourceView } from "./components/ImmersiveSourceView";
 import { NewProjectModal } from "./components/NewProjectModal";
 import { ProjectDropdown } from "./components/ProjectDropdown";
 import { SourceImportModal } from "./components/SourceImportModal";
@@ -26,7 +27,9 @@ type ModuleStatus = TutorContext["moduleOutline"][number]["status"];
 type InspectorTab = "modules" | "sessions";
 
 const PROGRESSION_CHOICES = new Set(["다음 진도로 넘어가주세요.", "다음 대목으로 넘어가주세요.", "다음 문단으로 넘어가주세요.", "다음 모듈로 넘어가주세요.", "진도로 돌아갈게요."]);
+const FINISH_CONFIRMATION_CHOICE = "네, 마칠게요.";
 const FALLBACK_CHOICES = ["힌트를 하나만 더 주세요.", "예시 답변을 하나 보여주세요.", "이 질문을 더 쉽게 다시 물어봐 주세요."];
+const EMPTY_MESSAGES: TutorMessage[] = [];
 
 function normalizeChoiceText(choice: string) {
   if (!choice) return "";
@@ -123,6 +126,103 @@ function AnswerSourceRefs({ refs }: { refs: SourceRef[] }) {
   );
 }
 
+const ChatLog = memo(function ChatLog({
+  messages,
+  tutorThinking,
+  expandedSourceMessages,
+  sourceRefById,
+  onToggleSource,
+}: {
+  messages: TutorMessage[];
+  tutorThinking: boolean;
+  expandedSourceMessages: Set<string>;
+  sourceRefById: Map<string, SourceRef>;
+  onToggleSource: (messageId: string) => void;
+}) {
+  return (
+    <div className="chat-log">
+      {messages.map((message) => (
+        <div key={message.id} className={`bubble ${message.role}`}>
+          {message.role === "assistant" && message.blocks?.length ? (
+            <TutorBlockRenderer blocks={message.blocks} />
+          ) : (
+            <MarkdownContent content={message.content} />
+          )}
+          {message.role === "assistant" && message.sourceRefs.length ? (
+            <div className="answer-sources">
+              <button type="button" onClick={() => onToggleSource(message.id)}>
+                <BookOpen size={15} />
+                {expandedSourceMessages.has(message.id) ? "근거 닫기" : "근거 보기"}
+              </button>
+              {expandedSourceMessages.has(message.id) ? (
+                <AnswerSourceRefs refs={message.sourceRefs.map((id) => sourceRefById.get(id)).filter((ref): ref is SourceRef => Boolean(ref))} />
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      ))}
+      {tutorThinking ? (
+        <div className="bubble assistant thinking-bubble">
+          <span className="typing-spinner" aria-hidden="true" />
+          <MarkdownContent content="답변을 준비하고 있습니다." compact />
+        </div>
+      ) : null}
+    </div>
+  );
+});
+
+const ChatComposer = memo(function ChatComposer({
+  busy,
+  disabled,
+  placeholder,
+  autoFocusToken,
+  onSend,
+}: {
+  busy: boolean;
+  disabled: boolean;
+  placeholder: string;
+  autoFocusToken?: number;
+  onSend: (text: string) => Promise<boolean>;
+}) {
+  const [draft, setDraft] = useState("");
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const trimmed = draft.trim();
+
+  useEffect(() => {
+    if (!autoFocusToken || disabled) return;
+    textareaRef.current?.focus();
+  }, [autoFocusToken, disabled]);
+
+  async function submit(text = draft) {
+    const next = text.trim();
+    if (busy || disabled || !next) return;
+    const sent = await onSend(next);
+    if (sent) setDraft("");
+  }
+
+  return (
+    <div className="composer">
+      <textarea
+        ref={textareaRef}
+        value={draft}
+        onChange={(event) => setDraft(event.target.value)}
+        onKeyDown={(event) => {
+          if ((event.altKey || event.metaKey) && event.key === "Enter") {
+            event.preventDefault();
+            void submit(event.currentTarget.value);
+          }
+        }}
+        placeholder={placeholder}
+        disabled={disabled}
+        rows={3}
+      />
+      <button className="icon-button primary send" onClick={() => void submit()} disabled={busy || disabled || !trimmed} title="Send answer">
+        <Send size={19} />
+      </button>
+    </div>
+  );
+});
+
 export function App({ request }: { request: RpcRequest }) {
   const [state, setState] = useState<LoadState>({ projects: [], sources: [], materials: [], sessions: [] });
   const [activeProject, setActiveProject] = useState<ProjectSummary | null>(null);
@@ -133,7 +233,6 @@ export function App({ request }: { request: RpcRequest }) {
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [sourceNotice, setSourceNotice] = useState("");
   const [preparedImport, setPreparedImport] = useState<PreparedSourceImport | null>(null);
-  const [answer, setAnswer] = useState("");
   const [expandedSourceMessages, setExpandedSourceMessages] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [tutorThinking, setTutorThinking] = useState(false);
@@ -143,10 +242,10 @@ export function App({ request }: { request: RpcRequest }) {
   const [providerStatus, setProviderStatus] = useState<AiProviderStatus | null>(null);
   const [models, setModels] = useState<ProviderModel[]>([]);
   const [viewMode, setViewMode] = useState<"chat" | "source">("chat");
-  const [inspectorTab, setInspectorTab] = useState<InspectorTab>("modules");
+  const [inspectorTab, setInspectorTab] = useState<InspectorTab>("sessions");
   const [selectedModuleId, setSelectedModuleId] = useState<string | null>(null);
-  const chatLogRef = useRef<HTMLDivElement | null>(null);
-  const currentChunkRef = useRef<HTMLElement | null>(null);
+  const [composerFocusToken, setComposerFocusToken] = useState(0);
+  const tutorSurfaceRef = useRef<HTMLElement | null>(null);
 
   async function refreshProjects() {
     const projects = (await request("projects.list", {})) as ProjectSummary[];
@@ -290,7 +389,7 @@ export function App({ request }: { request: RpcRequest }) {
     setSession(null);
     setContext(null);
     setSelectedModuleId(null);
-    setAnswer("");
+    setInspectorTab("sessions");
     setExpandedSourceMessages(new Set());
   }
 
@@ -303,6 +402,7 @@ export function App({ request }: { request: RpcRequest }) {
       setSession(result.session);
       setContext(result.context);
       setSelectedModuleId(result.session.currentModuleId);
+      setInspectorTab("modules");
       setExpandedSourceMessages(new Set());
       await refreshSessions(materialId);
       return result;
@@ -328,7 +428,7 @@ export function App({ request }: { request: RpcRequest }) {
       setSession(result.session);
       setContext(result.context);
       setSelectedModuleId(result.session.currentModuleId);
-      setAnswer("");
+      setInspectorTab("modules");
       setExpandedSourceMessages(new Set());
     } catch (error) {
       setStatus((error as Error).message);
@@ -337,8 +437,8 @@ export function App({ request }: { request: RpcRequest }) {
     }
   }
 
-  async function sendAnswer(text = answer) {
-    if (!session || !text.trim()) return;
+  async function sendAnswer(text: string) {
+    if (!session || !text.trim()) return false;
     setBusy(true);
     setTutorThinking(true);
     try {
@@ -346,8 +446,8 @@ export function App({ request }: { request: RpcRequest }) {
       setSession(result.session);
       setContext(result.context);
       setSelectedModuleId(result.session.currentModuleId);
-      setAnswer("");
       await refreshSessions(result.session.materialId);
+      return true;
     } catch (error) {
       // The turn was killed server-side (timeout/connection error). Surface it and re-sync so the
       // dangling user message is gone, the spinner stops, and the learner can resubmit their input
@@ -361,6 +461,7 @@ export function App({ request }: { request: RpcRequest }) {
       } catch {
         /* keep current state if reload also fails */
       }
+      return false;
     } finally {
       setBusy(false);
       setTutorThinking(false);
@@ -376,7 +477,6 @@ export function App({ request }: { request: RpcRequest }) {
       setSession(result.session);
       setContext(result.context);
       setSelectedModuleId(result.session.currentModuleId);
-      setAnswer("");
       await refreshSessions(result.session.materialId);
     } catch (error) {
       setStatus(`진행 실패: ${(error as Error).message}`);
@@ -395,7 +495,6 @@ export function App({ request }: { request: RpcRequest }) {
       setSession(result.session);
       setContext(result.context);
       setSelectedModuleId(result.session.currentModuleId);
-      setAnswer("");
       await refreshSessions(result.session.materialId);
     } catch (error) {
       setStatus(`진도 복귀 실패: ${(error as Error).message}`);
@@ -444,6 +543,17 @@ export function App({ request }: { request: RpcRequest }) {
     }
   }
 
+  function continueFromCompletedModule() {
+    if (!session?.currentModuleId) return;
+    setSelectedModuleId(session.currentModuleId);
+    setInspectorTab("modules");
+    setExpandedSourceMessages(new Set());
+  }
+
+  function focusReviewComposer() {
+    setComposerFocusToken(Date.now());
+  }
+
   async function exportProjectArchive() {
     if (!activeProject) return;
     setBusy(true);
@@ -457,8 +567,11 @@ export function App({ request }: { request: RpcRequest }) {
     }
   }
 
-  const allSessionMessages = session?.messages || [];
-  const currentMessages = selectedModuleId ? allSessionMessages.filter((message) => message.moduleId === selectedModuleId) : allSessionMessages;
+  const allSessionMessages = session?.messages || EMPTY_MESSAGES;
+  const currentMessages = useMemo(
+    () => (selectedModuleId ? allSessionMessages.filter((message) => message.moduleId === selectedModuleId) : allSessionMessages),
+    [allSessionMessages, selectedModuleId]
+  );
   const sessionReadOnly = session?.status === "completed" || session?.status === "archived";
   const selectedModule = selectedModuleId
     ? context?.moduleOutline.find((item) => item.id === selectedModuleId) || artifacts?.coursePlan.modules.find((module) => module.id === selectedModuleId)
@@ -476,8 +589,22 @@ export function App({ request }: { request: RpcRequest }) {
   const selectedModuleTitle = selectedModule ? displayableOutlineTitle(selectedModule.title) || selectedModule.title : "";
 
   useEffect(() => {
-    chatLogRef.current?.scrollTo({ top: chatLogRef.current.scrollHeight, behavior: "smooth" });
-  }, [currentMessages.length, tutorThinking]);
+    if (viewMode !== "chat") return;
+    let secondFrame = 0;
+    const scrollToBottom = () => {
+      const surface = tutorSurfaceRef.current;
+      if (!surface) return;
+      surface.scrollTo({ top: surface.scrollHeight, behavior: "auto" });
+    };
+    const firstFrame = requestAnimationFrame(() => {
+      scrollToBottom();
+      secondFrame = requestAnimationFrame(scrollToBottom);
+    });
+    return () => {
+      cancelAnimationFrame(firstFrame);
+      if (secondFrame) cancelAnimationFrame(secondFrame);
+    };
+  }, [currentMessages.length, selectedModuleId, tutorThinking, viewMode]);
 
   // Progress is measured in semantic source chunks, not modules: a small source can be a single
   // module of many chunks, so module-based progress would read 0/1 the entire session.
@@ -496,13 +623,21 @@ export function App({ request }: { request: RpcRequest }) {
   // Normal turns show three exploratory choices, while chunk/module progression lives in
   // separate command buttons below the choices.
   const allModulesCovered = totalChunks > 0 && coveredChunks >= totalChunks;
+  const showCompletionActions = Boolean(!sessionReadOnly && !selectedModuleWaiting && allModulesCovered);
+  const showProgressActions = Boolean(!sessionReadOnly && !selectedModuleReadOnly && !allModulesCovered);
+  const canContinueFromCompletedModule = Boolean(
+    !sessionReadOnly
+      && selectedModuleReadOnly
+      && !allModulesCovered
+      && session?.currentModuleId
+      && session.currentModuleId !== selectedModuleId
+  );
   const latestChoices = latestAssistant
     && !sessionReadOnly
     && !selectedModuleReadOnly
+    && !allModulesCovered
     ? latestAssistant.choices.length
-      ? allModulesCovered
-        ? latestAssistant.choices
-        : learnerChoices(latestAssistant.choices)
+      ? learnerChoices(latestAssistant.choices)
       : FALLBACK_CHOICES
     : [];
   const visibleVisual = isTeachingGuideVisual(context?.visual) ? null : context?.visual;
@@ -533,6 +668,14 @@ export function App({ request }: { request: RpcRequest }) {
     }
     return refs;
   }, [artifacts, context?.sourceRefs]);
+  const toggleSourceMessage = useCallback((messageId: string) => {
+    setExpandedSourceMessages((current) => {
+      const next = new Set(current);
+      if (next.has(messageId)) next.delete(messageId);
+      else next.add(messageId);
+      return next;
+    });
+  }, []);
 
   // Source-coverage model, driven by the source-chunk cursor. Each semantic source chunk is
   // "covered" (already taught and stepped past), "current" (the chunk being taught right now),
@@ -552,12 +695,6 @@ export function App({ request }: { request: RpcRequest }) {
     const firstCurrentIndex = chunks.findIndex((chunk) => statusFor(chunk.id) === "current");
     return { total, reached, coveredCount, percent: total ? Math.round((reached / total) * 100) : 0, statusFor, firstCurrentIndex };
   }, [artifacts, session?.coveredChunkIds, session?.currentChunkId]);
-
-  // Center the source document on the part being discussed whenever the learner opens the
-  // source view or the conversation moves to a new chunk.
-  useEffect(() => {
-    if (viewMode === "source") currentChunkRef.current?.scrollIntoView({ block: "center", behavior: "smooth" });
-  }, [viewMode, sourceProgress?.firstCurrentIndex]);
 
   const importedSourceLabel = `${state.sources.length} source${state.sources.length === 1 ? "" : "s"} imported`;
   const inspectorModules = useMemo(() => {
@@ -680,61 +817,21 @@ export function App({ request }: { request: RpcRequest }) {
           </section>
         ) : null}
 
-        <section className="tutor-surface">
+        <section className="tutor-surface" ref={tutorSurfaceRef}>
           {viewMode === "source" && artifacts ? (
-            <div className="source-view">
-              <div className="source-progress-head">
-                <div>
-                  <p className="eyebrow">원문 진행</p>
-                  <h3>{sourceProgress?.percent || 0}% 다룸</h3>
-                </div>
-                <div className="source-progress-meta">
-                  <span>{sourceProgress ? `${sourceProgress.reached}/${sourceProgress.total}` : "0/0"} 단락</span>
-                  <div className="lesson-bar">
-                    <i style={{ width: `${sourceProgress?.percent || 0}%` }} />
-                  </div>
-                  <div className="source-legend">
-                    <span className="covered">다룸</span>
-                    <span className="current">진행 중</span>
-                    <span className="upcoming">예정</span>
-                  </div>
-                </div>
-              </div>
-              {sessionReadOnly && sourceProgress && sourceProgress.percent < 90 ? (
-                <p className="source-incomplete-note">아직 다루지 않은 원문이 남아 있습니다. 새 세션을 시작해 이어서 학습할 수 있습니다.</p>
-              ) : null}
-              <div className="source-doc">
-                {artifacts.sourceChunks.map((chunk, index) => {
-                  const status = sourceProgress?.statusFor(chunk.id) || "upcoming";
-                  const heading = displayableHeadingPath(chunk.headingPath);
-                  const prevHeading = index > 0 ? displayableHeadingPath(artifacts.sourceChunks[index - 1]?.headingPath || []) : "";
-                  const showHeading = Boolean(heading) && heading !== prevHeading;
-                  const sourceText = stripRepeatedSourceHeading(chunk.text, heading || chunk.headingPath.at(-1) || "");
-                  return (
-                    <article
-                      key={chunk.id}
-                      className={`source-chunk ${status}`}
-                      ref={index === sourceProgress?.firstCurrentIndex ? currentChunkRef : undefined}
-                    >
-                      {showHeading ? <h4 className="source-heading">{heading}</h4> : null}
-                      {sourceText ? <MarkdownContent content={sourceText} /> : null}
-                    </article>
-                  );
-                })}
-              </div>
-            </div>
+            <ImmersiveSourceView
+              artifacts={artifacts}
+              sourceProgress={sourceProgress}
+              sessionReadOnly={sessionReadOnly}
+              displayHeadingPath={displayableHeadingPath}
+              cleanSourceText={stripRepeatedSourceHeading}
+            />
           ) : session ? (
             <>
               <div className="lesson-header">
                 <div>
                   <p className="eyebrow">Learning Session</p>
                   <h3>{selectedModuleTitle || activeModule?.title || activeMaterial?.title || session.title}</h3>
-                </div>
-                <div className="lesson-progress">
-                  <span>{progressText}</span>
-                  <div className="lesson-bar">
-                    <i style={{ width: `${progressPercent}%` }} />
-                  </div>
                 </div>
               </div>
               {selectedModuleWaiting ? (
@@ -747,60 +844,29 @@ export function App({ request }: { request: RpcRequest }) {
                   </button>
                 </div>
               ) : null}
-              <div className="chat-log" ref={chatLogRef}>
-                {currentMessages.map((message) => (
-                  <div key={message.id} className={`bubble ${message.role}`}>
-                    {message.role === "assistant" && message.blocks?.length ? (
-                      <TutorBlockRenderer blocks={message.blocks} />
-                    ) : (
-                      <MarkdownContent content={message.content} />
-                    )}
-                    {message.role === "assistant" && message.sourceRefs.length ? (
-                      <div className="answer-sources">
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setExpandedSourceMessages((current) => {
-                              const next = new Set(current);
-                              if (next.has(message.id)) next.delete(message.id);
-                              else next.add(message.id);
-                              return next;
-                            })
-                          }
-                        >
-                          <BookOpen size={15} />
-                          {expandedSourceMessages.has(message.id) ? "근거 닫기" : "근거 보기"}
-                        </button>
-                        {expandedSourceMessages.has(message.id) ? (
-                          <AnswerSourceRefs refs={message.sourceRefs.map((id) => sourceRefById.get(id)).filter((ref): ref is SourceRef => Boolean(ref))} />
-                        ) : null}
-                      </div>
-                    ) : null}
-                  </div>
-                ))}
-                {tutorThinking ? (
-                  <div className="bubble assistant thinking-bubble">
-                    <span className="typing-spinner" aria-hidden="true" />
-                    <MarkdownContent content="답변을 준비하고 있습니다." compact />
-                  </div>
-                ) : null}
-              </div>
+              <ChatLog
+                messages={currentMessages}
+                tutorThinking={tutorThinking}
+                expandedSourceMessages={expandedSourceMessages}
+                sourceRefById={sourceRefById}
+                onToggleSource={toggleSourceMessage}
+              />
               {visibleVisual ? <VisualRenderer visual={visibleVisual} /> : null}
-              {latestChoices.length || (!sessionReadOnly && !selectedModuleReadOnly && !allModulesCovered) ? (
+              {latestChoices.length || showProgressActions || showCompletionActions ? (
                 <div className="answer-options">
                   {latestChoices.length ? (
                     <>
                       <p>다음으로 탐색</p>
                       <div className="choice-grid">
                         {latestChoices.map((choice) => (
-                          <button key={choice} onClick={() => sendAnswer(choice)} disabled={busy || selectedModuleWaiting}>
+                          <button key={choice} onClick={() => void sendAnswer(choice)} disabled={busy || selectedModuleWaiting}>
                             {choice}
                           </button>
                         ))}
                       </div>
                     </>
                   ) : null}
-                  {!sessionReadOnly && !selectedModuleReadOnly && !allModulesCovered ? (
+                  {showProgressActions ? (
                     <div className="progress-actions" aria-label="학습 진행">
                       {canReturnToProgress ? (
                         <button type="button" onClick={returnToProgress} disabled={busy || selectedModuleWaiting}>
@@ -815,11 +881,26 @@ export function App({ request }: { request: RpcRequest }) {
                       </button>
                     </div>
                   ) : null}
+                  {showCompletionActions ? (
+                    <div className="completion-actions" aria-label="학습 종료">
+                      <button type="button" className="primary" onClick={() => void sendAnswer(FINISH_CONFIRMATION_CHOICE)} disabled={busy}>
+                        학습 종료
+                      </button>
+                      <button type="button" onClick={focusReviewComposer} disabled={busy}>
+                        더 짚어보기
+                      </button>
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
-              {selectedModuleReadOnly && !sessionReadOnly ? (
+              {selectedModuleReadOnly && !sessionReadOnly && !allModulesCovered ? (
                 <div className="read-only-session">
                   <p>완료된 module의 과거 대화입니다.</p>
+                  {canContinueFromCompletedModule ? (
+                    <button className="wide-button primary" onClick={continueFromCompletedModule} disabled={busy}>
+                      <Play size={16} /> 다음 모듈로
+                    </button>
+                  ) : null}
                 </div>
               ) : sessionReadOnly ? (
                 <div className="read-only-session">
@@ -829,25 +910,20 @@ export function App({ request }: { request: RpcRequest }) {
                   </button>
                 </div>
               ) : (
-                <div className="composer">
-                  <textarea
-                    value={answer}
-                    onChange={(event) => setAnswer(event.target.value)}
-                    onKeyDown={(event) => {
-                      if ((event.altKey || event.metaKey) && event.key === "Enter") {
-                        event.preventDefault();
-                        const text = event.currentTarget.value;
-                        if (!busy && text.trim()) void sendAnswer(text);
-                      }
-                    }}
-                    placeholder={selectedModuleWaiting ? "이 module을 시작하면 질문할 수 있습니다" : "궁금한 점을 묻거나 위 탐색 경로 중 하나를 선택하세요"}
-                    disabled={selectedModuleWaiting}
-                    rows={3}
-                  />
-                  <button className="icon-button primary send" onClick={() => sendAnswer()} disabled={busy || selectedModuleWaiting || !answer.trim()} title="Send answer">
-                    <Send size={19} />
-                  </button>
-                </div>
+                <ChatComposer
+                  key={`${session.id}:${selectedModuleId || "all"}`}
+                  busy={busy}
+                  disabled={selectedModuleWaiting}
+                  autoFocusToken={composerFocusToken}
+                  placeholder={
+                    selectedModuleWaiting
+                      ? "이 module을 시작하면 질문할 수 있습니다"
+                      : allModulesCovered
+                        ? "더 짚어 보고 싶은 부분을 적어 주세요"
+                        : "궁금한 점을 묻거나 위 탐색 경로 중 하나를 선택하세요"
+                  }
+                  onSend={sendAnswer}
+                />
               )}
             </>
           ) : artifacts ? (
@@ -888,26 +964,27 @@ export function App({ request }: { request: RpcRequest }) {
               <button
                 type="button"
                 role="tab"
-                aria-selected={inspectorTab === "modules"}
-                aria-controls="inspector-modules-panel"
-                className={inspectorTab === "modules" ? "active" : ""}
-                onClick={() => setInspectorTab("modules")}
-              >
-                Modules <span>{inspectorModules.length}</span>
-              </button>
-              <button
-                type="button"
-                role="tab"
                 aria-selected={inspectorTab === "sessions"}
                 aria-controls="inspector-sessions-panel"
                 className={inspectorTab === "sessions" ? "active" : ""}
                 onClick={() => setInspectorTab("sessions")}
               >
-                Sessions <span>{state.sessions.length}</span>
+                Sessions
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={inspectorTab === "modules"}
+                aria-controls="inspector-modules-panel"
+                className={inspectorTab === "modules" ? "active" : ""}
+                onClick={() => setInspectorTab("modules")}
+              >
+                Modules
               </button>
             </div>
             {inspectorTab === "modules" ? (
               <section className="inspector-section inspector-tab-panel" id="inspector-modules-panel" role="tabpanel">
+                <p className="inspector-count">{inspectorModules.length} module{inspectorModules.length === 1 ? "" : "s"}</p>
                 <div className="outline-list">
                   {inspectorModules.map((item) => (
                     <button
@@ -926,6 +1003,7 @@ export function App({ request }: { request: RpcRequest }) {
               </section>
             ) : (
               <section className="inspector-section inspector-tab-panel" id="inspector-sessions-panel" role="tabpanel">
+                <p className="inspector-count">{state.sessions.length} session{state.sessions.length === 1 ? "" : "s"}</p>
                 <div className="session-list">
                   {state.sessions.length ? (
                     state.sessions.map((item) => (

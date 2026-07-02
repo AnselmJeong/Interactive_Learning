@@ -151,9 +151,9 @@ export function NewProjectModal({
                 </div>
               ) : null}
             </div>
-            {created ? (
+            {created && !busy ? (
               <button className="np-add-link" onClick={addSources} disabled={busy}>
-                {busy ? <Loader2 size={17} className="spin" /> : <Plus size={15} />} {busy ? "소스 처리 중" : "소스 추가"}
+                <Plus size={15} /> 소스 추가
               </button>
             ) : null}
           </div>

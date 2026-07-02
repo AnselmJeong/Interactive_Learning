@@ -10,11 +10,13 @@ import type { SessionSnapshot, SessionSummary, SourceRef, TutorContentBlock, Tut
 
 // "start_module": open the first source chunk of a (new) module with a content summary.
 // "next_chunk": continue to the next source chunk within the same module. "return_to_progress":
-// bridge back to the current source chunk after a detour. "user_message": the learner replied.
+// resume after a detour on the next active source chunk. "user_message": the learner replied.
 type TurnPayload = { event: "start_module" | "next_chunk" | "return_to_progress" | "user_message"; userText?: string };
 
 const VALID_INTENTS: TutorIntent[] = ["start", "answer", "question", "off_topic", "deeper", "meta_complaint", "satisfied"];
 const DIGRESSION_INTENTS = new Set<TutorIntent>(["question", "off_topic", "deeper", "meta_complaint"]);
+const MAX_HISTORY_TURNS = 8;
+const MAX_HISTORY_CHARS = 1200;
 const PROGRESSION_CHOICES = new Set(["다음 진도로 넘어가주세요.", "다음 대목으로 넘어가주세요.", "다음 문단으로 넘어가주세요.", "다음 모듈로 넘어가주세요.", "진도로 돌아갈게요."]);
 
 // A lightweight Korean-aware heuristic. It is only a hint and a fallback; when the model
@@ -117,9 +119,9 @@ function toMessage(row: MessageRow): TutorMessage {
 }
 
 function clampHistory(messages: TutorMessage[]) {
-  const mapped = messages.slice(-12).map((message) => ({
+  const mapped = messages.slice(-MAX_HISTORY_TURNS).map((message) => ({
     role: message.role === "user" ? ("user" as const) : ("assistant" as const),
-    content: (message.blocks?.length ? blocksToPlainText(message.blocks) : message.content).slice(0, 1800),
+    content: (message.blocks?.length ? blocksToPlainText(message.blocks) : message.content).slice(0, MAX_HISTORY_CHARS),
   }));
   // Collapse repeated assistant turns. If the model already said something almost identical,
   // feeding it back verbatim teaches it to keep looping. Replace the duplicate with an
@@ -140,6 +142,7 @@ function blocksToPlainText(blocks: TutorContentBlock[]) {
   return blocks
     .map((block) => {
       if (block.type === "bullets") return `${block.title || ""}\n${block.items.map((item) => `- ${item}`).join("\n")}`;
+      if (block.type === "flow") return `${block.title || ""}\n${block.steps.map((step, index) => `${index + 1}. ${step}`).join("\n")}`;
       if (block.type === "compare_table") return `${block.title || ""}\n${block.columns.join(" | ")}\n${block.rows.map((row) => block.columns.map((column) => row[column] || "").join(" | ")).join("\n")}`;
       if (block.type === "source_quote") return `"${block.quote}"`;
       if (block.type === "misconception") return `${block.title || "헷갈릴 수 있는 지점"}\n${block.body}\n${block.repair}`;
@@ -156,6 +159,173 @@ function safeQuote(text: string, maxWords = 25) {
 function trimSentence(text: string, max = 260) {
   const normalized = text.replace(/\s+/g, " ").trim();
   return `${normalized.slice(0, max)}${normalized.length > max ? "..." : ""}`;
+}
+
+type CompareTableBlock = Extract<TutorContentBlock, { type: "compare_table" }>;
+type FlowBlock = Extract<TutorContentBlock, { type: "flow" }>;
+
+function pipeCells(line: string) {
+  return line
+    .replace(/^\s*\|/, "")
+    .replace(/\|\s*$/, "")
+    .split("|")
+    .map((cell) => cell.trim())
+    .filter(Boolean);
+}
+
+function isMarkdownTableDivider(line: string) {
+  return pipeCells(line).every((cell) => /^:?-{3,}:?$/.test(cell));
+}
+
+function parseMarkdownPipeTable(text: string): CompareTableBlock | null {
+  const lines = text
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter((line) => line.includes("|"));
+  if (lines.length < 2) return null;
+  const headerLine = lines[0];
+  const dividerLine = lines[1];
+  if (!headerLine || !dividerLine) return null;
+  const columns = pipeCells(headerLine).slice(0, 4);
+  if (columns.length < 2) return null;
+  const dataLines = isMarkdownTableDivider(dividerLine) ? lines.slice(2) : lines.slice(1);
+  const rows = dataLines
+    .map((line) => pipeCells(line))
+    .filter((cells) => cells.length >= 2)
+    .map((cells) => Object.fromEntries(columns.map((column, index) => [column, (cells[index] || "").slice(0, 220)])))
+    .filter((row) => columns.some((column) => row[column]))
+    .slice(0, 5);
+  return rows.length ? { type: "compare_table", columns, rows } : null;
+}
+
+function splitFlowTitle(firstPart: string) {
+  const normalized = firstPart.replace(/[：:]$/, "").replace(/\s+/g, " ").trim();
+  const match = normalized.match(/^(.{4,45}?(?:구조|맥락|과정|흐름|논리|구분|대조|관계|전개))\s+(.{2,})$/u);
+  if (!match) return { title: normalized, firstStep: "" };
+  const [, title = "", firstStep = ""] = match;
+  return { title: title.trim(), firstStep: firstStep.trim() };
+}
+
+function parseLoosePipeFlow(text: string): FlowBlock | null {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (!normalized.includes("|")) return null;
+  const parts = normalized.split("|").map((part) => part.trim()).filter(Boolean);
+  if (parts.length < 3) return null;
+  const { title, firstStep } = splitFlowTitle(parts[0] || "");
+  const stepParts = firstStep ? [firstStep, ...parts.slice(1)] : parts.slice(1);
+  const steps = stepParts
+    .map((part) => part.replace(/^[-*•]\s*/, "").replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+    .slice(0, 8);
+  return steps.length >= 2
+    ? { type: "flow", title: title.slice(0, 90), steps }
+    : null;
+}
+
+function parsePipeStructureBlock(text: string): CompareTableBlock | FlowBlock | null {
+  if ((text.match(/\|/g) || []).length < 2) return null;
+  return parseMarkdownPipeTable(text) || parseLoosePipeFlow(text);
+}
+
+function splitNumberedFlowIntro(prefix: string) {
+  const normalized = prefix.replace(/\s+/g, " ").trim();
+  if (!normalized) return { intro: "", title: "" };
+  const titleLike = /(구조|맥락|과정|흐름|논리|도출|전개|단계|순서|경로)$/u;
+  const sentenceBreak = normalized.lastIndexOf(". ");
+  if (sentenceBreak >= 0) {
+    const intro = normalized.slice(0, sentenceBreak + 1).trim();
+    const tail = normalized.slice(sentenceBreak + 2).trim().replace(/[：:]$/u, "");
+    if (tail.length >= 4 && tail.length <= 90 && titleLike.test(tail)) return { intro, title: tail };
+  }
+  const asTitle = normalized.replace(/[：:]$/u, "");
+  if (asTitle.length >= 4 && asTitle.length <= 90 && titleLike.test(asTitle)) return { intro: "", title: asTitle };
+  return { intro: normalized, title: "" };
+}
+
+function splitNumberedFlowTail(finalStep: string) {
+  const match = finalStep.match(/^(.{35,}?[.!?。…])\s+((?:러셀은|즉|이처럼|결국|따라서|그러므로|다시)\s.+)$/u);
+  if (!match) return { step: finalStep.trim(), tail: "" };
+  return { step: (match[1] || "").trim(), tail: (match[2] || "").trim() };
+}
+
+function parseNumberedFlowBlocks(text: string): TutorContentBlock[] | null {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  const matches = [...normalized.matchAll(/(?:^|\s)([1-8])[.)]\s+/gu)];
+  if (matches.length < 3) return null;
+  if (matches[0]?.[1] !== "1") return null;
+  for (let index = 0; index < matches.length; index += 1) {
+    if (matches[index]?.[1] !== String(index + 1)) return null;
+  }
+
+  const firstIndex = matches[0]?.index ?? -1;
+  if (firstIndex < 0) return null;
+  const { intro, title } = splitNumberedFlowIntro(normalized.slice(0, firstIndex));
+  let tail = "";
+  const steps = matches
+    .map((match, index) => {
+      const start = (match.index ?? 0) + match[0].length;
+      const end = index + 1 < matches.length ? matches[index + 1]?.index ?? normalized.length : normalized.length;
+      const rawStep = normalized.slice(start, end).trim();
+      if (index !== matches.length - 1) return rawStep;
+      const split = splitNumberedFlowTail(rawStep);
+      tail = split.tail;
+      return split.step;
+    })
+    .filter(Boolean)
+    .slice(0, 8);
+  if (steps.length < 3) return null;
+
+  const blocks: TutorContentBlock[] = [];
+  if (intro) blocks.push({ type: "paragraph", body: intro.slice(0, 700) });
+  blocks.push({ type: "flow", title: title || undefined, steps });
+  if (tail) blocks.push({ type: "paragraph", body: tail.slice(0, 500) });
+  return blocks;
+}
+
+function splitDashBulletTail(segment: string) {
+  const transitions = [" 이런 ", " 이제 ", " 따라서 ", " 그러므로 ", " 결국 ", " 다시 ", " 여기서 "];
+  const colonIndex = segment.search(/[：:]/u);
+  const minIndex = colonIndex >= 0 ? colonIndex + 16 : 24;
+  const candidates = transitions
+    .map((token) => {
+      const index = segment.indexOf(token, minIndex);
+      return index >= 0 ? { token, index } : null;
+    })
+    .filter((item): item is { token: string; index: number } => Boolean(item))
+    .sort((a, b) => a.index - b.index);
+  const first = candidates[0];
+  if (!first) return { item: segment.trim(), tail: "" };
+  return {
+    item: segment.slice(0, first.index).trim().replace(/[,\s]+$/u, ""),
+    tail: segment.slice(first.index + 1).trim(),
+  };
+}
+
+function parseDashBulletBlocks(text: string): TutorContentBlock[] | null {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (!normalized.includes(" - ")) return null;
+  const parts = normalized.split(/\s+-\s+/u).map((part) => part.trim()).filter(Boolean);
+  if (parts.length < 3) return null;
+  const title = parts[0] || "";
+  const rawItems = parts.slice(1);
+  const labeledCount = rawItems.filter((item) => /^[^:：]{1,48}[：:]\s*\S/u.test(item)).length;
+  if (labeledCount < 2) return null;
+
+  let tail = "";
+  const items = rawItems
+    .map((item, index) => {
+      if (index !== rawItems.length - 1) return item.trim();
+      const split = splitDashBulletTail(item);
+      tail = split.tail;
+      return split.item;
+    })
+    .filter(Boolean)
+    .slice(0, 5);
+  if (items.length < 2) return null;
+
+  const blocks: TutorContentBlock[] = [{ type: "bullets", title: title.slice(0, 90), items }];
+  if (tail) blocks.push({ type: "paragraph", body: tail.slice(0, 500) });
+  return blocks;
 }
 
 // Break a long stretch of prose into scannable, sentence-aligned pieces so a single giant
@@ -193,6 +363,17 @@ function uniqueStrings(values: string[]) {
 function retrievalTokens(text: string) {
   const stop = new Set(["그리고", "그러나", "합니다", "있는", "없는", "것이다", "것은", "에서", "으로", "에게", "the", "and", "that", "with"]);
   return Array.from(new Set((text.match(/[가-힣A-Za-z0-9]{2,}/g) || []).map((item) => item.toLowerCase()).filter((item) => !stop.has(item)))).slice(0, 60);
+}
+
+function hasHangulFinalConsonant(text: string) {
+  const char = Array.from(text.trim()).reverse().find((item) => /[가-힣]/u.test(item));
+  if (!char) return false;
+  const code = char.charCodeAt(0) - 0xac00;
+  return code >= 0 && code <= 11171 && code % 28 !== 0;
+}
+
+function objectParticle(text: string) {
+  return hasHangulFinalConsonant(text) ? "을" : "를";
 }
 
 function compactError(error: unknown) {
@@ -348,8 +529,23 @@ export class TutorService {
     const session = this.snapshot(sessionId);
     if (session.status !== "active") throw new Error("This session is not active");
     const artifacts = await this.artifacts.getArtifacts(session.materialId);
+    const curriculum = this.orderedCurriculum(artifacts);
+    const covered = new Set(session.coveredChunkIds);
     const focusChunk = this.currentChunkOf(artifacts, session);
+    const currentModule = this.ownerModuleOf(artifacts, focusChunk?.id);
     if (!focusChunk) throw new Error("No current source chunk is available");
+    covered.add(focusChunk.id);
+    const index = curriculum.findIndex((chunk) => chunk.id === focusChunk.id);
+    const nextChunk = index >= 0 ? curriculum[index + 1] : undefined;
+
+    if (!nextChunk) {
+      this.persistCursor(sessionId, artifacts, focusChunk.id, [...covered]);
+      const output = this.finishPromptTurn(sessionId, currentModule);
+      await this.persistSessionSnapshot(sessionId);
+      return { session: this.snapshot(sessionId), context: await this.context(sessionId), output };
+    }
+
+    this.persistCursor(sessionId, artifacts, nextChunk.id, [...covered]);
     const output = await this.createTutorTurn(sessionId, { event: "return_to_progress" });
     await this.persistSessionSnapshot(sessionId);
     return { session: this.snapshot(sessionId), context: await this.context(sessionId), output };
@@ -587,7 +783,11 @@ export class TutorService {
       } catch (error) {
         lastAiError = error;
         connectionFailed = isProviderConnectionError(error);
-        console.error(`[tutor] AI turn failed (attempt ${attempt + 1}/2)${connectionFailed ? " [connection]" : ""} for module ${currentModule.id}:`, error);
+        if (connectionFailed) {
+          console.error(`[tutor] AI turn failed (attempt ${attempt + 1}/2) [connection] for module ${currentModule.id}:`, error);
+        } else {
+          console.warn(`[tutor] AI structured turn failed (attempt ${attempt + 1}/2) for module ${currentModule.id}: ${compactError(error)}`);
+        }
       }
     }
     if (!output && !connectionFailed) {
@@ -765,9 +965,11 @@ export class TutorService {
     const intent = classifyIntent(payload.userText || "", payload.event);
     const allComplete = artifacts.sourceChunks.length > 0 && session.coveredChunkIds.length >= artifacts.sourceChunks.length;
     const instruction = allComplete
-      ? "Every source chunk has been covered. Do NOT teach new content. Briefly synthesize what the learner has covered, then ask: 원문의 모든 대목을 다뤘습니다. 학습을 마칠까요? Wait for their confirmation before ending."
+      ? payload.event === "user_message"
+        ? "Every source chunk has been covered. There is no next module to open. If the learner asks a review question or names something they want to revisit, answer that specific question using the covered source and your broader knowledge where useful. Do NOT start a new module. End by offering either to finish the session or keep discussing a specific point."
+        : "Every source chunk has been covered. Do NOT teach new content. Briefly synthesize what the learner has covered, then ask: 원문의 모든 대목을 다뤘습니다. 학습을 마칠까요? Wait for their confirmation before ending."
       : payload.event === "return_to_progress"
-        ? "The learner is returning from a detour. Do NOT advance the cursor. Bridge back in one sentence, then resume teaching the current source chunk. Make clear that this is where the lesson left off."
+        ? "The learner is returning from a detour. The cursor is already on the next active source chunk. Bridge back in one sentence, do NOT repeat the detour or pre-detour chunk, then teach the current source chunk as the continuation."
       : this.courseManagerHint(module, payload, intent);
     // The chunk the learner is on right now. Teaching stays anchored to THIS chunk so the
     // lesson walks the source one semantic chunk at a time instead of dumping the whole module.
@@ -813,10 +1015,20 @@ Detected learner intent for this turn: ${intent}. Handle it as follows:
 - satisfied: ONLY when the learner explicitly asks to move on. Synthesize briefly and bridge forward (turnMode "synthesize", readyToContinue true).
 - answer / start: teach in place (turnMode "teach"). Do NOT mark the learner satisfied or advance just because they answered well — keep teaching this topic in more depth, cover the parts of the source not yet discussed, and if they seem ready simply offer them the option to continue. The learner advances by choosing the progression option, never by your decision.
 
-BE CONCISE AND VISUAL. The whole point of this app is to understand WITHOUT reading long text. Do not be discursive, speculative, or long-winded. Prefer compact, scannable structure over prose: use bullets, compare_table, misconception, and a diagram (when an allowed visual id fits) FIRST, and keep any paragraph/guided_reading to 2-3 short sentences. Each block should be tight; never write a wall of text. If an idea can be a table or a short list, make it one instead of a paragraph.
+BE CONCISE AND VISUAL. The whole point of this app is to understand WITHOUT reading long text. Do not be discursive, speculative, or long-winded. Keep any paragraph/guided_reading to 2-3 short sentences. Each block should be tight; never write a wall of text.
+FORMAT CONTRACT: every explanatory block MUST use exactly one of these four formats:
+1. Plain sentences: use paragraph or guided_reading for a compact explanation in normal prose.
+2. Bullet points: use bullets for a flat set of peer points, examples, takeaways, or corrections where order does not matter.
+3. Table: use compare_table only for a true grid with stable columns and parallel rows, such as X vs Y, category comparisons, or dimensions shared by every row.
+4. Numbered flow: use flow for a sequence, cause/effect chain, historical development, argument path, adaptation strategy, or any "A leads to B leads to C" structure.
+Structural formats MUST be their own JSON blocks. Never put bullets, numbered steps, pipe-separated structures, or table-like text inside paragraph.body or guided_reading.body. A paragraph/guided_reading body is prose only.
+If you need bullets, return {"type":"bullets","items":[...]}. If you need ordered steps, return {"type":"flow","steps":[...]}. If you need a grid, return {"type":"compare_table","columns":[...],"rows":[...]}.
+Before writing a structured explanation, decide explicitly which of the four formats fits. If it is not a true row/column comparison, do NOT use compare_table. If order or causality matters, use flow rather than bullets. If the points are parallel and unordered, bullets are appropriate.
+Do not emit Mermaid syntax unless a Mermaid renderer is explicitly available; this app currently expects structured blocks, not mermaid code fences.
 Return 2-4 content blocks. Do not return paragraph-only output unless the learner asked a narrow factual question.
+Never simulate a flow, bullet list, or table inside paragraph or guided_reading text. If you are tempted to write "A | B | C", "1. A 2. B", or "- A - B", stop and emit either a flow, bullets, or compare_table block.
 	You teach the source ONE SOURCE CHUNK AT A TIME, in order. Teach only the current chunk below this turn; do not summarize or race ahead to later chunks. The learner steps to the next chunk by choosing the progression option.
-	If the learner asks a detour question, answer it fully while preserving the current source chunk as the lesson anchor. When returning from a detour, bridge back to the anchored chunk instead of advancing.
+	If the learner asks a detour question, answer it fully while preserving the current source chunk as the lesson anchor. When returning from a detour, continue from the next active chunk; do not replay the pre-detour explanation.
 	When starting a new module (or the very first chunk), open with a hook block whose body starts with "핵심은" and summarizes the module's actual content. It must NOT give study advice or talk about how to read. Then provide guided_reading before any reflective question. When simply continuing to the next chunk of the same module, open with a one-line bridge and a guided_reading of the new chunk — do not repeat a hook every time. Do not open by showing a raw source sentence unless the learner explicitly asks for the exact wording.
 	Always provide exactly 3 choices that work as complete learner replies or exploration paths, phrased as learner continuations, not exam answers or UI commands. Do NOT include progression commands such as "다음 대목으로", "다음 문단으로", "다음 모듈로", or "다음 진도로"; the app shows those separately.
 Current course: ${artifacts.coursePlan.title}
@@ -833,12 +1045,12 @@ Available visual ids: ${visualIds.join(", ")}
 Block schema:
 - hook: {"type":"hook","body":"short intriguing opening"}
 - source_quote: {"type":"source_quote","quote":"25 words or fewer from an allowed chunk; only when exact wording genuinely helps","sourceRef":"chunk id","attribution":"optional"}
-- guided_reading: {"type":"guided_reading","body":"3-5 sentence source explanation","sourceRef":"chunk id"}
+- guided_reading: {"type":"guided_reading","body":"2-3 sentence plain explanation of the current source chunk","sourceRef":"chunk id"}
 - paragraph: {"type":"paragraph","body":"short explanation; may use your own knowledge when the source is silent"}
-- bullets: {"type":"bullets","title":"optional","items":["2-5 short items"]}
+- bullets: {"type":"bullets","title":"optional","items":["2-5 short peer points where order does not matter"]}
+- flow: {"type":"flow","title":"optional","steps":["2-8 short ordered steps"]}
 - compare_table: {"type":"compare_table","title":"optional","columns":["2-4 columns"],"rows":[{"Column":"cell"}]}
 - reflection: {"type":"reflection","body":"one open reflective prompt"}
-- misconception: {"type":"misconception","title":"optional","body":"natural confusion","repair":"teacherly repair"}
 - bridge: {"type":"bridge","body":"short transition"}
 Output schema: {"message":"plain text fallback summary","blocks":[/* 2-4 blocks */],"diagram":"visual id or null","visualPlacement":"inline|side_panel|null","choices":["3 concrete learner continuations"],"progress":0,"moduleId":"${module.id}","sourceRefs":["allowed chunk id"],"stateUpdate":{"nextPhase":"orient|discuss|explain|clarify|synthesize|complete","readyToContinue":false,"nextSuggestedStep":"continue|stay|review","userIntent":"${intent}","turnMode":"teach|digress|synthesize","detectedConfusion":null,"criticWarning":null}}${strictJson}`,
         },
@@ -853,7 +1065,7 @@ Output schema: {"message":"plain text fallback summary","blocks":[/* 2-4 blocks 
               : payload.event === "next_chunk"
                 ? "Continue to the next source chunk. Open with a one-line bridge from the previous chunk, then teach the current chunk with a guided_reading, then invite reflection. Do not repeat a hook."
                 : payload.event === "return_to_progress"
-                  ? "Return to the lesson path without advancing. Bridge from the detour back to the current source chunk, teach the chunk, then invite reflection."
+                  ? "Return to the lesson path after a detour. Do not repeat the detour or the previously taught chunk. Briefly bridge, then continue with the current source chunk below."
                 : `Learner just said: ${payload.userText}\nIntent looks like: ${intent}. Respond to what they actually said. If it is a question or complaint, answer it this turn; do not move on. Use their words as material, not as an exam submission.`,
         },
       ],
@@ -888,7 +1100,8 @@ Output schema: {"message":"plain text fallback summary","blocks":[/* 2-4 blocks 
           content: `You are a guided lecturer. Tutor language: ${settings.tutorLanguage}.
 The structured JSON call failed, so this is a repair call. Return plain tutor text only.
 Answer the learner's actual latest turn. Do not grade, do not say to stick closer to the source, and do not repeat a canned fallback.
-Use the source chunks as primary context, but use your own knowledge when it helps. Be concise and scannable, not discursive: prefer short bullet-style lines over long prose, and keep it to a few short sentences. The goal is to understand without reading a wall of text.
+Use the source chunks as primary context, but use your own knowledge when it helps. Be concise and scannable, not discursive. The goal is to understand without reading a wall of text.
+For repair text, use plain short sentences or simple bullet points. Do not simulate flows or tables with pipe characters, markdown tables, mermaid, or numbered pseudo-diagrams.
 Teach one source chunk at a time; stay on the current chunk below and do not race ahead.
 If the learner is asking a question, answer directly first. If they gave an interpretation, connect their wording to the source and refine it.
 Current topic: ${module.title}
@@ -914,7 +1127,7 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${chunk.text}`
       blocks,
       diagram: null,
       visualPlacement: null,
-      choices: this.defaultChoices(module, ready, isDigression),
+      choices: this.sanitizeChoices([], module, ready, isDigression, blocks),
       progress: Math.round(((session.completedModuleIds.length + (ready ? 1 : 0)) / artifacts.coursePlan.modules.length) * 100),
       moduleId: module.id,
       sourceRefs: chunks.map((chunk) => chunk.id).slice(0, 2),
@@ -1000,7 +1213,7 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${chunk.text}`
       blocks,
       diagram: output.diagram && allowedVisuals.has(output.diagram) ? output.diagram : null,
       visualPlacement: output.visualPlacement === "inline" || output.visualPlacement === "side_panel" ? output.visualPlacement : null,
-      choices: this.sanitizeChoices(output.choices, module, ready, isDigression),
+      choices: this.sanitizeChoices(output.choices, module, ready, isDigression, blocks),
       progress: Math.max(baseProgress, Math.min(100, Math.round(Number(output.progress) || baseProgress))),
       moduleId: module.id,
       sourceRefs,
@@ -1062,15 +1275,39 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${chunk.text}`
     const fallbackBlocks: TutorContentBlock[] = cleaned.length
       ? cleaned
       : [{ type: "paragraph", body: this.scrubExamLanguage(String(fallbackMessage || "이 대목을 먼저 짧게 풀어 보겠습니다.")) }];
+    const expandedBlocks = this.expandPseudoStructures(fallbackBlocks);
 
-    const assembled = [...requiredStartBlocks, ...fallbackBlocks]
+    const assembled = [...requiredStartBlocks, ...expandedBlocks]
       .filter((block) => (isOpening ? block.type !== "source_quote" : true))
       .map((block) => this.scrubBlock(block))
       .filter((block) => (block.type === "source_quote" ? allowedRefs.has(block.sourceRef) : true));
     // Final guard against a wall of text: break any long prose block into sentence-aligned,
     // scannable pieces. This is deterministic, so it holds even when the model ignores the
-    // "be concise / use bullets" instruction or the turn was salvaged from prose.
+    // "be concise / choose an explicit format" instruction or the turn was salvaged from prose.
     return this.splitWallOfText(assembled).slice(0, 10);
+  }
+
+  private expandPseudoStructures(blocks: TutorContentBlock[]): TutorContentBlock[] {
+    const expanded: TutorContentBlock[] = [];
+    for (const block of blocks) {
+      if (block.type !== "paragraph") {
+        expanded.push(block);
+        continue;
+      }
+      const numberedFlowBlocks = parseNumberedFlowBlocks(block.body);
+      if (numberedFlowBlocks) {
+        expanded.push(...numberedFlowBlocks);
+        continue;
+      }
+      const dashBlocks = parseDashBulletBlocks(block.body);
+      if (dashBlocks) {
+        expanded.push(...dashBlocks);
+        continue;
+      }
+      const structure = parsePipeStructureBlock(block.body);
+      expanded.push(structure || block);
+    }
+    return expanded;
   }
 
   private moduleContentSummary(module: CourseModule, focusChunk: SourceChunk | undefined, lecturePlan: LectureModulePlan | undefined) {
@@ -1112,6 +1349,10 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${chunk.text}`
     if (type === "bullets") {
       const items = Array.isArray(raw.items) ? raw.items.map((item) => String(item).trim()).filter(Boolean).slice(0, 5) : [];
       return items.length ? { type, title: raw.title ? String(raw.title).slice(0, 90) : undefined, items } : null;
+    }
+    if (type === "flow") {
+      const steps = Array.isArray(raw.steps) ? raw.steps.map((step) => String(step).trim()).filter(Boolean).slice(0, 8) : [];
+      return steps.length >= 2 ? { type, title: raw.title ? String(raw.title).slice(0, 90) : undefined, steps } : null;
     }
     if (type === "compare_table") {
       const columns = Array.isArray(raw.columns) ? raw.columns.map((item) => String(item).trim()).filter(Boolean).slice(0, 4) : [];
@@ -1174,6 +1415,7 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${chunk.text}`
 
   private scrubBlock(block: TutorContentBlock): TutorContentBlock {
     if (block.type === "bullets") return { ...block, items: block.items.map((item) => this.scrubExamLanguage(item)) };
+    if (block.type === "flow") return { ...block, steps: block.steps.map((step) => this.scrubExamLanguage(step)) };
     if (block.type === "compare_table") {
       return {
         ...block,
@@ -1296,7 +1538,7 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${chunk.text}`
     );
   }
 
-  private sanitizeChoices(choices: unknown, module: CourseModule, passed: boolean, isDigression = false) {
+  private sanitizeChoices(choices: unknown, module: CourseModule, passed: boolean, isDigression = false, blocks: TutorContentBlock[] = []) {
     const cleaned = Array.isArray(choices)
       ? uniqueStrings(
           choices
@@ -1304,8 +1546,25 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${chunk.text}`
             .filter((choice) => choice.length > 0 && choice.length <= 140 && !PROGRESSION_CHOICES.has(choice))
         ).slice(0, 3)
       : [];
+    const invitationChoices = this.choicesFromFinalInvitation(blocks);
     const defaults = this.defaultChoices(module, passed, isDigression).filter((choice) => !PROGRESSION_CHOICES.has(choice));
-    return uniqueStrings([...cleaned, ...defaults]).slice(0, 3);
+    return uniqueStrings([...invitationChoices, ...cleaned, ...defaults]).slice(0, 3);
+  }
+
+  private choicesFromFinalInvitation(blocks: TutorContentBlock[]) {
+    const text = blocksToPlainText(blocks).replace(/\s+/g, " ").trim();
+    const finalSentence = (text.match(/[^.!?。…?？]*[.!?。…?？]+["'”’)\]]?$/u)?.[0] || text.slice(-180)).trim();
+    const match = finalSentence.match(/(?:이제\s+)?(.{4,120}?)([을를])\s*(?:살펴볼까요|살펴볼까요\?|볼까요|보겠습니다|살펴보겠습니다)[?？.]?$/u);
+    if (!match) return [];
+    const rawObject = (match[1] || "").split(/[,，]/u).pop()?.trim() || "";
+    if (!rawObject || rawObject.length > 80) return [];
+    const target = rawObject.replace(/^(?:이제|다음으로|원래\s+대목으로\s+돌아가서)\s*/u, "").trim();
+    if (!target) return [];
+    return [
+      `네, ${target}${objectParticle(target)} 살펴봐 주세요.`,
+      `${target}${objectParticle(target)} 보기 전에 왜 여기서 이어지는지 연결해 주세요.`,
+      "그 전에 방금 내용을 한 문장으로 정리해 주세요.",
+    ];
   }
 
   private defaultChoices(module: CourseModule, passed: boolean, isDigression = false) {
@@ -1345,7 +1604,7 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${chunk.text}`
       return "Continue to the next source chunk. Bridge in one line from the previous chunk, teach THIS chunk with a guided_reading, and end with a reflective invitation. Do not repeat a hook and do not jump ahead.";
     }
     if (payload.event === "return_to_progress") {
-      return "Return from the learner's detour to the current source chunk. Do not advance. Bridge briefly, then teach THIS chunk as the active lesson anchor.";
+      return "Return from the learner's detour to the next active source chunk. Bridge briefly, do not repeat the pre-detour chunk, then teach THIS chunk as the continuation.";
     }
     switch (intent) {
       case "satisfied":

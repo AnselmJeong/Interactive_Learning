@@ -1,3 +1,4 @@
+import { memo } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
@@ -8,12 +9,14 @@ function normalizeCjkAdjacentEmphasis(content: string): string {
     .split(/(```[\s\S]*?```|`[^`\n]*`)/g)
     .map((segment) => {
       if (segment.startsWith("```") || segment.startsWith("`")) return segment;
-      return segment.replace(/(?<=[^*\s])(\*{1,3})(?=\p{Script=Hangul})/gu, "$1\u200b");
+      return segment
+        .replace(/(?<=[^*\s])(\*{1,3})(?=\p{Script=Hangul})/gu, "$1\u200b")
+        .replace(/(?<=[^*\s])(\*{1,3})(?=[:：.,;!?…)\]\}\p{Script=Hangul}])/gu, "$1\u200b");
     })
     .join("");
 }
 
-export function MarkdownContent({ content, compact = false }: { content: string; compact?: boolean }) {
+export const MarkdownContent = memo(function MarkdownContent({ content, compact = false }: { content: string; compact?: boolean }) {
   return (
     <div className={`markdown-content ${compact ? "compact" : ""}`}>
       <ReactMarkdown
@@ -64,4 +67,4 @@ export function MarkdownContent({ content, compact = false }: { content: string;
       </ReactMarkdown>
     </div>
   );
-}
+});

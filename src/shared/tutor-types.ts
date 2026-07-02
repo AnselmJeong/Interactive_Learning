@@ -33,6 +33,7 @@ export type TutorContentBlock =
   | { type: "guided_reading"; body: string; sourceRef?: string }
   | { type: "paragraph"; body: string }
   | { type: "bullets"; title?: string; items: string[] }
+  | { type: "flow"; title?: string; steps: string[] }
   | { type: "compare_table"; title?: string; columns: string[]; rows: Array<Record<string, string>> }
   | { type: "source_quote"; quote: string; sourceRef: string; attribution?: string; showToLearner?: boolean }
   | { type: "reflection"; body: string }

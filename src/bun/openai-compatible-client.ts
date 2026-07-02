@@ -50,18 +50,11 @@ export class OpenAICompatibleClient {
       if (looksLikeTruncatedJson) {
         throw new Error(`AI returned truncated JSON (likely hit the output token limit): ${(error as Error).message}`);
       }
-      // The model ignored the JSON format instruction and returned prose. Salvage it rather than
-      // forcing a full retry, but DO NOT silently cap it at a tiny length (that produced the
-      // mid-sentence cut). Hand the full prose to the caller as a single paragraph; the caller's
-      // sanitizer splits long prose into scannable blocks. Log it so a chronically-failing JSON
-      // path (which would mean the schema/visual instructions never apply) is visible.
+      // For structured tutor turns, prose is a format failure. Do not silently salvage it here:
+      // the caller owns retries and the explicit text-repair fallback. Salvaging at this layer
+      // bypasses the stricter JSON retry and flattens rich blocks into a paragraph.
       if (prose.length > 10) {
-        console.warn(`[ai] Model returned prose instead of JSON; salvaging ${prose.length} chars as paragraph. Parse error: ${(error as Error).message}`);
-        return {
-          message: prose.slice(0, 6000),
-          blocks: [{ type: "paragraph", body: prose.slice(0, 6000) }],
-          stateUpdate: { criticWarning: "Model returned prose instead of structured JSON; salvaged as paragraph." },
-        };
+        throw new Error(`AI returned prose instead of JSON: ${(error as Error).message}. Response excerpt: ${prose.slice(0, 500)}`);
       }
       throw new Error(`AI returned invalid JSON: ${(error as Error).message}. Response excerpt: ${prose.slice(0, 500)}`);
     }
