@@ -137,6 +137,7 @@ const rpc = BrowserView.defineRPC<AppRPC>({
       "sessions.start": ({ materialId, mode, sessionId }) => tutor.start(materialId, { mode, sessionId }),
       "sessions.load": ({ sessionId }) => tutor.load(sessionId),
       "sessions.advance": ({ sessionId, mode }) => tutor.advance(sessionId, mode),
+      "sessions.returnToProgress": ({ sessionId }) => tutor.returnToProgress(sessionId),
       "sessions.selectModule": ({ sessionId, moduleId }) => tutor.selectModule(sessionId, moduleId),
       "sessions.openModule": ({ sessionId, moduleId }) => tutor.openModule(sessionId, moduleId),
       "tutor.sendTurn": async ({ sessionId, userText }) => {

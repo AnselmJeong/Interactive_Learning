@@ -23,8 +23,9 @@ type LoadState = {
 
 type CoursePlanModule = MaterialArtifacts["coursePlan"]["modules"][number];
 type ModuleStatus = TutorContext["moduleOutline"][number]["status"];
+type InspectorTab = "modules" | "sessions";
 
-const PROGRESSION_CHOICES = new Set(["다음 진도로 넘어가주세요.", "다음 문단으로 넘어가주세요.", "다음 모듈로 넘어가주세요."]);
+const PROGRESSION_CHOICES = new Set(["다음 진도로 넘어가주세요.", "다음 대목으로 넘어가주세요.", "다음 문단으로 넘어가주세요.", "다음 모듈로 넘어가주세요.", "진도로 돌아갈게요."]);
 const FALLBACK_CHOICES = ["힌트를 하나만 더 주세요.", "예시 답변을 하나 보여주세요.", "이 질문을 더 쉽게 다시 물어봐 주세요."];
 
 function normalizeChoiceText(choice: string) {
@@ -142,6 +143,7 @@ export function App({ request }: { request: RpcRequest }) {
   const [providerStatus, setProviderStatus] = useState<AiProviderStatus | null>(null);
   const [models, setModels] = useState<ProviderModel[]>([]);
   const [viewMode, setViewMode] = useState<"chat" | "source">("chat");
+  const [inspectorTab, setInspectorTab] = useState<InspectorTab>("modules");
   const [selectedModuleId, setSelectedModuleId] = useState<string | null>(null);
   const chatLogRef = useRef<HTMLDivElement | null>(null);
   const currentChunkRef = useRef<HTMLElement | null>(null);
@@ -365,7 +367,7 @@ export function App({ request }: { request: RpcRequest }) {
     }
   }
 
-  async function advanceLearning(mode: "paragraph" | "module") {
+  async function advanceLearning(mode: "chunk" | "module") {
     if (!session || sessionReadOnly) return;
     setBusy(true);
     setTutorThinking(true);
@@ -378,6 +380,25 @@ export function App({ request }: { request: RpcRequest }) {
       await refreshSessions(result.session.materialId);
     } catch (error) {
       setStatus(`진행 실패: ${(error as Error).message}`);
+    } finally {
+      setBusy(false);
+      setTutorThinking(false);
+    }
+  }
+
+  async function returnToProgress() {
+    if (!session || sessionReadOnly) return;
+    setBusy(true);
+    setTutorThinking(true);
+    try {
+      const result = (await request("sessions.returnToProgress", { sessionId: session.id })) as { session: SessionSnapshot; context: TutorContext };
+      setSession(result.session);
+      setContext(result.context);
+      setSelectedModuleId(result.session.currentModuleId);
+      setAnswer("");
+      await refreshSessions(result.session.materialId);
+    } catch (error) {
+      setStatus(`진도 복귀 실패: ${(error as Error).message}`);
     } finally {
       setBusy(false);
       setTutorThinking(false);
@@ -458,20 +479,21 @@ export function App({ request }: { request: RpcRequest }) {
     chatLogRef.current?.scrollTo({ top: chatLogRef.current.scrollHeight, behavior: "smooth" });
   }, [currentMessages.length, tutorThinking]);
 
-  // Progress is measured in source paragraphs (chunks), not modules: a small source is a single
-  // module of many paragraphs, so module-based progress would read 0/1 the entire session.
+  // Progress is measured in semantic source chunks, not modules: a small source can be a single
+  // module of many chunks, so module-based progress would read 0/1 the entire session.
   const totalChunks = artifacts?.sourceChunks.length || 0;
   const coveredChunks = context?.session.coveredChunkIds.length || 0;
-  // "Reached" = paragraphs finished plus the one being taught right now, so the indicator reflects
-  // the learner's current position and advances with each new paragraph the tutor opens.
+  // "Reached" = chunks finished plus the one being taught right now, so the indicator reflects
+  // the learner's current position and advances with each new chunk the tutor opens.
   const currentChunkId = context?.session.currentChunkId || null;
   const reachedChunks = coveredChunks + (currentChunkId && !context?.session.coveredChunkIds.includes(currentChunkId) ? 1 : 0);
   const progressText = artifacts ? `${reachedChunks}/${totalChunks}` : "0/0";
   const activeModule = context?.moduleOutline.find((item) => item.status === "in_progress");
   const progressPercent = totalChunks ? Math.round((reachedChunks / totalChunks) * 100) : 0;
   const latestAssistant = [...currentMessages].reverse().find((message) => message.role === "assistant");
-  // Once every paragraph is covered, the tutor offers an explicit "마칠게요 / 더 질문 있어요" pair.
-  // Normal turns show three exploratory choices, while paragraph/module progression lives in
+  const canReturnToProgress = !selectedModuleWaiting && (latestAssistant?.stateUpdate?.conversationMode === "detour" || latestAssistant?.stateUpdate?.turnMode === "digress");
+  // Once every chunk is covered, the tutor offers an explicit "마칠게요 / 더 질문 있어요" pair.
+  // Normal turns show three exploratory choices, while chunk/module progression lives in
   // separate command buttons below the choices.
   const allModulesCovered = totalChunks > 0 && coveredChunks >= totalChunks;
   const latestChoices = latestAssistant
@@ -512,11 +534,11 @@ export function App({ request }: { request: RpcRequest }) {
     return refs;
   }, [artifacts, context?.sourceRefs]);
 
-  // Source-coverage model, driven by the paragraph cursor. Each source paragraph (chunk) is
-  // "covered" (already taught and stepped past), "current" (the paragraph being taught right now),
+  // Source-coverage model, driven by the source-chunk cursor. Each semantic source chunk is
+  // "covered" (already taught and stepped past), "current" (the chunk being taught right now),
   // or "upcoming" (not reached yet). This drives both the highlighted source document and the
   // progression bar, so the learner sees exactly how much of the source has been taught — and
-  // notices if the tutor wraps up while paragraphs are still untouched.
+  // notices if the tutor wraps up while chunks are still untouched.
   const sourceProgress = useMemo(() => {
     if (!artifacts) return null;
     const chunks = artifacts.sourceChunks;
@@ -633,7 +655,7 @@ export function App({ request }: { request: RpcRequest }) {
                 <strong>{artifacts.coursePlan.modules.length} modules</strong>
               </div>
               <div className="course-progress">
-                <span>Progress · {progressText} 문단 ({progressPercent}%)</span>
+                <span>Progress · {progressText} 대목 ({progressPercent}%)</span>
                 <div className="lesson-bar">
                   <i style={{ width: `${progressPercent}%` }} />
                 </div>
@@ -719,7 +741,7 @@ export function App({ request }: { request: RpcRequest }) {
                 <div className="module-standby">
                   <p className="eyebrow">{selectedModuleStatus === "in_progress" ? "Module selected" : "Ready to start"}</p>
                   <h3>{selectedModuleTitle}</h3>
-                  <p>이 module은 아직 대화가 시작되지 않았습니다. 시작하면 해당 module의 첫 문단부터 학습합니다.</p>
+                  <p>이 module은 아직 대화가 시작되지 않았습니다. 시작하면 해당 module의 첫 대목부터 학습합니다.</p>
                   <button className="wide-button primary" onClick={openSelectedModule} disabled={busy}>
                     <MessageSquare size={16} /> 이 module 시작
                   </button>
@@ -780,8 +802,13 @@ export function App({ request }: { request: RpcRequest }) {
                   ) : null}
                   {!sessionReadOnly && !selectedModuleReadOnly && !allModulesCovered ? (
                     <div className="progress-actions" aria-label="학습 진행">
-                      <button type="button" onClick={() => advanceLearning("paragraph")} disabled={busy || selectedModuleWaiting}>
-                        다음 문단으로
+                      {canReturnToProgress ? (
+                        <button type="button" onClick={returnToProgress} disabled={busy || selectedModuleWaiting}>
+                          진도로 돌아가기
+                        </button>
+                      ) : null}
+                      <button type="button" onClick={() => advanceLearning("chunk")} disabled={busy || selectedModuleWaiting}>
+                        다음 대목으로
                       </button>
                       <button type="button" onClick={() => advanceLearning("module")} disabled={busy || selectedModuleWaiting}>
                         다음 모듈로
@@ -857,46 +884,69 @@ export function App({ request }: { request: RpcRequest }) {
         </div>
         {activeMaterial ? (
           <>
-            <section className="inspector-section">
-              <p className="eyebrow">Modules</p>
-              <div className="outline-list">
-                {inspectorModules.map((item) => (
-                  <button
-                    key={item.id}
-                    type="button"
-                    className={`outline-row ${item.status} ${selectedModuleId === item.id ? "active" : ""}`}
-                    onClick={() => selectModuleFromOutline(item.id, item.status)}
-                    disabled={busy}
-                    title={item.title}
-                  >
-                    <span>{item.title}</span>
-                    <small>{item.status.replace(/_/g, " ")}</small>
-                  </button>
-                ))}
-              </div>
-            </section>
-            <section className="inspector-section">
-              <p className="eyebrow">Sessions</p>
-              <div className="session-list">
-                {state.sessions.length ? (
-                  state.sessions.map((item) => (
-                    <button key={item.id} className={`session-row ${session?.id === item.id ? "active" : ""}`} onClick={() => loadSession(item.id)} disabled={busy}>
-                      <span>
-                        <strong>{item.title}</strong>
-                        <small>{item.currentModuleTitle || "No current module"}</small>
-                      </span>
-                      <em className={item.status}>{item.status}</em>
-                      <small>{new Date(item.updatedAt).toLocaleString()}</small>
-                      <small>
-                        {item.completedModuleCount}/{item.totalModuleCount || "?"} modules · {item.messageCount} messages
-                      </small>
+            <div className="inspector-tabs" role="tablist" aria-label="Inspector sections">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={inspectorTab === "modules"}
+                aria-controls="inspector-modules-panel"
+                className={inspectorTab === "modules" ? "active" : ""}
+                onClick={() => setInspectorTab("modules")}
+              >
+                Modules <span>{inspectorModules.length}</span>
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={inspectorTab === "sessions"}
+                aria-controls="inspector-sessions-panel"
+                className={inspectorTab === "sessions" ? "active" : ""}
+                onClick={() => setInspectorTab("sessions")}
+              >
+                Sessions <span>{state.sessions.length}</span>
+              </button>
+            </div>
+            {inspectorTab === "modules" ? (
+              <section className="inspector-section inspector-tab-panel" id="inspector-modules-panel" role="tabpanel">
+                <div className="outline-list">
+                  {inspectorModules.map((item) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      className={`outline-row ${item.status} ${selectedModuleId === item.id ? "active" : ""}`}
+                      onClick={() => selectModuleFromOutline(item.id, item.status)}
+                      disabled={busy}
+                      title={item.title}
+                    >
+                      <span>{item.title}</span>
+                      <small>{item.status.replace(/_/g, " ")}</small>
                     </button>
-                  ))
-                ) : (
-                  <p className="muted-copy">No sessions for this material yet.</p>
-                )}
-              </div>
-            </section>
+                  ))}
+                </div>
+              </section>
+            ) : (
+              <section className="inspector-section inspector-tab-panel" id="inspector-sessions-panel" role="tabpanel">
+                <div className="session-list">
+                  {state.sessions.length ? (
+                    state.sessions.map((item) => (
+                      <button key={item.id} className={`session-row ${session?.id === item.id ? "active" : ""}`} onClick={() => loadSession(item.id)} disabled={busy}>
+                        <span>
+                          <strong>{item.title}</strong>
+                          <small>{item.currentModuleTitle || "No current module"}</small>
+                        </span>
+                        <em className={item.status}>{item.status}</em>
+                        <small>{new Date(item.updatedAt).toLocaleString()}</small>
+                        <small>
+                          {item.completedModuleCount}/{item.totalModuleCount || "?"} modules · {item.messageCount} messages
+                        </small>
+                      </button>
+                    ))
+                  ) : (
+                    <p className="muted-copy">No sessions for this material yet.</p>
+                  )}
+                </div>
+              </section>
+            )}
           </>
         ) : null}
         <button className="wide-button archive-action" onClick={exportProjectArchive} disabled={!activeProject || busy}>

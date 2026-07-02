@@ -126,7 +126,7 @@ function buildConcepts(chunks: SourceChunk[]): Concept[] {
 
 function buildCoursePlan(title: string, chunks: SourceChunk[], concepts: Concept[]): CoursePlan {
   const sections = learningSections(chunks);
-  const selectedSections = sections.slice(0, Math.max(3, Math.min(8, sections.length)));
+  const selectedSections = sections;
   const modules: CourseModule[] = selectedSections.map((section, index) => {
     const sourceChunkIds = section.chunks.map((chunk) => chunk.id);
     const conceptIds = concepts.filter((concept) => concept.sourceChunkIds.some((id) => sourceChunkIds.includes(id))).map((concept) => concept.id);
@@ -173,7 +173,7 @@ function buildVisuals(chunks: SourceChunk[]): VisualSpec[] {
 
 function buildLecturePlan(materialId: string, chunks: SourceChunk[]): LecturePlan {
   const sections = learningSections(chunks);
-  const selectedSections = sections.slice(0, Math.max(3, Math.min(8, sections.length)));
+  const selectedSections = sections;
   return {
     materialId,
     generatedAt: new Date().toISOString(),
@@ -210,7 +210,7 @@ function buildLecturePlan(materialId: string, chunks: SourceChunk[]): LecturePla
 
 function buildPresentationPlan(materialId: string, chunks: SourceChunk[]): PresentationPlan {
   const sections = learningSections(chunks);
-  const selectedSections = sections.slice(0, Math.max(3, Math.min(8, sections.length)));
+  const selectedSections = sections;
   return {
     materialId,
     modules: selectedSections.map((_, index) => ({

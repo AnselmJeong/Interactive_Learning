@@ -100,6 +100,100 @@ async function sourceChildPath(sourcePath: string, relativePath: string) {
   return `${sourcePath}#${relativePath}`;
 }
 
+const SEMANTIC_CHUNK_MIN_CHARS = 360;
+const SEMANTIC_CHUNK_TARGET_CHARS = 900;
+const SEMANTIC_CHUNK_MAX_CHARS = 1500;
+
+function cleanSourceBlock(block: string) {
+  return block.replace(/^>\s?/gm, "").replace(/\s+\n/g, "\n").trim();
+}
+
+function sourceChunkKind(block: string): SourceChunk["kind"] {
+  const trimmed = block.trim();
+  if (trimmed.startsWith(">")) return "quote";
+  if (/^\s*\|.+\|\s*$/m.test(trimmed)) return "table";
+  if (/^!\[[^\]]*]/.test(trimmed)) return "caption";
+  if (/^(note|주|참고)\s*[:：]/i.test(trimmed)) return "note";
+  return "body";
+}
+
+function speakerLabel(block: string) {
+  return /^(speaker\s+[a-z]|화자\s*[가-힣a-z]|[AB]\s*[:：])/i.exec(block.trim())?.[1]?.toLowerCase() || null;
+}
+
+function startsNewSemanticBeat(block: string) {
+  return /^(however|but|by contrast|on the other hand|therefore|so|the problem|the point|그런데|하지만|반면|따라서|그러므로|문제는|여기서|결국|즉|다시 말해)\b/i.test(block.trim());
+}
+
+function splitLongSemanticBlock(text: string, maxChars = SEMANTIC_CHUNK_MAX_CHARS) {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  if (normalized.length <= maxChars) return [normalized];
+  const sentences = normalized.match(/[^.!?。…]*[.!?。…]+["'”’)\]]?|[^.!?。…]+$/g) || [normalized];
+  const chunks: string[] = [];
+  let buffer = "";
+  for (const raw of sentences) {
+    const sentence = raw.trim();
+    if (!sentence) continue;
+    if (buffer && buffer.length + 1 + sentence.length > maxChars) {
+      chunks.push(buffer.trim());
+      buffer = sentence;
+    } else {
+      buffer = buffer ? `${buffer} ${sentence}` : sentence;
+    }
+  }
+  if (buffer.trim()) chunks.push(buffer.trim());
+  return chunks;
+}
+
+function semanticChunksFromBody(body: string): Array<{ text: string; kind: SourceChunk["kind"]; confidence: number }> {
+  const blocks = body.split(/\n{2,}/).map((item) => item.trim()).filter(Boolean);
+  const chunks: Array<{ text: string; kind: SourceChunk["kind"]; confidence: number }> = [];
+  let buffer: string[] = [];
+  let bufferKind: SourceChunk["kind"] = "body";
+  let speakerTurns = 0;
+
+  function bufferText(next = "") {
+    return [...buffer, next].filter(Boolean).join("\n\n").trim();
+  }
+
+  function flush(confidence = 0.9) {
+    const text = bufferText();
+    buffer = [];
+    speakerTurns = 0;
+    if (!text) return;
+    for (const piece of splitLongSemanticBlock(text)) {
+      chunks.push({ text: piece, kind: bufferKind, confidence });
+    }
+    bufferKind = "body";
+  }
+
+  for (const rawBlock of blocks) {
+    const kind = sourceChunkKind(rawBlock);
+    const block = cleanSourceBlock(rawBlock);
+    if (!block) continue;
+    const current = bufferText();
+    const candidate = bufferText(block);
+    const label = speakerLabel(block);
+    const isSpecialBlock = kind === "table" || kind === "caption";
+
+    if (buffer.length && isSpecialBlock) flush(0.92);
+    else if (buffer.length && kind !== bufferKind && (kind !== "body" || bufferKind !== "quote")) flush(0.9);
+    else if (buffer.length && candidate.length > SEMANTIC_CHUNK_MAX_CHARS) flush(0.88);
+    else if (buffer.length && current.length >= SEMANTIC_CHUNK_TARGET_CHARS && startsNewSemanticBeat(rawBlock)) flush(0.9);
+    else if (buffer.length && label && speakerTurns >= 2 && current.length >= SEMANTIC_CHUNK_MIN_CHARS) flush(0.9);
+    else if (buffer.length && current.length >= SEMANTIC_CHUNK_TARGET_CHARS && !label) flush(0.88);
+
+    if (!buffer.length) bufferKind = kind;
+    buffer.push(block);
+    if (label) speakerTurns += 1;
+
+    if (isSpecialBlock) flush(0.92);
+  }
+
+  flush(0.9);
+  return chunks;
+}
+
 function normalizeMarkdownChunks(sourceId: string, text: string): SourceChunk[] {
   const lines = text.replace(/\r\n/g, "\n").split("\n");
   const headings: string[] = [];
@@ -111,15 +205,14 @@ function normalizeMarkdownChunks(sourceId: string, text: string): SourceChunk[] 
     const body = buffer.join("\n").trim();
     buffer = [];
     if (!body) return;
-    const paragraphs = body.split(/\n{2,}/).map((item) => item.trim()).filter(Boolean);
-    for (const paragraph of paragraphs) {
+    for (const chunk of semanticChunksFromBody(body)) {
       chunks.push({
         id: `${sourceId}-chunk-${String(chunkIndex).padStart(3, "0")}`,
         headingPath: [...headings],
         locator,
-        kind: paragraph.startsWith(">") ? "quote" : "body",
-        text: paragraph.replace(/^>\s?/gm, "").trim(),
-        confidence: 0.95,
+        kind: chunk.kind,
+        text: chunk.text,
+        confidence: chunk.confidence,
       });
       chunkIndex += 1;
     }

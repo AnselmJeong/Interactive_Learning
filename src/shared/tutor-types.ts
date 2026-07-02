@@ -19,6 +19,8 @@ export type TutorTurnMode =
   | "digress" // answering the learner's own question; do NOT advance
   | "synthesize"; // learner is ready; wrap up and move forward
 
+export type TutorConversationMode = "on_track" | "detour" | "returning";
+
 export type SourceRef = {
   chunkId: string;
   title: string;
@@ -48,6 +50,7 @@ export type TutorStateUpdate = {
   detectedMisconception?: string | null;
   userIntent?: TutorIntent;
   turnMode?: TutorTurnMode;
+  conversationMode?: TutorConversationMode;
 };
 
 export type TutorTurnOutput = {
@@ -100,8 +103,8 @@ export type SessionSnapshot = {
   status: "active" | "completed" | "archived";
   currentModuleId: string | null;
   completedModuleIds: string[];
-  // Paragraph-level progress. The learner advances one source paragraph (chunk) at a time, so a
-  // small source that is a single module of many paragraphs still has fine-grained progression.
+  // Source-chunk progress. The learner advances one semantic source chunk at a time, so a small
+  // source that is a single module of many chunks still has fine-grained progression.
   currentChunkId: string | null;
   coveredChunkIds: string[];
   model: string;
