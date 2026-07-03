@@ -17,6 +17,7 @@ type MaterialAnnotationRow = {
   material_id: string;
   source_id: string | null;
   chunk_id: string;
+  anchor_message_id: string | null;
   kind: MaterialAnnotationKind;
   selected_text: string;
   normalized_text: string;
@@ -30,6 +31,7 @@ export type SaveMaterialAnnotationInput = {
   materialId: string;
   chunkId: string;
   sourceId?: string | null;
+  anchorMessageId?: string | null;
   kind: MaterialAnnotationKind;
   selectedText: string;
   result: AnnotationResult;
@@ -48,6 +50,10 @@ function parseJson<T>(raw: string, fallback: T): T {
   }
 }
 
+function safeTimestamp(value: unknown, fallback: number) {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
 function rowToAnnotation(row: MaterialAnnotationRow): MaterialAnnotation {
   return {
     id: row.id,
@@ -55,6 +61,7 @@ function rowToAnnotation(row: MaterialAnnotationRow): MaterialAnnotation {
     materialId: row.material_id,
     sourceId: row.source_id,
     chunkId: row.chunk_id,
+    anchorMessageId: row.anchor_message_id,
     kind: row.kind,
     selectedText: row.selected_text,
     normalizedText: row.normalized_text,
@@ -63,6 +70,11 @@ function rowToAnnotation(row: MaterialAnnotationRow): MaterialAnnotation {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+export function getMaterialAnnotation(annotationId: string) {
+  const row = getDb().query<MaterialAnnotationRow, [string]>("SELECT * FROM material_annotations WHERE id = ?").get(annotationId);
+  return row ? rowToAnnotation(row) : null;
 }
 
 export function listMaterialAnnotations(materialId: string) {
@@ -90,9 +102,9 @@ export function saveMaterialAnnotation(input: SaveMaterialAnnotationInput) {
   getDb()
     .query(
       `INSERT INTO material_annotations
-       (id, project_id, material_id, source_id, chunk_id, kind, selected_text, normalized_text,
+       (id, project_id, material_id, source_id, chunk_id, anchor_message_id, kind, selected_text, normalized_text,
         result_json, source_meta_json, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       id,
@@ -100,6 +112,7 @@ export function saveMaterialAnnotation(input: SaveMaterialAnnotationInput) {
       input.materialId,
       input.sourceId || null,
       input.chunkId,
+      input.anchorMessageId || null,
       input.kind,
       selectedText,
       normalizeSelectedText(selectedText),
@@ -112,6 +125,46 @@ export function saveMaterialAnnotation(input: SaveMaterialAnnotationInput) {
   const row = getDb().query<MaterialAnnotationRow, [string]>("SELECT * FROM material_annotations WHERE id = ?").get(id);
   if (!row) throw new Error("Saved annotation could not be loaded");
   return rowToAnnotation(row);
+}
+
+export function replaceMaterialAnnotations(materialId: string, annotations: MaterialAnnotation[]) {
+  const material = getDb()
+    .query<{ project_id: string }, [string]>("SELECT project_id FROM learning_materials WHERE id = ?")
+    .get(materialId);
+  if (!material) return;
+
+  const now = Date.now();
+  const db = getDb();
+  const insert = db.query(
+    `INSERT INTO material_annotations
+     (id, project_id, material_id, source_id, chunk_id, anchor_message_id, kind, selected_text, normalized_text,
+      result_json, source_meta_json, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  );
+  const replace = db.transaction((items: MaterialAnnotation[]) => {
+    db.query("DELETE FROM material_annotations WHERE material_id = ?").run(materialId);
+    for (const annotation of items) {
+      if (!annotation.id || annotation.materialId !== materialId || !annotation.chunkId) continue;
+      const selectedText = annotation.selectedText.replace(/\s+/g, " ").trim().slice(0, 420);
+      if (!selectedText) continue;
+      insert.run(
+        annotation.id,
+        material.project_id,
+        materialId,
+        annotation.sourceId || null,
+        annotation.chunkId,
+        annotation.anchorMessageId || null,
+        annotation.kind,
+        selectedText,
+        annotation.normalizedText || normalizeSelectedText(selectedText),
+        JSON.stringify(annotation.result),
+        JSON.stringify(annotation.sourceMeta || []),
+        safeTimestamp(annotation.createdAt, now),
+        safeTimestamp(annotation.updatedAt, safeTimestamp(annotation.createdAt, now))
+      );
+    }
+  });
+  replace(annotations);
 }
 
 export function deleteMaterialAnnotation(annotationId: string) {

@@ -1,6 +1,7 @@
 import type { AiChatClient } from "./openai-compatible-client";
 import type { CourseArtifactService } from "./course-artifact-service";
-import { deleteMaterialAnnotation, saveMaterialAnnotation } from "./annotation-store";
+import { deleteMaterialAnnotation, getMaterialAnnotation, saveMaterialAnnotation } from "./annotation-store";
+import { writeMaterialAnnotationsSnapshot } from "./project-bundle-sync";
 import type {
   ImageLookupItem,
   ImageLookupResult,
@@ -29,6 +30,7 @@ type SelectionLookupInput = {
 type SaveLookupInput = {
   materialId: string;
   chunkId: string;
+  anchorMessageId?: string | null;
   kind: MaterialAnnotationKind;
   selectedText: string;
   result: LookupResult | ImageLookupResult;
@@ -503,19 +505,27 @@ export class AnnotationService {
     const artifacts = await this.materials.getArtifacts(input.materialId);
     if (!artifacts.sourceChunks.some((chunk) => chunk.id === input.chunkId)) throw new Error("Source chunk not found");
     const sourceId = artifacts.sourceIndex[input.chunkId]?.sourceId || null;
-    return saveMaterialAnnotation({
+    const saved = saveMaterialAnnotation({
       materialId: input.materialId,
       chunkId: input.chunkId,
       sourceId,
+      anchorMessageId: input.anchorMessageId || null,
       kind: input.kind,
       selectedText: input.selectedText,
       result: input.result,
       sourceMeta: input.sourceMeta,
     });
+    await writeMaterialAnnotationsSnapshot(saved.materialId);
+    return saved;
   }
 
-  delete(annotationId: string) {
-    return deleteMaterialAnnotation(annotationId);
+  async delete(annotationId: string) {
+    const existing = getMaterialAnnotation(annotationId);
+    const deleted = deleteMaterialAnnotation(annotationId);
+    if (existing) {
+      await writeMaterialAnnotationsSnapshot(existing.materialId);
+    }
+    return deleted;
   }
 
   private async aiLookup(

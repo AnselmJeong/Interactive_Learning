@@ -176,6 +176,10 @@ function blockSourceRef(block: TutorContentBlock) {
   return null;
 }
 
+function stripFlowStepMarker(step: string) {
+  return step.replace(/^\s*(?:(?:\d{1,2}[\.)、．])|[①②③④⑤⑥⑦⑧⑨⑩])\s+/u, "").trim();
+}
+
 export const TutorBlockRenderer = memo(function TutorBlockRenderer({
   blocks,
   sourceRefById,
@@ -325,8 +329,7 @@ function TutorBlock({ block }: { block: TutorContentBlock }) {
         <ol>
           {block.steps.map((step, index) => (
             <li key={`${index}-${step}`}>
-              <span>{index + 1}</span>
-              <MarkdownContent content={step} compact />
+              <MarkdownContent content={stripFlowStepMarker(step)} compact />
             </li>
           ))}
         </ol>

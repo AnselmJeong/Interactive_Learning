@@ -1,10 +1,12 @@
 export type ThemeMode = "light" | "dark" | "system";
 export type TutorLanguage = "ko" | "en";
 export type AiProviderId = "ollama" | "openai" | "anthropic" | "gemini";
+export type ChatSubmitShortcut = "enter" | "cmd-enter";
 
 export type AiProviderPublicSettings = {
   baseUrl: string;
   selectedModel: string;
+  selectedVisionModel: string;
 };
 
 export type AiProviderKeyState = {
@@ -15,12 +17,14 @@ export type AiProviderKeyState = {
 export type AppSettings = {
   theme: ThemeMode;
   aiProvider: AiProviderId;
+  visionProvider: AiProviderId;
   selectedModel: string;
   ollamaBaseUrl: string;
   providers: Record<AiProviderId, AiProviderPublicSettings>;
   projectRootFolder: string;
   defaultDownloadFolder: string;
   tutorLanguage: TutorLanguage;
+  chatSubmitShortcut: ChatSubmitShortcut;
   autoAdvanceOnMastery: boolean;
   showSourceInspector: boolean;
   answerReadySound: boolean;

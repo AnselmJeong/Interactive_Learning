@@ -53,6 +53,8 @@ type ImmersiveSourceViewProps = {
   displayHeadingPath: (parts: string[]) => string;
   cleanSourceText: (content: string, heading: string) => string;
   request: RpcRequest;
+  onAnnotationSaved?: (annotation: MaterialAnnotation) => void;
+  onAnnotationDeleted?: (annotationId: string) => void;
 };
 
 const LOOKUP_PANEL_WIDTH = 420;
@@ -124,6 +126,8 @@ export function ImmersiveSourceView({
   displayHeadingPath,
   cleanSourceText,
   request,
+  onAnnotationSaved,
+  onAnnotationDeleted,
 }: ImmersiveSourceViewProps) {
   const [query, setQuery] = useState("");
   const [selection, setSelection] = useState<SelectionState | null>(null);
@@ -338,6 +342,7 @@ export function ImmersiveSourceView({
         sourceMeta: resultSourceMeta(panel.result),
       })) as MaterialAnnotation;
       setAnnotations((current) => [saved, ...current.filter((annotation) => annotation.id !== saved.id)]);
+      onAnnotationSaved?.(saved);
       setLookupPanel({ ...panel, status: "saved" });
       window.getSelection()?.removeAllRanges();
       setSelection(null);
@@ -355,6 +360,7 @@ export function ImmersiveSourceView({
     setAnnotations((current) => current.filter((annotation) => annotation.id !== annotationId));
     try {
       await request("annotations.delete", { annotationId });
+      onAnnotationDeleted?.(annotationId);
     } catch {
       setAnnotations(previous);
     }

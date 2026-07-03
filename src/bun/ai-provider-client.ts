@@ -16,22 +16,22 @@ const PROVIDER_LABELS: Record<AiProviderId, string> = {
   gemini: "Gemini",
 };
 
-export function createAiProviderClient(settings: AppSettings, apiKey: string): AiChatClient {
-  const providerSettings = settings.providers[settings.aiProvider];
+export function createAiProviderClient(settings: AppSettings, apiKey: string, provider: AiProviderId = settings.aiProvider): AiChatClient {
+  const providerSettings = settings.providers[provider];
   const clientSettings = {
-    provider: settings.aiProvider,
+    provider,
     baseUrl: providerSettings.baseUrl,
     apiKey,
     model: providerSettings.selectedModel,
   };
 
-  if (settings.aiProvider === "anthropic") return new AnthropicClient(clientSettings);
-  if (settings.aiProvider === "gemini") return new GeminiClient(clientSettings);
+  if (provider === "anthropic") return new AnthropicClient(clientSettings);
+  if (provider === "gemini") return new GeminiClient(clientSettings);
   return new OpenAICompatibleClient({
     baseUrl: clientSettings.baseUrl,
     apiKey,
     model: clientSettings.model,
-    providerName: PROVIDER_LABELS[settings.aiProvider],
+    providerName: PROVIDER_LABELS[provider],
   });
 }
 
@@ -64,6 +64,56 @@ class AnthropicClient implements AiChatClient {
 
   async chatText(params: ChatParams): Promise<string> {
     return this.chat(params);
+  }
+
+  async describeImage(params: {
+    image: { mimeType: string; dataBase64: string };
+    prompt: string;
+    system?: string;
+    model?: string;
+    timeoutMs?: number;
+  }) {
+    const model = params.model || this.settings.model;
+    if (!this.settings.apiKey) throw new Error("Claude API key is not configured");
+    if (!model) throw new Error("Model is not selected");
+
+    let response: Response;
+    try {
+      response = await fetch(this.url("/v1/messages"), {
+        method: "POST",
+        headers: this.headers(),
+        signal: AbortSignal.timeout(params.timeoutMs ?? 120000),
+        body: JSON.stringify({
+          model,
+          system: params.system || undefined,
+          messages: [
+            {
+              role: "user",
+              content: [
+                {
+                  type: "image",
+                  source: {
+                    type: "base64",
+                    media_type: params.image.mimeType,
+                    data: params.image.dataBase64,
+                  },
+                },
+                { type: "text", text: params.prompt },
+              ],
+            },
+          ],
+          temperature: 0.4,
+          max_tokens: 2048,
+        }),
+      });
+    } catch (error) {
+      throw normalizeProviderError(error, "Claude", model, params.timeoutMs);
+    }
+    if (!response.ok) throw new Error(`AI provider HTTP ${response.status}: ${(await response.text()).replace(/\s+/g, " ").slice(0, 700)}`);
+    const data = (await response.json()) as { content?: Array<{ type?: string; text?: string }> };
+    const content = (data.content || []).filter((part) => part.type === "text" && part.text).map((part) => part.text).join("\n").trim();
+    if (!content) throw new Error(`AI provider returned an empty image explanation for model ${model}`);
+    return content;
   }
 
   private async chat(params: ChatParams) {
@@ -144,7 +194,6 @@ class GeminiClient implements AiChatClient {
     const model = params.model || this.settings.model;
     if (!this.settings.apiKey) throw new Error("Gemini API key is not configured");
     if (!model) throw new Error("Model is not selected");
-    if (!modelSupportsVision("gemini", model)) throw new Error("VISION_MODEL_REQUIRED: Select a Gemini model that supports image understanding.");
 
     let response: Response;
     try {

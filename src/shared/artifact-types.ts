@@ -103,6 +103,7 @@ export type MaterialAnnotation = {
   materialId: string;
   sourceId: string | null;
   chunkId: string;
+  anchorMessageId?: string | null;
   kind: MaterialAnnotationKind;
   selectedText: string;
   normalizedText: string;

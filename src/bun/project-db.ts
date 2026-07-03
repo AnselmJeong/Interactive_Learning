@@ -129,6 +129,7 @@ export function getDb() {
       material_id TEXT NOT NULL REFERENCES learning_materials(id) ON DELETE CASCADE,
       source_id TEXT,
       chunk_id TEXT NOT NULL,
+      anchor_message_id TEXT,
       kind TEXT NOT NULL CHECK (kind IN ('define', 'lookup', 'image', 'note', 'highlight')),
       selected_text TEXT NOT NULL,
       normalized_text TEXT NOT NULL,
@@ -169,6 +170,10 @@ export function getDb() {
   }
   if (!materialColumns.includes("critic_report_path")) {
     db.exec("ALTER TABLE learning_materials ADD COLUMN critic_report_path TEXT;");
+  }
+  const annotationColumns = db.query<{ name: string }, []>("PRAGMA table_info(material_annotations)").all().map((column) => column.name);
+  if (!annotationColumns.includes("anchor_message_id")) {
+    db.exec("ALTER TABLE material_annotations ADD COLUMN anchor_message_id TEXT;");
   }
 
   return db;

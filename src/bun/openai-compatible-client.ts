@@ -90,6 +90,65 @@ export class OpenAICompatibleClient implements AiChatClient {
     return this.chat(params);
   }
 
+  async describeImage(params: {
+    image: ImagePart;
+    prompt: string;
+    system?: string;
+    model?: string;
+    timeoutMs?: number;
+  }) {
+    const model = params.model || this.settings.model;
+    if (!this.settings.apiKey) throw new Error(`${this.providerName()} API key is not configured`);
+    if (!model) throw new Error("Model is not selected");
+
+    const messages: Array<Record<string, unknown>> = [];
+    if (params.system) messages.push({ role: "system", content: params.system });
+    messages.push({
+      role: "user",
+      content: [
+        { type: "text", text: params.prompt },
+        {
+          type: "image_url",
+          image_url: {
+            url: `data:${params.image.mimeType};base64,${params.image.dataBase64}`,
+            detail: "auto",
+          },
+        },
+      ],
+    });
+
+    let response: Response;
+    try {
+      response = await fetch(this.url("/chat/completions"), {
+        method: "POST",
+        headers: this.headers(),
+        signal: AbortSignal.timeout(params.timeoutMs ?? 120000),
+        body: JSON.stringify({
+          model,
+          messages,
+          temperature: 0.4,
+          max_tokens: 2048,
+        }),
+      });
+    } catch (error) {
+      const name = (error as { name?: string })?.name;
+      if (name === "TimeoutError" || name === "AbortError") {
+        throw new Error(`AI provider request timed out after ${Math.round((params.timeoutMs ?? 120000) / 1000)}s for model ${model}`);
+      }
+      throw new Error(`AI provider request failed: ${(error as Error)?.message || String(error)}`);
+    }
+
+    if (!response.ok) {
+      throw new Error(`AI provider HTTP ${response.status}: ${(await response.text()).replace(/\s+/g, " ").slice(0, 700)}`);
+    }
+
+    const data = (await response.json()) as { choices?: Array<{ message?: { content?: string | Array<{ text?: string }> } }> };
+    const raw = data.choices?.[0]?.message?.content;
+    const content = typeof raw === "string" ? raw : (raw || []).map((part) => part.text || "").join("\n");
+    if (!content.trim()) throw new Error(`AI provider returned an empty image explanation for model ${model}`);
+    return content.trim();
+  }
+
   private async chat(
     params: ChatParams,
     responseFormat?: { type: "json_object" }

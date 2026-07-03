@@ -2,7 +2,9 @@ import { existsSync } from "node:fs";
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { getDb } from "./project-db";
-import type { MaterialManifest, QualityStatus, SourceManifest, SourceType } from "../shared/artifact-types";
+import { dataPath } from "./paths";
+import { listMaterialAnnotations, replaceMaterialAnnotations } from "./annotation-store";
+import type { MaterialAnnotation, MaterialManifest, QualityStatus, SourceManifest, SourceType } from "../shared/artifact-types";
 import type { ProjectSummary } from "../shared/rpc-types";
 import type { SessionSnapshot, TutorMessage } from "../shared/tutor-types";
 
@@ -159,6 +161,7 @@ async function importProject(rootPath: string, projectId: string) {
 
   await importSources(projectDir, projectId);
   await importMaterials(projectDir, projectId);
+  await importMaterialAnnotations(projectDir, projectId);
   await importSessions(projectDir, projectId);
 }
 
@@ -278,6 +281,27 @@ async function importMaterials(projectDir: string, projectId: string) {
   }
 }
 
+async function importMaterialAnnotations(projectDir: string, projectId: string) {
+  for (const materialId of await childDirs(join(projectDir, "materials"))) {
+    const material = getDb()
+      .query<{ id: string }, [string, string]>("SELECT id FROM learning_materials WHERE id = ? AND project_id = ?")
+      .get(materialId, projectId);
+    if (!material) continue;
+
+    const annotationsPath = join(projectDir, "materials", materialId, "annotations.json");
+    const annotations = await readJson<MaterialAnnotation[]>(annotationsPath);
+    if (Array.isArray(annotations)) {
+      replaceMaterialAnnotations(materialId, annotations.filter((annotation) => annotation?.materialId === materialId));
+      continue;
+    }
+
+    const cached = listMaterialAnnotations(materialId);
+    if (cached.length) {
+      await writeJson(annotationsPath, cached);
+    }
+  }
+}
+
 async function importSessions(projectDir: string, projectId: string) {
   for (const sessionId of await childDirs(join(projectDir, "sessions"))) {
     const snapshot = await readJson<SessionSnapshot>(join(projectDir, "sessions", sessionId, "session.json"));
@@ -375,4 +399,20 @@ export async function writeSessionSnapshot(rootPath: string, snapshot: SessionSn
     schemaVersion: PROJECT_BUNDLE_SCHEMA_VERSION,
     ...snapshot,
   });
+}
+
+export async function writeMaterialAnnotationsSnapshot(materialId: string) {
+  const row = getDb()
+    .query<{ project_id: string; root_path: string | null }, [string]>(
+      `SELECT learning_materials.project_id, projects.root_path
+       FROM learning_materials
+       JOIN projects ON projects.id = learning_materials.project_id
+       WHERE learning_materials.id = ?`
+    )
+    .get(materialId);
+  if (!row) return;
+
+  const rootPath = row.root_path || dataPath("projects");
+  const annotationsPath = join(rootPath, row.project_id, "materials", materialId, "annotations.json");
+  await writeJson(annotationsPath, listMaterialAnnotations(materialId));
 }

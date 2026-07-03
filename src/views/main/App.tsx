@@ -1,7 +1,8 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Archive, BookOpen, Check, Info, Loader2, MessageSquare, Play, Send, Settings, Upload } from "lucide-react";
+import type { KeyboardEvent } from "react";
+import { Archive, BookOpen, Check, Info, Loader2, MessageSquare, Moon, Play, Send, Settings, Sun, Upload } from "lucide-react";
 import type { MaterialSummary, PreparedSourceImport, ProjectArchiveExport, ProjectSummary, SourceSummary } from "../../shared/rpc-types";
-import type { AppSettings, AiProviderStatus, ProviderModel } from "../../shared/settings-types";
+import type { AppSettings, AiProviderStatus, ChatSubmitShortcut, ProviderModel } from "../../shared/settings-types";
 import type { MaterialAnnotation, MaterialArtifacts } from "../../shared/artifact-types";
 import type { SessionSnapshot, SessionSummary, SourceRef, TutorContext, TutorMessage } from "../../shared/tutor-types";
 import { SettingsModal } from "./components/SettingsModal";
@@ -30,11 +31,25 @@ type LoadState = {
 type CoursePlanModule = MaterialArtifacts["coursePlan"]["modules"][number];
 type ModuleStatus = TutorContext["moduleOutline"][number]["status"];
 type InspectorTab = "modules" | "sessions";
+type AppTheme = "light" | "dark";
 
 const PROGRESSION_CHOICES = new Set(["계속해줘", "계속해줘.", "다음 진도로 넘어가주세요.", "다음 대목으로 넘어가주세요.", "다음 문단으로 넘어가주세요.", "다음 모듈로 넘어가주세요.", "진도로 돌아갈게요."]);
 const FINISH_CONFIRMATION_CHOICE = "네, 마칠게요.";
 const FALLBACK_CHOICES = ["힌트를 하나만 더 주세요.", "예시 답변을 하나 보여주세요.", "이 질문을 더 쉽게 다시 물어봐 주세요."];
 const EMPTY_MESSAGES: TutorMessage[] = [];
+const THEME_STORAGE_KEY = "learnie.theme";
+
+function shouldSubmitChatDraft(event: KeyboardEvent<HTMLTextAreaElement>, submitShortcut: ChatSubmitShortcut) {
+  if (event.key !== "Enter" || event.nativeEvent.isComposing) return false;
+  if (submitShortcut === "enter") return !event.shiftKey && !event.altKey && !event.metaKey && !event.ctrlKey;
+  return (event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey;
+}
+
+function initialTheme(): AppTheme {
+  if (typeof window === "undefined") return "light";
+  const saved = window.localStorage.getItem(THEME_STORAGE_KEY);
+  return saved === "dark" || saved === "light" ? saved : "light";
+}
 
 function normalizeChoiceText(choice: string) {
   if (!choice) return "";
@@ -81,6 +96,12 @@ function displayableOutlineTitle(title: string) {
     .replace(/^chapter\s+\d+\s*(?:>|›|:|-)\s*/i, "")
     .replace(/\s*(?:>|›)\s*/g, " › ")
     .trim();
+}
+
+function displayableSourceName(source: SourceSummary) {
+  const rawName = source.originalFileName || source.title;
+  const fileName = rawName.split(/[\\/]/).filter(Boolean).pop() || source.title;
+  return fileName.replace(/\.[^.]+$/u, "").trim() || source.title;
 }
 
 function stripRepeatedSourceHeading(content: string, heading: string) {
@@ -138,12 +159,89 @@ function AnswerSourceRefs({ refs, materialId, request }: { refs: SourceRef[]; ma
   );
 }
 
+function annotationKindLabel(kind: MaterialAnnotation["kind"]) {
+  if (kind === "define") return "정의";
+  if (kind === "lookup") return "위키 요약";
+  if (kind === "image") return "이미지";
+  if (kind === "note") return "노트";
+  return "표시";
+}
+
+function AnnotationSourceLinks({ sourceMeta }: { sourceMeta: MaterialAnnotation["sourceMeta"] }) {
+  if (!sourceMeta.length) return null;
+  return (
+    <div className="lookup-source-meta">
+      {sourceMeta.map((source, index) => (
+        source.url ? (
+          <a key={`${source.title}-${index}`} href={source.url} target="_blank" rel="noreferrer">
+            {source.provider || "Source"}: {source.title}
+          </a>
+        ) : (
+          <span key={`${source.title}-${index}`}>
+            {source.provider || "Source"}: {source.title}
+          </span>
+        )
+      ))}
+    </div>
+  );
+}
+
+function ChatSavedAnnotationCard({ annotation }: { annotation: MaterialAnnotation }) {
+  const result = annotation.result;
+  return (
+    <article className={`chat-annotation-card ${annotation.kind}`}>
+      <header>
+        <span>{annotationKindLabel(annotation.kind)}</span>
+        <strong>{annotation.selectedText}</strong>
+      </header>
+      {result.kind === "define" || result.kind === "lookup" ? (
+        <>
+          <MarkdownContent content={result.body} compact />
+          <AnnotationSourceLinks sourceMeta={annotation.sourceMeta} />
+        </>
+      ) : result.kind === "image" ? (
+        result.images.length ? (
+          <div className="lookup-image-grid">
+            {result.images.map((image, index) => (
+              <a
+                key={`${image.title}-${image.pageUrl || image.imageUrl || index}`}
+                href={image.pageUrl || image.imageUrl || image.thumbnailUrl}
+                target="_blank"
+                rel="noreferrer"
+                title={image.title}
+              >
+                <img src={image.thumbnailUrl} alt={image.title} loading="lazy" />
+              </a>
+            ))}
+          </div>
+        ) : null
+      ) : result.kind === "note" ? (
+        <p>{result.note}</p>
+      ) : (
+        <p>저장된 표시입니다.</p>
+      )}
+    </article>
+  );
+}
+
+function ChatSavedAnnotations({ annotations }: { annotations: MaterialAnnotation[] }) {
+  if (!annotations.length) return null;
+  return (
+    <div className="chat-annotation-list" aria-label="저장된 선택 설명">
+      {annotations.map((annotation) => (
+        <ChatSavedAnnotationCard key={annotation.id} annotation={annotation} />
+      ))}
+    </div>
+  );
+}
+
 const ChatLog = memo(function ChatLog({
   messages,
   tutorThinking,
   expandedSourceMessages,
   sourceRefById,
   materialId,
+  annotations,
   request,
   onToggleSource,
 }: {
@@ -152,15 +250,59 @@ const ChatLog = memo(function ChatLog({
   expandedSourceMessages: Set<string>;
   sourceRefById: Map<string, SourceRef>;
   materialId: string;
+  annotations: MaterialAnnotation[];
   request: RpcRequest;
   onToggleSource: (messageId: string) => void;
 }) {
+  const annotationPlacement = useMemo(() => {
+    const assistantMessageIds = new Set(messages.filter((message) => message.role === "assistant").map((message) => message.id));
+    const visibleChunkIds = new Set(messages.flatMap((message) => message.sourceRefs));
+    const placed = new Set<string>();
+    const groups = new Map<string, MaterialAnnotation[]>();
+
+    function add(messageId: string, annotation: MaterialAnnotation) {
+      const group = groups.get(messageId) || [];
+      group.push(annotation);
+      groups.set(messageId, group);
+      placed.add(annotation.id);
+    }
+
+    for (const annotation of annotations) {
+      if (annotation.anchorMessageId && assistantMessageIds.has(annotation.anchorMessageId)) {
+        add(annotation.anchorMessageId, annotation);
+      }
+    }
+
+    for (const message of messages) {
+      if (message.role !== "assistant" || !message.sourceRefs.length) continue;
+      const refs = new Set(message.sourceRefs);
+      for (const annotation of annotations) {
+        if (placed.has(annotation.id) || !refs.has(annotation.chunkId)) continue;
+        add(message.id, annotation);
+      }
+    }
+
+    for (const group of groups.values()) {
+      group.sort((a, b) => a.createdAt - b.createdAt);
+    }
+    const unplaced = annotations
+      .filter((annotation) => !placed.has(annotation.id) && visibleChunkIds.has(annotation.chunkId))
+      .sort((a, b) => a.createdAt - b.createdAt);
+    return { groups, unplaced };
+  }, [annotations, messages]);
+
   return (
     <div className="chat-log">
       {messages.map((message) => {
         const lookupChunkId = message.sourceRefs[0] || undefined;
+        const savedAnnotations = annotationPlacement.groups.get(message.id) || [];
         return (
-          <div key={message.id} className={`bubble ${message.role}`} data-lookup-chunk-id={lookupChunkId}>
+          <div
+            key={message.id}
+            className={`bubble ${message.role}`}
+            data-lookup-chunk-id={lookupChunkId}
+            data-lookup-message-id={message.id}
+          >
             {message.role === "assistant" && message.blocks?.length ? (
               <TutorBlockRenderer
                 blocks={message.blocks}
@@ -172,6 +314,9 @@ const ChatLog = memo(function ChatLog({
             ) : (
               <MarkdownContent content={message.content} />
             )}
+            {message.role === "assistant" && savedAnnotations.length ? (
+              <ChatSavedAnnotations annotations={savedAnnotations} />
+            ) : null}
             {message.role === "assistant" && message.sourceRefs.length ? (
               <div className="answer-sources">
                 <button type="button" onClick={() => onToggleSource(message.id)}>
@@ -190,6 +335,11 @@ const ChatLog = memo(function ChatLog({
           </div>
         );
       })}
+      {annotationPlacement.unplaced.length ? (
+        <div className="bubble assistant annotation-fallback">
+          <ChatSavedAnnotations annotations={annotationPlacement.unplaced} />
+        </div>
+      ) : null}
       {tutorThinking ? (
         <div className="bubble assistant thinking-bubble">
           <span className="typing-spinner" aria-hidden="true" />
@@ -205,12 +355,14 @@ const ChatComposer = memo(function ChatComposer({
   disabled,
   placeholder,
   autoFocusToken,
+  submitShortcut,
   onSend,
 }: {
   busy: boolean;
   disabled: boolean;
   placeholder: string;
   autoFocusToken?: number;
+  submitShortcut: ChatSubmitShortcut;
   onSend: (text: string) => Promise<boolean>;
 }) {
   const [draft, setDraft] = useState("");
@@ -236,14 +388,14 @@ const ChatComposer = memo(function ChatComposer({
         value={draft}
         onChange={(event) => setDraft(event.target.value)}
         onKeyDown={(event) => {
-          if ((event.altKey || event.metaKey) && event.key === "Enter") {
+          if (shouldSubmitChatDraft(event, submitShortcut)) {
             event.preventDefault();
             void submit(event.currentTarget.value);
           }
         }}
         placeholder={placeholder}
         disabled={disabled}
-        rows={3}
+        rows={1}
       />
       <button className="icon-button primary send" onClick={() => void submit()} disabled={busy || disabled || !trimmed} title="Send answer">
         <Send size={19} />
@@ -273,6 +425,7 @@ export function App({ request }: { request: RpcRequest }) {
   const [models, setModels] = useState<ProviderModel[]>([]);
   const [viewMode, setViewMode] = useState<"chat" | "source">("chat");
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>("sessions");
+  const [theme, setTheme] = useState<AppTheme>(() => initialTheme());
   const [selectedModuleId, setSelectedModuleId] = useState<string | null>(null);
   const [composerFocusToken, setComposerFocusToken] = useState(0);
   const tutorSurfaceRef = useRef<HTMLElement | null>(null);
@@ -287,6 +440,11 @@ export function App({ request }: { request: RpcRequest }) {
   function cancelAnswerReadySound() {
     answerReadyNotificationPendingRef.current = false;
   }
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    window.localStorage.setItem(THEME_STORAGE_KEY, theme);
+  }, [theme]);
 
   async function refreshProjects() {
     const projects = (await request("projects.list", {})) as ProjectSummary[];
@@ -422,7 +580,7 @@ export function App({ request }: { request: RpcRequest }) {
   // already exists (materials.generate deduplicates by source set), otherwise generates it on the
   // fly, then selects it so the course outline appears. It deliberately does NOT start a session:
   // auto-starting spawned a brand-new session on every source click. The learner now explicitly
-  // chooses "Continue latest" or "Start" to begin.
+  // starts the prepared material from the topbar.
   async function learnFromSource(sourceId: string) {
     if (!activeProject) return;
     setBusy(true);
@@ -447,6 +605,12 @@ export function App({ request }: { request: RpcRequest }) {
     return sessions;
   }
 
+  async function refreshMaterialArtifacts(materialId: string) {
+    const nextArtifacts = (await request("materials.getArtifacts", { materialId })) as MaterialArtifacts;
+    setArtifacts(nextArtifacts);
+    return nextArtifacts;
+  }
+
   async function selectMaterial(material: MaterialSummary) {
     setActiveMaterial(material);
     const [nextArtifacts, sessions] = await Promise.all([
@@ -469,6 +633,7 @@ export function App({ request }: { request: RpcRequest }) {
     setTutorThinking(true);
     try {
       const result = (await request("sessions.start", { materialId, mode })) as { session: SessionSnapshot; context: TutorContext };
+      await refreshMaterialArtifacts(result.session.materialId);
       setSession(result.session);
       setContext(result.context);
       setSelectedModuleId(result.session.currentModuleId);
@@ -496,6 +661,8 @@ export function App({ request }: { request: RpcRequest }) {
     setBusy(true);
     try {
       const result = (await request("sessions.load", { sessionId })) as { session: SessionSnapshot; context: TutorContext };
+      await refreshMaterialArtifacts(result.session.materialId);
+      setActiveMaterial((current) => current?.id === result.session.materialId ? current : state.materials.find((material) => material.id === result.session.materialId) || current);
       setSession(result.session);
       setContext(result.context);
       setSelectedModuleId(result.session.currentModuleId);
@@ -741,7 +908,6 @@ export function App({ request }: { request: RpcRequest }) {
       : FALLBACK_CHOICES
     : [];
   const visibleVisual = isTeachingGuideVisual(context?.visual) ? null : context?.visual;
-  const activeSessions = useMemo(() => state.sessions.filter((item) => item.status === "active"), [state.sessions]);
   const activeSourceId = activeMaterial && activeMaterial.sourceIds.length === 1 ? activeMaterial.sourceIds[0] : null;
   const courseTitle = artifacts ? displayableCourseTitle(artifacts.coursePlan.title) : "";
   const overviewModules = useMemo(() => {
@@ -793,6 +959,12 @@ export function App({ request }: { request: RpcRequest }) {
         annotations: [annotation, ...(current.annotations || []).filter((item) => item.id !== annotation.id)],
       };
     });
+  }, []);
+  const handleAnnotationDeleted = useCallback((annotationId: string) => {
+    setArtifacts((current) => current ? {
+      ...current,
+      annotations: (current.annotations || []).filter((annotation) => annotation.id !== annotationId),
+    } : current);
   }, []);
 
   // Source-coverage model, driven by the source-chunk cursor. Each semantic source chunk is
@@ -863,17 +1035,19 @@ export function App({ request }: { request: RpcRequest }) {
           </div>
           {sourceNotice ? <p className="source-notice">{sourceNotice}</p> : null}
           <div className="list source-list-fill">
-            {state.sources.map((source) => {
+            {state.sources.map((source, sourceIndex) => {
               const isActive = activeSourceId === source.id;
+              const sourceName = displayableSourceName(source);
               return (
                 <button
                   key={source.id}
                   className={`list-item source-learn-row ${isActive ? "active" : ""}`}
                   onClick={() => learnFromSource(source.id)}
                   disabled={!activeProject || busy}
-                  title={source.title}
+                  title={sourceName}
                 >
-                  <span>{source.title}</span>
+                  <span className="source-row-index">{sourceIndex + 1}</span>
+                  <span className="source-row-title">{sourceName}</span>
                 </button>
               );
             })}
@@ -899,6 +1073,15 @@ export function App({ request }: { request: RpcRequest }) {
             <p className="project-title">{activeProject?.title || "Learning Workspace"}</p>
           </div>
           <div className="topbar-actions">
+            <button
+              type="button"
+              className="icon-button theme-toggle"
+              onClick={() => setTheme((current) => (current === "dark" ? "light" : "dark"))}
+              title={theme === "dark" ? "Light theme" : "Dark theme"}
+              aria-label={theme === "dark" ? "Light theme" : "Dark theme"}
+            >
+              {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
+            </button>
             <div className="status-pill">
               {busy ? <Loader2 size={16} className="spin" /> : <Check size={16} />}
               {status}
@@ -923,15 +1106,12 @@ export function App({ request }: { request: RpcRequest }) {
             <div className="course-strip-actions">
               <div className="segmented-control" aria-label="View mode">
                 <button type="button" className={viewMode === "source" ? "active" : ""} onClick={() => setViewMode("source")}>
-                  학습 자료
+                  Source
                 </button>
                 <button type="button" className={viewMode === "chat" ? "active" : ""} onClick={() => setViewMode("chat")}>
-                  대화
+                  Chat
                 </button>
               </div>
-              <button className="wide-button topbar-button" onClick={() => startSession("continue")} disabled={busy || activeSessions.length === 0}>
-                <Play size={16} /> Continue latest
-              </button>
               <button className="wide-button topbar-button primary" onClick={() => startSession("new")} disabled={busy}>
                 <MessageSquare size={16} /> Start
               </button>
@@ -948,6 +1128,8 @@ export function App({ request }: { request: RpcRequest }) {
               displayHeadingPath={displayableHeadingPath}
               cleanSourceText={stripRepeatedSourceHeading}
               request={request}
+              onAnnotationSaved={handleAnnotationSaved}
+              onAnnotationDeleted={handleAnnotationDeleted}
             />
           ) : session ? (
             <>
@@ -973,6 +1155,7 @@ export function App({ request }: { request: RpcRequest }) {
                 expandedSourceMessages={expandedSourceMessages}
                 sourceRefById={sourceRefById}
                 materialId={artifacts?.manifest.id || session.materialId}
+                annotations={artifacts?.annotations || []}
                 request={request}
                 onToggleSource={toggleSourceMessage}
               />
@@ -1043,6 +1226,7 @@ export function App({ request }: { request: RpcRequest }) {
                   busy={busy}
                   disabled={selectedModuleWaiting}
                   autoFocusToken={composerFocusToken}
+                  submitShortcut={settings?.chatSubmitShortcut || "cmd-enter"}
                   placeholder={
                     selectedModuleWaiting
                       ? "이 module을 시작하면 질문할 수 있습니다"

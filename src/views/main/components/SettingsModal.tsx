@@ -1,8 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { FolderOpen, KeyRound, RefreshCw, Save, Trash2, X } from "lucide-react";
+import { Brain, FolderOpen, ImageIcon, KeyRound, RefreshCw, Save, SlidersHorizontal, Trash2, X } from "lucide-react";
 import type { AiProviderId, AiProviderStatus, AppSettings, ProviderModel } from "../../../shared/settings-types";
+import { modelSupportsVision } from "../../../shared/vision-models";
 
 type RpcRequest = (method: string, params: unknown) => Promise<unknown>;
+type ModelTarget = "learning" | "vision";
+type SettingsSectionId = "models" | "access" | "folders" | "preferences";
+
 const PROVIDERS: Array<{ id: AiProviderId; label: string; keyLabel: string }> = [
   { id: "ollama", label: "Ollama", keyLabel: "Ollama API key" },
   { id: "openai", label: "OpenAI", keyLabel: "OpenAI API key" },
@@ -11,6 +15,25 @@ const PROVIDERS: Array<{ id: AiProviderId; label: string; keyLabel: string }> = 
 ];
 
 const EMPTY_KEYS: Record<AiProviderId, string> = { ollama: "", openai: "", anthropic: "", gemini: "" };
+const SETTINGS_NAV: Array<{
+  id: SettingsSectionId;
+  title: string;
+  subtitle: string;
+  icon: typeof Brain;
+}> = [
+  { id: "models", title: "Models & Routing", subtitle: "학습 · 비전 모델", icon: Brain },
+  { id: "access", title: "Provider Access", subtitle: "API 키", icon: KeyRound },
+  { id: "folders", title: "Folders", subtitle: "경로", icon: FolderOpen },
+  { id: "preferences", title: "Preferences", subtitle: "테마 · 언어", icon: SlidersHorizontal },
+];
+
+function providerLabel(providerId: AiProviderId) {
+  return PROVIDERS.find((provider) => provider.id === providerId)?.label || "Provider";
+}
+
+function modelOptionLabel(model: ProviderModel, target: ModelTarget) {
+  return target === "vision" && model.supportsVision ? `${model.id} · vision` : model.id;
+}
 
 export function SettingsModal({
   request,
@@ -31,10 +54,15 @@ export function SettingsModal({
 }) {
   const [draft, setDraft] = useState(settings);
   const draftRef = useRef(settings);
+  const [activeSection, setActiveSection] = useState<SettingsSectionId>("models");
   const [apiKeys, setApiKeys] = useState<Record<AiProviderId, string>>(EMPTY_KEYS);
   const [statusText, setStatusText] = useState(providerStatus.error || "Ready");
   const [busy, setBusy] = useState(false);
-  const activeProvider = draft.providers[draft.aiProvider];
+  const [visionModels, setVisionModels] = useState<ProviderModel[]>([]);
+  const activeVisionProvider = draft.providers[draft.visionProvider];
+  const currentVisionModels = draft.visionProvider === draft.aiProvider && models.length ? models : visionModels;
+  const selectedVisionModel = activeVisionProvider.selectedVisionModel;
+  const selectedVisionLooksUnsupported = Boolean(selectedVisionModel && !modelSupportsVision(draft.visionProvider, selectedVisionModel));
 
   useEffect(() => {
     setDraft(settings);
@@ -64,7 +92,13 @@ export function SettingsModal({
       aiProvider: provider,
       selectedModel: draftRef.current.providers[provider].selectedModel,
     });
-    setModels([]);
+    setModels(provider === draftRef.current.visionProvider ? visionModels : []);
+  }
+
+  function chooseVisionProvider(provider: AiProviderId) {
+    const current = draftRef.current;
+    updateDraft({ visionProvider: provider });
+    setVisionModels(provider === current.aiProvider ? models : []);
   }
 
   async function save() {
@@ -82,18 +116,26 @@ export function SettingsModal({
     }
   }
 
-  async function clearKey() {
+  async function clearLearningKey() {
     await request("aiProvider.updateSettings", { clearApiKeyFor: draftRef.current.aiProvider });
     await onUpdated();
-    setStatusText(`${PROVIDERS.find((provider) => provider.id === draftRef.current.aiProvider)?.label || "Provider"} key cleared`);
+    setStatusText(`${providerLabel(draftRef.current.aiProvider)} key cleared`);
   }
 
-  async function refreshModels() {
+  async function refreshModels(target: ModelTarget) {
     setBusy(true);
     try {
-      const nextModels = (await request("aiProvider.listModels", { settings: draftRef.current, apiKeys })) as ProviderModel[];
-      setModels(nextModels);
-      setStatusText(`${nextModels.length} models loaded`);
+      const current = draftRef.current;
+      const provider = target === "vision" ? current.visionProvider : current.aiProvider;
+      const nextModels = (await request("aiProvider.listModels", { settings: current, apiKeys, provider, modelPurpose: target })) as ProviderModel[];
+      if (target === "vision") {
+        setVisionModels(nextModels);
+        if (provider === current.aiProvider) setModels(nextModels);
+      } else {
+        setModels(nextModels);
+        if (provider === current.visionProvider) setVisionModels(nextModels);
+      }
+      setStatusText(`${providerLabel(provider)} ${target === "vision" ? "vision" : "learning"} models loaded: ${nextModels.length}`);
     } catch (error) {
       setStatusText((error as Error).message);
     } finally {
@@ -101,9 +143,19 @@ export function SettingsModal({
     }
   }
 
-  async function testConnection() {
-    const next = (await request("aiProvider.testConnection", { settings: draftRef.current, apiKeys })) as AiProviderStatus;
-    setStatusText(next.reachable ? next.error || "Connection OK" : next.error || "Connection failed");
+  async function testConnection(target: ModelTarget) {
+    setBusy(true);
+    try {
+      const current = draftRef.current;
+      const provider = target === "vision" ? current.visionProvider : current.aiProvider;
+      const next = (await request("aiProvider.testConnection", { settings: current, apiKeys, provider, modelPurpose: target })) as AiProviderStatus;
+      const label = `${providerLabel(provider)} ${target === "vision" ? "vision" : "learning"}`;
+      setStatusText(next.reachable ? next.error || `${label} OK` : next.error || `${label} failed`);
+    } catch (error) {
+      setStatusText((error as Error).message);
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function chooseProjectRoot() {
@@ -112,7 +164,7 @@ export function SettingsModal({
       const next = (await request("settings.chooseProjectRootFolder", {})) as AppSettings;
       if (next.projectRootFolder !== draftRef.current.projectRootFolder) {
         updateDraft({ projectRootFolder: next.projectRootFolder });
-        setStatusText(`Project root folder updated`);
+        setStatusText("Project root folder updated");
       } else {
         setStatusText("Project root folder unchanged");
       }
@@ -138,57 +190,165 @@ export function SettingsModal({
     }
   }
 
-  return (
-    <div className="modal-backdrop">
-      <div className="modal">
-        <header className="modal-header">
-          <div>
-            <p className="eyebrow">Settings</p>
-            <h2>AI Providers and Learning</h2>
-          </div>
-          <button className="icon-button" onClick={onClose} title="Close settings">
-            <X size={18} />
-          </button>
-        </header>
-        <section className="settings-grid">
-          <label>
-            <span>Provider</span>
-            <select value={draft.aiProvider} onChange={(event) => chooseProvider(event.target.value as AiProviderId)}>
-              {PROVIDERS.map((provider) => (
-                <option key={provider.id} value={provider.id}>
-                  {provider.label}
-                </option>
-              ))}
-            </select>
-          </label>
-          {draft.aiProvider !== "ollama" ? (
-            <label>
-              <span>Base URL</span>
-              <input value={activeProvider.baseUrl} onChange={(event) => updateProvider(draft.aiProvider, { baseUrl: event.target.value })} />
-            </label>
-          ) : null}
-          <div className="provider-key-grid">
-            {PROVIDERS.map((provider) => (
-              <label key={provider.id}>
-                <span>
-                  {provider.keyLabel}
-                  <small>{providerStatus.keyStates[provider.id]?.hasApiKey ? `Saved via ${providerStatus.keyStates[provider.id]?.apiKeySource}` : "Not saved"}</small>
-                </span>
-                <input
-                  type="password"
-                  value={apiKeys[provider.id]}
-                  onChange={(event) => setApiKeys((current) => ({ ...current, [provider.id]: event.target.value }))}
-                  placeholder="Blank keeps existing key"
-                />
+  function keySummary(provider: AiProviderId) {
+    const state = providerStatus.keyStates[provider];
+    return state?.hasApiKey ? `${providerLabel(provider)} key: ${state.apiKeySource}` : `${providerLabel(provider)} key: missing`;
+  }
+
+  function renderBaseUrl(provider: AiProviderId, target: ModelTarget) {
+    if (provider === "ollama") return null;
+    if (target === "vision" && provider === draft.aiProvider) return null;
+    return (
+      <label className="route-full">
+        <span>Base URL</span>
+        <input value={draft.providers[provider].baseUrl} onChange={(event) => updateProvider(provider, { baseUrl: event.target.value })} />
+      </label>
+    );
+  }
+
+  function renderModelSelect(target: ModelTarget) {
+    const provider = target === "vision" ? draft.visionProvider : draft.aiProvider;
+    const providerSettings = draft.providers[provider];
+    const value = target === "vision" ? providerSettings.selectedVisionModel : providerSettings.selectedModel;
+    const options = target === "vision" ? currentVisionModels : models;
+    const placeholder = value ? "Model unavailable" : "Select model";
+    return (
+      <label className="route-model-field">
+        <span>{target === "vision" ? "Vision model" : "Model"}</span>
+        <select
+          value={value}
+          onChange={(event) =>
+            updateProvider(provider, target === "vision" ? { selectedVisionModel: event.target.value } : { selectedModel: event.target.value })
+          }
+        >
+          <option value="">{placeholder}</option>
+          {options.map((model) => (
+            <option key={`${target}-${provider}-${model.id}`} value={model.id}>
+              {modelOptionLabel(model, target)}
+            </option>
+          ))}
+        </select>
+      </label>
+    );
+  }
+
+  const accessSummary = draft.aiProvider === draft.visionProvider
+    ? keySummary(draft.aiProvider)
+    : `${keySummary(draft.aiProvider)} · ${keySummary(draft.visionProvider)}`;
+  const activeNavTitle = SETTINGS_NAV.find((item) => item.id === activeSection)?.title || "Settings";
+
+  function renderModelRouting() {
+    return (
+      <section className="settings-panel" aria-labelledby="settings-models-title">
+        <div className="settings-section-intro">
+          <h3 id="settings-models-title">Models & Routing</h3>
+          <p>학습 응답과 도형·이미지 해석에 사용할 모델을 각각 지정합니다.</p>
+        </div>
+        <div className="settings-route-grid">
+          <fieldset className="settings-route-panel">
+            <legend>
+              <Brain size={15} /> Learning model
+            </legend>
+            <div className="route-fields">
+              <label>
+                <span>Provider</span>
+                <select value={draft.aiProvider} onChange={(event) => chooseProvider(event.target.value as AiProviderId)}>
+                  {PROVIDERS.map((provider) => (
+                    <option key={provider.id} value={provider.id}>
+                      {provider.label}
+                    </option>
+                  ))}
+                </select>
               </label>
-            ))}
-          </div>
+              {renderBaseUrl(draft.aiProvider, "learning")}
+              <div className="route-model-row">
+                {renderModelSelect("learning")}
+                <button className="wide-button compact" type="button" onClick={() => void refreshModels("learning")} disabled={busy}>
+                  <RefreshCw size={15} /> Models
+                </button>
+                <button className="wide-button compact" type="button" onClick={() => void testConnection("learning")} disabled={busy}>
+                  <RefreshCw size={15} /> Test
+                </button>
+              </div>
+            </div>
+          </fieldset>
+
+          <fieldset className="settings-route-panel">
+            <legend>
+              <ImageIcon size={15} /> Figure vision model
+            </legend>
+            <div className="route-fields">
+              <label>
+                <span>Provider</span>
+                <select value={draft.visionProvider} onChange={(event) => chooseVisionProvider(event.target.value as AiProviderId)}>
+                  {PROVIDERS.map((provider) => (
+                    <option key={provider.id} value={provider.id}>
+                      {provider.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              {renderBaseUrl(draft.visionProvider, "vision")}
+              <div className="route-model-row">
+                {renderModelSelect("vision")}
+                <button className="wide-button compact" type="button" onClick={() => void refreshModels("vision")} disabled={busy}>
+                  <RefreshCw size={15} /> Models
+                </button>
+                <button className="wide-button compact" type="button" onClick={() => void testConnection("vision")} disabled={busy}>
+                  <RefreshCw size={15} /> Test
+                </button>
+              </div>
+              {selectedVisionLooksUnsupported ? <p className="settings-warning">Selected model is not known to support image input.</p> : null}
+            </div>
+          </fieldset>
+        </div>
+      </section>
+    );
+  }
+
+  function renderProviderAccess() {
+    return (
+      <section className="settings-panel" aria-labelledby="settings-access-title">
+        <div className="settings-section-intro">
+          <h3 id="settings-access-title">Provider Access</h3>
+          <p>API 키를 저장합니다. 비워 두면 기존 키가 유지됩니다.</p>
+        </div>
+        <div className="provider-key-grid">
+          {PROVIDERS.map((provider) => (
+            <label key={provider.id}>
+              <span>
+                {provider.keyLabel}
+                <small className={providerStatus.keyStates[provider.id]?.hasApiKey ? "" : "missing"}>
+                  {providerStatus.keyStates[provider.id]?.hasApiKey ? `Saved via ${providerStatus.keyStates[provider.id]?.apiKeySource}` : "Not saved"}
+                </small>
+              </span>
+              <input
+                type="password"
+                value={apiKeys[provider.id]}
+                onChange={(event) => setApiKeys((current) => ({ ...current, [provider.id]: event.target.value }))}
+                placeholder="Blank keeps existing key"
+              />
+            </label>
+          ))}
+        </div>
+      </section>
+    );
+  }
+
+  function renderFolders() {
+    return (
+      <section className="settings-panel" aria-labelledby="settings-folders-title">
+        <div className="settings-section-intro">
+          <h3 id="settings-folders-title">Folders</h3>
+          <p>프로젝트와 다운로드 파일이 저장될 위치입니다.</p>
+        </div>
+        <div className="settings-grid folder-settings-grid">
           <label className="folder-field">
             <span>Project root folder</span>
             <div className="folder-picker-row">
               <input value={draft.projectRootFolder} onChange={(event) => updateDraft({ projectRootFolder: event.target.value })} />
-              <button className="icon-button" type="button" onClick={chooseProjectRoot} title="Choose project root folder">
-                <FolderOpen size={17} />
+              <button className="icon-button" type="button" onClick={() => void chooseProjectRoot()} title="Choose project root folder">
+                <FolderOpen size={20} />
               </button>
             </div>
           </label>
@@ -196,22 +356,24 @@ export function SettingsModal({
             <span>Default download folder</span>
             <div className="folder-picker-row">
               <input value={draft.defaultDownloadFolder} onChange={(event) => updateDraft({ defaultDownloadFolder: event.target.value })} />
-              <button className="icon-button" type="button" onClick={chooseDownloadFolder} title="Choose default download folder">
-                <FolderOpen size={17} />
+              <button className="icon-button" type="button" onClick={() => void chooseDownloadFolder()} title="Choose default download folder">
+                <FolderOpen size={20} />
               </button>
             </div>
           </label>
-          <label>
-            <span>Model</span>
-            <select value={activeProvider.selectedModel} onChange={(event) => updateProvider(draft.aiProvider, { selectedModel: event.target.value })}>
-              <option value="">{providerStatus.selectedModel ? "Model unavailable" : "Select model"}</option>
-              {models.map((model) => (
-                <option key={model.id} value={model.id}>
-                  {model.id}
-                </option>
-              ))}
-            </select>
-          </label>
+        </div>
+      </section>
+    );
+  }
+
+  function renderPreferences() {
+    return (
+      <section className="settings-panel" aria-labelledby="settings-preferences-title">
+        <div className="settings-section-intro">
+          <h3 id="settings-preferences-title">Learning Preferences</h3>
+          <p>인터페이스 테마와 튜터의 응답 언어를 설정합니다.</p>
+        </div>
+        <div className="settings-grid preferences-grid">
           <label>
             <span>Theme</span>
             <select value={draft.theme} onChange={(event) => updateDraft({ theme: event.target.value as AppSettings["theme"] })}>
@@ -227,6 +389,18 @@ export function SettingsModal({
               <option value="en">English</option>
             </select>
           </label>
+          <label>
+            <span>Chat edit submit</span>
+            <select
+              value={draft.chatSubmitShortcut}
+              onChange={(event) => updateDraft({ chatSubmitShortcut: event.target.value as AppSettings["chatSubmitShortcut"] })}
+            >
+              <option value="cmd-enter">Cmd-Enter</option>
+              <option value="enter">Enter</option>
+            </select>
+          </label>
+        </div>
+        <div className="settings-toggle-grid">
           <label className="toggle-row">
             <input type="checkbox" checked={draft.autoAdvanceOnMastery} onChange={(event) => updateDraft({ autoAdvanceOnMastery: event.target.checked })} />
             <span>Auto advance on mastery</span>
@@ -239,22 +413,69 @@ export function SettingsModal({
             <input type="checkbox" checked={draft.showSourceInspector} onChange={(event) => updateDraft({ showSourceInspector: event.target.checked })} />
             <span>Show source inspector</span>
           </label>
-        </section>
-        <footer className="modal-actions">
+        </div>
+      </section>
+    );
+  }
+
+  function renderActiveSection() {
+    if (activeSection === "access") return renderProviderAccess();
+    if (activeSection === "folders") return renderFolders();
+    if (activeSection === "preferences") return renderPreferences();
+    return renderModelRouting();
+  }
+
+  return (
+    <div className="modal-backdrop settings-backdrop">
+      <div className="modal settings-modal">
+        <header className="modal-header settings-hero">
+          <div>
+            <p className="eyebrow">Settings</p>
+            <h2>AI Providers & Learning</h2>
+          </div>
+          <button className="icon-button settings-close-button" onClick={onClose} title="Close settings">
+            <X size={26} />
+          </button>
+        </header>
+
+        <div className="settings-shell">
+          <nav className="settings-sidebar" aria-label="Settings sections">
+            {SETTINGS_NAV.map((item) => {
+              const Icon = item.icon;
+              const active = item.id === activeSection;
+              return (
+                <button
+                  key={item.id}
+                  type="button"
+                  className={`settings-nav-item${active ? " active" : ""}`}
+                  onClick={() => setActiveSection(item.id)}
+                  aria-current={active ? "page" : undefined}
+                >
+                  <span className="settings-nav-icon" aria-hidden="true">
+                    <Icon size={19} />
+                  </span>
+                  <span className="settings-nav-copy">
+                    <strong>{item.title}</strong>
+                    <small>{item.subtitle}</small>
+                  </span>
+                </button>
+              );
+            })}
+          </nav>
+
+          <main className="settings-content" aria-label={activeNavTitle}>
+            {renderActiveSection()}
+          </main>
+        </div>
+
+        <footer className="modal-actions settings-footer">
           <span>
-            <KeyRound size={15} /> {PROVIDERS.find((provider) => provider.id === draft.aiProvider)?.label}:{" "}
-            {providerStatus.keyStates[draft.aiProvider]?.hasApiKey ? `key source ${providerStatus.keyStates[draft.aiProvider]?.apiKeySource}` : "no key"} · {statusText}
+            <KeyRound size={15} /> {accessSummary} · {statusText}
           </span>
-          <button className="wide-button" onClick={refreshModels} disabled={busy}>
-            <RefreshCw size={16} /> Models
+          <button className="wide-button danger" type="button" onClick={() => void clearLearningKey()}>
+            <Trash2 size={16} /> Clear learning key
           </button>
-          <button className="wide-button" onClick={testConnection} disabled={busy}>
-            <RefreshCw size={16} /> Test
-          </button>
-          <button className="wide-button danger" onClick={clearKey}>
-            <Trash2 size={16} /> Clear key
-          </button>
-          <button className="wide-button primary" onClick={save} disabled={busy}>
+          <button className="wide-button primary" type="button" onClick={() => void save()} disabled={busy}>
             <Save size={16} /> Save
           </button>
         </footer>

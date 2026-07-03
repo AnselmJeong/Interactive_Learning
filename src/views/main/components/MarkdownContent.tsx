@@ -4,14 +4,14 @@ import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 
-function normalizeCjkAdjacentEmphasis(content: string): string {
+function normalizeMarkdownContent(content: string): string {
   return content
     .split(/(```[\s\S]*?```|`[^`\n]*`)/g)
     .map((segment) => {
       if (segment.startsWith("```") || segment.startsWith("`")) return segment;
       return segment
-        .replace(/(?<=[^*\s])(\*{1,3})(?=\p{Script=Hangul})/gu, "$1\u200b")
-        .replace(/(?<=[^*\s])(\*{1,3})(?=[:：.,;!?…)\]\}\p{Script=Hangul}])/gu, "$1\u200b");
+        .replace(/(\*{1,3})[\u200b\u200c\u200d\ufeff]+/gu, "$1")
+        .replace(/[\u200b\u200c\u200d\ufeff]+(\*{1,3})/gu, "$1");
     })
     .join("");
 }
@@ -63,7 +63,7 @@ export const MarkdownContent = memo(function MarkdownContent({ content, compact 
           },
         }}
       >
-        {normalizeCjkAdjacentEmphasis(content)}
+        {normalizeMarkdownContent(content)}
       </ReactMarkdown>
     </div>
   );

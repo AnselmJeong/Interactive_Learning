@@ -8,6 +8,7 @@ type LookupAction = "define" | "lookup" | "image";
 
 type SelectionState = {
   chunkId: string;
+  anchorMessageId?: string | null;
   text: string;
   x: number;
   y: number;
@@ -126,12 +127,16 @@ export function LearningSelectionLookup({
     const endLookup = endElement.closest<HTMLElement>("[data-lookup-chunk-id]");
     const chunkId = startLookup?.dataset.lookupChunkId || endLookup?.dataset.lookupChunkId || defaultChunkId || "";
     if (!chunkId) return null;
+    const startMessage = startElement.closest<HTMLElement>("[data-lookup-message-id]");
+    const endMessage = endElement.closest<HTMLElement>("[data-lookup-message-id]");
+    const anchorMessageId = startMessage?.dataset.lookupMessageId || endMessage?.dataset.lookupMessageId || null;
 
     const rect = range.getBoundingClientRect();
     if (!rect.width && !rect.height) return null;
     const point = toolbarPointForRange(rect, root);
     return {
       chunkId,
+      anchorMessageId,
       text: text.slice(0, 420),
       x: point.x,
       y: point.y,
@@ -182,6 +187,7 @@ export function LearningSelectionLookup({
       const saved = (await request("annotations.save", {
         materialId,
         chunkId: panel.selection.chunkId,
+        anchorMessageId: panel.selection.anchorMessageId || null,
         kind: panel.result.kind,
         selectedText: panel.selection.text,
         result: panel.result,

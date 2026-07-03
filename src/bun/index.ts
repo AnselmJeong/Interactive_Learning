@@ -59,31 +59,34 @@ async function chooseSourcePaths() {
 
 async function providerClient(input: AiProviderConnectionInput = {}) {
   const publicSettings = input.settings || await settings.get();
-  const overrideKey = input.apiKeys?.[publicSettings.aiProvider]?.trim();
-  const apiKey = overrideKey ? { value: overrideKey, source: "settings" as const } : await secrets.getApiKey(publicSettings.aiProvider);
+  const provider = input.provider || publicSettings.aiProvider;
+  const overrideKey = input.apiKeys?.[provider]?.trim();
+  const apiKey = overrideKey ? { value: overrideKey, source: "settings" as const } : await secrets.getApiKey(provider);
   return {
     publicSettings,
+    provider,
     apiKey,
-    client: createAiProviderClient(publicSettings, apiKey.value),
+    client: createAiProviderClient(publicSettings, apiKey.value, provider),
   };
 }
 
 async function providerStatus(reachable = false, error?: string, input: AiProviderConnectionInput = {}) {
   const publicSettings = input.settings || await settings.get();
-  const overrideKey = input.apiKeys?.[publicSettings.aiProvider]?.trim();
-  const apiKey = overrideKey ? { value: overrideKey, source: "settings" as const } : await secrets.getApiKey(publicSettings.aiProvider);
+  const provider = input.provider || publicSettings.aiProvider;
+  const overrideKey = input.apiKeys?.[provider]?.trim();
+  const apiKey = overrideKey ? { value: overrideKey, source: "settings" as const } : await secrets.getApiKey(provider);
   const keyStates = await secrets.keyStates();
   if (overrideKey) {
-    keyStates[publicSettings.aiProvider] = { hasApiKey: true, apiKeySource: "settings" } satisfies AiProviderKeyState;
+    keyStates[provider] = { hasApiKey: true, apiKeySource: "settings" } satisfies AiProviderKeyState;
   }
-  const providerSettings = publicSettings.providers[publicSettings.aiProvider];
+  const providerSettings = publicSettings.providers[provider];
   return {
-    provider: publicSettings.aiProvider,
+    provider,
     baseUrl: providerSettings.baseUrl,
     hasApiKey: Boolean(apiKey.value),
     apiKeySource: apiKey.source,
     keyStates,
-    selectedModel: providerSettings.selectedModel,
+    selectedModel: input.modelPurpose === "vision" ? providerSettings.selectedVisionModel : providerSettings.selectedModel,
     reachable,
     error,
   };
@@ -95,11 +98,14 @@ async function explainFigure(materialId: string, figureId: string, userPrompt?: 
   if (!figure) throw new Error("Figure not found");
   if (!existsSync(figure.assetPath)) throw new Error("FIGURE_ASSET_MISSING: The source image file is missing.");
 
-  const { publicSettings, apiKey, client } = await providerClient();
-  const model = publicSettings.providers[publicSettings.aiProvider].selectedModel;
+  const publicSettings = await settings.get();
+  const visionProvider = publicSettings.visionProvider;
+  const apiKey = await secrets.getApiKey(visionProvider);
+  const client = createAiProviderClient(publicSettings, apiKey.value, visionProvider);
+  const model = publicSettings.providers[visionProvider].selectedVisionModel;
   if (!model || !apiKey.value) throw new Error("AI provider is not configured");
-  if (!client.describeImage || !modelSupportsVision(publicSettings.aiProvider, model)) {
-    throw new Error("VISION_MODEL_REQUIRED: 이 그림 설명에는 vision-capable model이 필요합니다. Settings에서 이미지 입력을 지원하는 Gemini 모델을 선택하세요.");
+  if (!client.describeImage) {
+    throw new Error("VISION_MODEL_REQUIRED: 이 그림 설명에는 vision-capable model이 필요합니다. Settings에서 Figure vision model을 선택하세요.");
   }
 
   const nearby = artifacts.sourceChunks
@@ -282,11 +288,17 @@ const rpc = BrowserView.defineRPC<AppRPC>({
       "aiProvider.testConnection": async (input) => {
         try {
           const { client, publicSettings } = await providerClient(input);
+          const provider = input.provider || publicSettings.aiProvider;
           const models = await client.listModels();
-          const selectedModel = publicSettings.providers[publicSettings.aiProvider].selectedModel;
+          const selectedModel = input.modelPurpose === "vision"
+            ? publicSettings.providers[provider].selectedVisionModel
+            : publicSettings.providers[provider].selectedModel;
           const savedStillExists = !selectedModel || models.some((model) => model.id === selectedModel);
           if (!savedStillExists) {
             return providerStatus(true, "Saved model is unavailable. Choose a model manually.", input);
+          }
+          if (input.modelPurpose === "vision" && selectedModel && !modelSupportsVision(provider, selectedModel)) {
+            return providerStatus(true, "Selected model is not in the known image-input list; figure explanation will still try it.", input);
           }
           return providerStatus(true, undefined, input);
         } catch (error) {

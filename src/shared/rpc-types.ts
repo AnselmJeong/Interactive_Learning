@@ -92,6 +92,8 @@ export type ProjectArchiveExport = {
 export type AiProviderConnectionInput = {
   settings?: AppSettings;
   apiKeys?: Partial<Record<AiProviderId, string>>;
+  provider?: AiProviderId;
+  modelPurpose?: "learning" | "vision";
 };
 
 export type AppRPC = {
@@ -123,6 +125,7 @@ export type AppRPC = {
         params: {
           materialId: string;
           chunkId: string;
+          anchorMessageId?: string | null;
           kind: MaterialAnnotationKind;
           selectedText: string;
           result: LookupResult | ImageLookupResult;

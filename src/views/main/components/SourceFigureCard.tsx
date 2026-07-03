@@ -60,7 +60,7 @@ export function SourceFigureCard({ figure, materialId, request, compact = false 
       const message = (err as Error).message || String(err);
       setError(
         message.includes("VISION_MODEL_REQUIRED")
-          ? "이 그림 설명에는 vision-capable model이 필요합니다. Settings에서 이미지 입력을 지원하는 Gemini 모델을 선택하세요."
+          ? "이 그림 설명에는 vision-capable model이 필요합니다. Settings에서 Figure vision model을 선택하세요."
           : message.replace(/^FIGURE_ASSET_MISSING:\s*/, "")
       );
     } finally {
