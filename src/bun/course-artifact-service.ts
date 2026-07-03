@@ -186,7 +186,7 @@ function buildLecturePlan(materialId: string, chunks: SourceChunk[]): LecturePla
         intrigue: {
           tension: `${title}에서 당연해 보이는 말과 실제 원문이 밀어붙이는 핵심 사이의 차이를 붙잡는다.`,
           stakes: "이 대목을 이해하면 뒤따르는 설명을 외우는 대신 왜 그런 순서로 전개되는지 볼 수 있다.",
-          surpriseLine: `핵심은 ${title}을 결론처럼 외우는 것이 아니라, 이 대목이 어떤 질문을 열고 있는지 따라가는 것입니다.`,
+          surpriseLine: `${title}은 결론을 외우게 하기보다, 이 대목이 어떤 질문을 열고 있는지 따라가게 합니다.`,
         },
         guidedReading: {
           sourceSpark: sourceSpark(firstSentence),

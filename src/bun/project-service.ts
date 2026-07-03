@@ -147,7 +147,7 @@ function blocksToMarkdown(blocks: TutorContentBlock[], fallback: string) {
         return [block.title ? `**${block.title}**` : "", header, divider, ...rows].filter(Boolean).join("\n");
       }
       if (block.type === "source_quote") return `> ${block.quote}\n\n_Source: ${block.sourceRef}${block.attribution ? `, ${block.attribution}` : ""}_`;
-      if (block.type === "reflection") return `**Reflection**\n\n${block.body}`;
+      if (block.type === "reflection") return `**Reflection**\n\n${block.body}${block.aiView ? `\n\n_AI의 견해:_ ${block.aiView}` : ""}`;
       if (block.type === "misconception") return `**${block.title || "Clarification"}**\n\n${block.body}\n\n${block.repair}`;
       if (block.type === "bridge") return `_${block.body}_`;
       return "";

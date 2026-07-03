@@ -1,12 +1,29 @@
 import type { ProviderModel } from "../shared/settings-types";
 
+export type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
+
+export type ChatParams = {
+  model?: string;
+  messages: ChatMessage[];
+  temperature?: number;
+  maxTokens?: number;
+  timeoutMs?: number;
+};
+
+export interface AiChatClient {
+  listModels(): Promise<ProviderModel[]>;
+  chatJson(params: ChatParams): Promise<unknown>;
+  chatText(params: ChatParams): Promise<string>;
+}
+
 type ClientSettings = {
   baseUrl: string;
   apiKey: string;
   model: string;
+  providerName?: string;
 };
 
-export class OpenAICompatibleClient {
+export class OpenAICompatibleClient implements AiChatClient {
   constructor(private readonly settings: ClientSettings) {}
 
   private url(path: string) {
@@ -21,7 +38,7 @@ export class OpenAICompatibleClient {
   }
 
   async listModels(): Promise<ProviderModel[]> {
-    if (!this.settings.apiKey) throw new Error("Ollama API key is not configured");
+    if (!this.settings.apiKey) throw new Error(`${this.providerName()} API key is not configured`);
     const response = await fetch(this.url("/models"), { headers: this.headers() });
     if (!response.ok) {
       throw new Error(`Model list failed: ${response.status} ${await response.text()}`);
@@ -30,13 +47,7 @@ export class OpenAICompatibleClient {
     return (data.data || []).map((model) => ({ id: model.id, created: model.created }));
   }
 
-  async chatJson(params: {
-    model?: string;
-    messages: Array<{ role: "system" | "user" | "assistant"; content: string }>;
-    temperature?: number;
-    maxTokens?: number;
-    timeoutMs?: number;
-  }): Promise<unknown> {
+  async chatJson(params: ChatParams): Promise<unknown> {
     const text = await this.chat(params, { type: "json_object" });
     try {
       return parseJsonFromText(text);
@@ -60,28 +71,16 @@ export class OpenAICompatibleClient {
     }
   }
 
-  async chatText(params: {
-    model?: string;
-    messages: Array<{ role: "system" | "user" | "assistant"; content: string }>;
-    temperature?: number;
-    maxTokens?: number;
-    timeoutMs?: number;
-  }) {
+  async chatText(params: ChatParams) {
     return this.chat(params);
   }
 
   private async chat(
-    params: {
-      model?: string;
-      messages: Array<{ role: "system" | "user" | "assistant"; content: string }>;
-      temperature?: number;
-      maxTokens?: number;
-      timeoutMs?: number;
-    },
+    params: ChatParams,
     responseFormat?: { type: "json_object" }
   ) {
     const model = params.model || this.settings.model;
-    if (!this.settings.apiKey) throw new Error("Ollama API key is not configured");
+    if (!this.settings.apiKey) throw new Error(`${this.providerName()} API key is not configured`);
     if (!model) throw new Error("Model is not selected");
 
     // Bound every request so a stalled provider fails fast instead of hanging the turn forever.
@@ -119,6 +118,10 @@ export class OpenAICompatibleClient {
     const content = data.choices?.[0]?.message?.content || "";
     if (!content.trim()) throw new Error(`AI provider returned an empty message for model ${model}`);
     return content;
+  }
+
+  private providerName() {
+    return this.settings.providerName || "AI provider";
   }
 }
 

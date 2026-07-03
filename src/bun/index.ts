@@ -4,13 +4,14 @@ import { existsSync } from "node:fs";
 import { ProjectService } from "./project-service";
 import { SettingsService } from "./settings-service";
 import { AiProviderSettingsService } from "./ai-provider-settings";
-import { OpenAICompatibleClient } from "./openai-compatible-client";
+import { createAiProviderClient } from "./ai-provider-client";
 import { SourceService } from "./source-service";
 import { CourseArtifactService } from "./course-artifact-service";
 import { TutorService } from "./tutor-service";
 import { createMainWindow } from "./app-window";
 import { installApplicationMenu } from "./app-menu";
-import type { AppRPC } from "../shared/rpc-types";
+import type { AiProviderConnectionInput, AppRPC } from "../shared/rpc-types";
+import type { AiProviderKeyState } from "../shared/settings-types";
 
 const projects = new ProjectService();
 const settings = new SettingsService();
@@ -19,7 +20,6 @@ const sources = new SourceService();
 const materials = new CourseArtifactService();
 const tutor = new TutorService();
 
-installApplicationMenu();
 void settings.get().then((current) => projects.migrateUnsetProjectRoots(current.projectRootFolder)).catch((error) => {
   console.warn("Failed to migrate project roots", error);
 });
@@ -53,28 +53,33 @@ async function chooseSourcePaths() {
   return normalizeSelectedPaths(selected);
 }
 
-async function providerClient() {
-  const publicSettings = await settings.get();
-  const apiKey = await secrets.getApiKey();
+async function providerClient(input: AiProviderConnectionInput = {}) {
+  const publicSettings = input.settings || await settings.get();
+  const overrideKey = input.apiKeys?.[publicSettings.aiProvider]?.trim();
+  const apiKey = overrideKey ? { value: overrideKey, source: "settings" as const } : await secrets.getApiKey(publicSettings.aiProvider);
   return {
     publicSettings,
     apiKey,
-    client: new OpenAICompatibleClient({
-      baseUrl: publicSettings.ollamaBaseUrl,
-      apiKey: apiKey.value,
-      model: publicSettings.selectedModel,
-    }),
+    client: createAiProviderClient(publicSettings, apiKey.value),
   };
 }
 
-async function providerStatus(reachable = false, error?: string) {
-  const publicSettings = await settings.get();
-  const apiKey = await secrets.getApiKey();
+async function providerStatus(reachable = false, error?: string, input: AiProviderConnectionInput = {}) {
+  const publicSettings = input.settings || await settings.get();
+  const overrideKey = input.apiKeys?.[publicSettings.aiProvider]?.trim();
+  const apiKey = overrideKey ? { value: overrideKey, source: "settings" as const } : await secrets.getApiKey(publicSettings.aiProvider);
+  const keyStates = await secrets.keyStates();
+  if (overrideKey) {
+    keyStates[publicSettings.aiProvider] = { hasApiKey: true, apiKeySource: "settings" } satisfies AiProviderKeyState;
+  }
+  const providerSettings = publicSettings.providers[publicSettings.aiProvider];
   return {
-    baseUrl: publicSettings.ollamaBaseUrl,
+    provider: publicSettings.aiProvider,
+    baseUrl: providerSettings.baseUrl,
     hasApiKey: Boolean(apiKey.value),
     apiKeySource: apiKey.source,
-    selectedModel: publicSettings.selectedModel,
+    keyStates,
+    selectedModel: providerSettings.selectedModel,
     reachable,
     error,
   };
@@ -192,21 +197,22 @@ const rpc = BrowserView.defineRPC<AppRPC>({
         await secrets.update(patch);
         return providerStatus();
       },
-      "aiProvider.listModels": async () => {
-        const { client } = await providerClient();
+      "aiProvider.listModels": async (input) => {
+        const { client } = await providerClient(input);
         return client.listModels();
       },
-      "aiProvider.testConnection": async () => {
+      "aiProvider.testConnection": async (input) => {
         try {
-          const { client, publicSettings } = await providerClient();
+          const { client, publicSettings } = await providerClient(input);
           const models = await client.listModels();
-          const savedStillExists = !publicSettings.selectedModel || models.some((model) => model.id === publicSettings.selectedModel);
+          const selectedModel = publicSettings.providers[publicSettings.aiProvider].selectedModel;
+          const savedStillExists = !selectedModel || models.some((model) => model.id === selectedModel);
           if (!savedStillExists) {
-            return providerStatus(true, "Saved model is unavailable. Choose a model manually.");
+            return providerStatus(true, "Saved model is unavailable. Choose a model manually.", input);
           }
-          return providerStatus(true);
+          return providerStatus(true, undefined, input);
         } catch (error) {
-          return providerStatus(false, (error as Error).message);
+          return providerStatus(false, (error as Error).message, input);
         }
       },
     },
@@ -219,3 +225,4 @@ const rpc = BrowserView.defineRPC<AppRPC>({
 });
 
 const mainWindow = createMainWindow(rpc as never);
+installApplicationMenu(() => sendToView("app.openAbout", {}));

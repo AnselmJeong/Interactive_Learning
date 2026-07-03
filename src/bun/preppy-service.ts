@@ -24,6 +24,11 @@ function pythonRootCandidates() {
   return roots.map((root) => join(root, "python"));
 }
 
+function bundledRuntimeName() {
+  const os = process.platform === "darwin" ? "macos" : process.platform;
+  return `${os}-${process.arch}`;
+}
+
 function resolvePythonRoot() {
   const found = pythonRootCandidates().find((candidate) => existsSync(join(candidate, "pyproject.toml")) && existsSync(join(candidate, "src", "preppy")));
   if (!found) throw new Error("Bundled Preppy backend was not found.");
@@ -31,9 +36,30 @@ function resolvePythonRoot() {
 }
 
 function pythonCommand(pythonRoot: string) {
+  const bundledPython = join(pythonRoot, ".bundle", bundledRuntimeName(), "runtime", "bin", "python3.12");
+  if (existsSync(bundledPython)) return { command: bundledPython, args: ["-m", "preppy.cli"] };
+
   const venvPython = join(pythonRoot, ".venv", "bin", "python");
   if (existsSync(venvPython)) return { command: venvPython, args: ["-m", "preppy.cli"] };
+
   return { command: "uv", args: ["run", "python", "-m", "preppy.cli"] };
+}
+
+function parsePreppyResult(text: string) {
+  if (!text.trim()) return null;
+  try {
+    return JSON.parse(text.trim()) as PreppyBuildResult;
+  } catch {
+    return null;
+  }
+}
+
+function preppyFailureMessage(result: PreppyBuildResult, fallback = "Preppy conversion failed.") {
+  const issues = (result.issues || []).map((issue) => issue.message).filter(Boolean);
+  if (!issues.length) return fallback;
+  const visible = issues.slice(0, 5).map((message) => `- ${message}`);
+  const extra = issues.length > visible.length ? [`- ...and ${issues.length - visible.length} more`] : [];
+  return ["Preppy conversion failed.", ...visible, ...extra].join("\n");
 }
 
 function spawnPreppy(inputPath: string, outputPath: string) {
@@ -41,6 +67,7 @@ function spawnPreppy(inputPath: string, outputPath: string) {
   const { command, args } = pythonCommand(pythonRoot);
   const childArgs = [...args, inputPath, "-o", outputPath, "--overwrite", "--json"];
   const pathParts = [
+    join(pythonRoot, ".bundle", bundledRuntimeName(), "runtime", "bin"),
     process.env.PATH || "",
     "/opt/homebrew/bin",
     "/usr/local/bin",
@@ -55,6 +82,7 @@ function spawnPreppy(inputPath: string, outputPath: string) {
         ...process.env,
         PATH: pathParts.join(":"),
         PYTHONPATH: join(pythonRoot, "src"),
+        PYTHONDONTWRITEBYTECODE: "1",
         PYTHONUNBUFFERED: "1",
       },
       stdio: ["ignore", "pipe", "pipe"],
@@ -71,15 +99,20 @@ function spawnPreppy(inputPath: string, outputPath: string) {
       reject(new Error(`Preppy backend failed to start: ${error.message}`));
     });
     child.on("close", (code) => {
+      const result = parsePreppyResult(stdout);
       if (code !== 0) {
-        reject(new Error(stderr.trim() || stdout.trim() || `Preppy exited with status ${code}`));
+        reject(new Error(result ? preppyFailureMessage(result, stderr.trim()) : stderr.trim() || stdout.trim() || `Preppy exited with status ${code}`));
         return;
       }
-      try {
-        resolveResult(JSON.parse(stdout.trim()) as PreppyBuildResult);
-      } catch {
+      if (!result) {
         reject(new Error(`Preppy returned invalid JSON: ${stdout.trim() || stderr.trim()}`));
+        return;
       }
+      if (!result.ok) {
+        reject(new Error(preppyFailureMessage(result)));
+        return;
+      }
+      resolveResult(result);
     });
   });
 }

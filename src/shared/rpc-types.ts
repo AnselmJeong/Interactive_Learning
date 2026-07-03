@@ -1,6 +1,6 @@
 import type { RPCSchema } from "electrobun/bun";
 import type { MaterialArtifacts, MaterialStatus, QualityStatus, SourceType } from "./artifact-types";
-import type { AiProviderStatus, AppSettings, ProviderModel, PublicAiProviderUpdate } from "./settings-types";
+import type { AiProviderId, AiProviderStatus, AppSettings, ProviderModel, PublicAiProviderUpdate } from "./settings-types";
 import type { SessionSnapshot, SessionSummary, TutorContext, TutorTurnOutput } from "./tutor-types";
 
 export type ProjectSummary = {
@@ -79,6 +79,11 @@ export type ProjectArchiveExport = {
   sessionCount: number;
 };
 
+export type AiProviderConnectionInput = {
+  settings?: AppSettings;
+  apiKeys?: Partial<Record<AiProviderId, string>>;
+};
+
 export type AppRPC = {
   bun: RPCSchema<{
     requests: {
@@ -112,8 +117,8 @@ export type AppRPC = {
       "settings.chooseDownloadFolder": { params: {}; response: AppSettings };
       "aiProvider.status": { params: {}; response: AiProviderStatus };
       "aiProvider.updateSettings": { params: PublicAiProviderUpdate; response: AiProviderStatus };
-      "aiProvider.listModels": { params: {}; response: ProviderModel[] };
-      "aiProvider.testConnection": { params: {}; response: AiProviderStatus };
+      "aiProvider.listModels": { params: AiProviderConnectionInput; response: ProviderModel[] };
+      "aiProvider.testConnection": { params: AiProviderConnectionInput; response: AiProviderStatus };
     };
     messages: {
       "app.log": { level: "info" | "warn" | "error"; message: string };
@@ -127,6 +132,7 @@ export type AppRPC = {
       "tutor.turnStarted": { sessionId: string };
       "tutor.turnCompleted": { sessionId: string; output: TutorTurnOutput };
       "tutor.turnError": { sessionId: string; error: string };
+      "app.openAbout": {};
     };
   }>;
 };

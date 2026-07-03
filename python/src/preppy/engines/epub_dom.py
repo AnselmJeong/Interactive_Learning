@@ -411,7 +411,7 @@ def _handle_image(
     doc_base = PurePosixPath(doc_href).parent
     resolved = _resolve_book_href(doc_base, src)
     item = book.get_item_with_href(resolved)
-    if item is None:
+    if item is None or not _is_image_item(item):
         img.decompose()
         return _ImageOutcome(kind="skipped")
 
@@ -444,6 +444,17 @@ def _handle_image(
     )
     asset = FigureAsset(meta=figure_meta, image_bytes=image_bytes)
     return _ImageOutcome(kind="exported", figure_id=exported.figure_id, asset=asset)
+
+
+def _is_image_item(item: object) -> bool:
+    get_type = getattr(item, "get_type", None)
+    if callable(get_type):
+        try:
+            return get_type() == ebooklib.ITEM_IMAGE
+        except Exception:
+            return False
+    media_type = str(getattr(item, "media_type", "") or "").lower()
+    return media_type.startswith("image/")
 
 
 def _rewrite_image_node(img: Tag, soup: BeautifulSoup, filename: str, caption: str | None) -> None:

@@ -36,7 +36,7 @@ export type TutorContentBlock =
   | { type: "flow"; title?: string; steps: string[] }
   | { type: "compare_table"; title?: string; columns: string[]; rows: Array<Record<string, string>> }
   | { type: "source_quote"; quote: string; sourceRef: string; attribution?: string; showToLearner?: boolean }
-  | { type: "reflection"; body: string }
+  | { type: "reflection"; body: string; aiView?: string }
   | { type: "misconception"; title?: string; body: string; repair: string }
   | { type: "bridge"; body: string };
 

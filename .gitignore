@@ -13,6 +13,7 @@ artifacts/
 
 # Python
 python/.venv/
+python/.bundle/
 __pycache__/
 *.pyc
 

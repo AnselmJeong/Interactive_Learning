@@ -1,4 +1,4 @@
-import { memo } from "react";
+import { memo, useState } from "react";
 import type { TutorContentBlock } from "../../../shared/tutor-types";
 import { MarkdownContent } from "./MarkdownContent";
 
@@ -300,12 +300,7 @@ function TutorBlock({ block }: { block: TutorContentBlock }) {
   }
 
   if (block.type === "reflection") {
-    return (
-      <section className="tutor-block reflection-block">
-        <span>생각해 볼 점</span>
-        <p>{block.body}</p>
-      </section>
-    );
+    return <ReflectionBlock block={block} />;
   }
 
   if (block.type === "misconception") {
@@ -323,6 +318,29 @@ function TutorBlock({ block }: { block: TutorContentBlock }) {
   return (
     <section className="tutor-block bridge-block">
       <p>{block.body}</p>
+    </section>
+  );
+}
+
+function ReflectionBlock({ block }: { block: Extract<TutorContentBlock, { type: "reflection" }> }) {
+  const [open, setOpen] = useState(false);
+  const hasAiView = Boolean(block.aiView?.trim());
+  return (
+    <section className="tutor-block reflection-block">
+      <span>생각해 볼 점</span>
+      <p>{block.body}</p>
+      {hasAiView ? (
+        <>
+          <button type="button" className="ai-view-button" aria-expanded={open} onClick={() => setOpen((value) => !value)}>
+            AI의 견해
+          </button>
+          {open ? (
+            <div className="ai-view-panel">
+              <MarkdownContent content={block.aiView || ""} compact />
+            </div>
+          ) : null}
+        </>
+      ) : null}
     </section>
   );
 }

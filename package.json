@@ -1,14 +1,15 @@
 {
   "name": "learnie",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "LEARNIE_PROJECT_ROOT=$PWD electrobun dev",
     "dev:watch": "LEARNIE_PROJECT_ROOT=$PWD electrobun dev --watch",
     "start": "LEARNIE_PROJECT_ROOT=$PWD electrobun run",
-    "build:dev": "bun install && electrobun build",
-    "build:stable": "electrobun build --env=stable",
+    "prepare:python-runtime": "bun run scripts/prepare-python-runtime.ts",
+    "build:dev": "bun install && bun run prepare:python-runtime && electrobun build",
+    "build:stable": "bun run prepare:python-runtime && electrobun build --env=stable",
     "typecheck": "tsc --noEmit",
     "test:python": "cd python && uv run pytest",
     "smoke:python": "LEARNIE_PROJECT_ROOT=$PWD bun run scripts/smoke-python.ts"

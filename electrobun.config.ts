@@ -22,10 +22,12 @@ export default {
     copy: {
       "src/views/main/index.html": "views/main/index.html",
       "src/views/main/styles/app.css": "views/main/app.css",
+      "assets/app-icon.svg": "views/main/assets/app-icon.svg",
       "node_modules/katex/dist/katex.min.css": "views/main/katex.min.css",
       "python/pyproject.toml": "python/pyproject.toml",
       "python/uv.lock": "python/uv.lock",
       "python/src": "python/src",
+      "python/.bundle": "python/.bundle",
     },
     mac: {
       bundleCEF: false,

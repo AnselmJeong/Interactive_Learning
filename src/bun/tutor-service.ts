@@ -2,7 +2,7 @@ import { getDb } from "./project-db";
 import { CourseArtifactService } from "./course-artifact-service";
 import { SettingsService } from "./settings-service";
 import { AiProviderSettingsService } from "./ai-provider-settings";
-import { OpenAICompatibleClient } from "./openai-compatible-client";
+import { createAiProviderClient } from "./ai-provider-client";
 import { dataPath } from "./paths";
 import { syncProjectRootToDb, writeSessionSnapshot } from "./project-bundle-sync";
 import type { CourseModule, LectureModulePlan, MaterialArtifacts, PresentationModulePlan, SourceChunk, VisualSpec } from "../shared/artifact-types";
@@ -159,6 +159,13 @@ function safeQuote(text: string, maxWords = 25) {
 function trimSentence(text: string, max = 260) {
   const normalized = text.replace(/\s+/g, " ").trim();
   return `${normalized.slice(0, max)}${normalized.length > max ? "..." : ""}`;
+}
+
+function stripTldrLead(text: string) {
+  return text
+    .replace(/^\s*(?:핵심은|요지는|요약하면|한마디로|TL;?DR[:：]?)\s*/i, "")
+    .replace(/^\s*(?:이\s+자료의\s+)?(?:핵심|요지)\s*(?:은|는|:|：)\s*/i, "")
+    .trim();
 }
 
 type CompareTableBlock = Extract<TutorContentBlock, { type: "compare_table" }>;
@@ -957,9 +964,9 @@ export class TutorService {
     attempt = 0
   ) {
     const settings = await this.settings.get();
-    const key = await this.secrets.getApiKey();
-    if (!settings.selectedModel || !key.value) throw new Error("AI provider is not configured");
-    const client = new OpenAICompatibleClient({ baseUrl: settings.ollamaBaseUrl, apiKey: key.value, model: settings.selectedModel });
+    const key = await this.secrets.getApiKey(settings.aiProvider);
+    if (!settings.providers[settings.aiProvider].selectedModel || !key.value) throw new Error("AI provider is not configured");
+    const client = createAiProviderClient(settings, key.value);
     const chunks = this.contextualChunks(artifacts, module, payload.userText, focusChunk?.id);
     const concepts = artifacts.conceptMap.filter((concept) => module.conceptIds.includes(concept.id));
     const intent = classifyIntent(payload.userText || "", payload.event);
@@ -998,6 +1005,7 @@ After that overview hook, teach the first source chunk with a guided_reading and
           role: "system",
           content: `You are a guided lecturer who teaches a source the learner has not read. Reply only as JSON. Tutor language: ${settings.tutorLanguage}.
 Invariant: assume the learner has not read the source. Teach it well enough that they feel a good teacher read it with them.
+When teaching in Korean, keep hard-to-translate proper nouns and identity-bearing terms in their original language when translation would be awkward or obscure the reference. This includes names of people, places, schools, institutions, book titles, technical terms, and culturally specific concepts.
 
 ANSWER THE LEARNER. This is the most important rule. When the learner asks a question, raises a tangent, or says you are dodging, you MUST answer their actual question this turn. Never deflect with "let's move on", "that is a good starting point", or a transition to the next topic instead of answering. Dodging a direct question is a failure.
 
@@ -1027,9 +1035,10 @@ Before writing a structured explanation, decide explicitly which of the four for
 Do not emit Mermaid syntax unless a Mermaid renderer is explicitly available; this app currently expects structured blocks, not mermaid code fences.
 Return 2-4 content blocks. Do not return paragraph-only output unless the learner asked a narrow factual question.
 Never simulate a flow, bullet list, or table inside paragraph or guided_reading text. If you are tempted to write "A | B | C", "1. A 2. B", or "- A - B", stop and emit either a flow, bullets, or compare_table block.
+Reflection blocks should not trap the learner before progress can continue. Whenever you emit a reflection block, include aiView: your own concise answer or interpretive stance, grounded in the current source, so the learner can reveal it without typing a reply.
 	You teach the source ONE SOURCE CHUNK AT A TIME, in order. Teach only the current chunk below this turn; do not summarize or race ahead to later chunks. The learner steps to the next chunk by choosing the progression option.
 	If the learner asks a detour question, answer it fully while preserving the current source chunk as the lesson anchor. When returning from a detour, continue from the next active chunk; do not replay the pre-detour explanation.
-	When starting a new module (or the very first chunk), open with a hook block whose body starts with "핵심은" and summarizes the module's actual content. It must NOT give study advice or talk about how to read. Then provide guided_reading before any reflective question. When simply continuing to the next chunk of the same module, open with a one-line bridge and a guided_reading of the new chunk — do not repeat a hook every time. Do not open by showing a raw source sentence unless the learner explicitly asks for the exact wording.
+	When starting a new module (or the very first chunk), open with a hook block that naturally summarizes the module's actual content without formulaic labels such as "핵심은", "요약하면", or "TLDR". It must NOT give study advice or talk about how to read. Then provide guided_reading before any reflective question. When simply continuing to the next chunk of the same module, open with a one-line bridge and a guided_reading of the new chunk — do not repeat a hook every time. Do not open by showing a raw source sentence unless the learner explicitly asks for the exact wording.
 	Always provide exactly 3 choices that work as complete learner replies or exploration paths, phrased as learner continuations, not exam answers or UI commands. Do NOT include progression commands such as "다음 대목으로", "다음 문단으로", "다음 모듈로", or "다음 진도로"; the app shows those separately.
 Current course: ${artifacts.coursePlan.title}
 Current topic title: ${module.title}
@@ -1050,7 +1059,7 @@ Block schema:
 - bullets: {"type":"bullets","title":"optional","items":["2-5 short peer points where order does not matter"]}
 - flow: {"type":"flow","title":"optional","steps":["2-8 short ordered steps"]}
 - compare_table: {"type":"compare_table","title":"optional","columns":["2-4 columns"],"rows":[{"Column":"cell"}]}
-- reflection: {"type":"reflection","body":"one open reflective prompt"}
+- reflection: {"type":"reflection","body":"one open reflective prompt","aiView":"1-2 sentence answer you would offer if the learner asks for your view; not another question"}
 - bridge: {"type":"bridge","body":"short transition"}
 Output schema: {"message":"plain text fallback summary","blocks":[/* 2-4 blocks */],"diagram":"visual id or null","visualPlacement":"inline|side_panel|null","choices":["3 concrete learner continuations"],"progress":0,"moduleId":"${module.id}","sourceRefs":["allowed chunk id"],"stateUpdate":{"nextPhase":"orient|discuss|explain|clarify|synthesize|complete","readyToContinue":false,"nextSuggestedStep":"continue|stay|review","userIntent":"${intent}","turnMode":"teach|digress|synthesize","detectedConfusion":null,"criticWarning":null}}${strictJson}`,
         },
@@ -1060,8 +1069,8 @@ Output schema: {"message":"plain text fallback summary","blocks":[/* 2-4 blocks 
           content:
             payload.event === "start_module"
               ? isSourceOpening
-                ? "This is the very first turn. Open with a hook that starts with '핵심은' and summarizes the actual content of the source/module in one short paragraph, then teach the first source chunk with a guided_reading and invite reflection."
-                : "Open this module's first source chunk as a guided lecture: first a content-summary hook starting with '핵심은', then guided_reading of the current chunk, then invite reflection."
+                ? "This is the very first turn. Open with a natural hook that summarizes the actual content of the source/module in one short paragraph. Do not start it with formulaic labels such as '핵심은', '요약하면', or 'TLDR'. Then teach the first source chunk with a guided_reading and invite reflection."
+                : "Open this module's first source chunk as a guided lecture: first a natural content-summary hook without formulaic labels such as '핵심은', then guided_reading of the current chunk, then invite reflection."
               : payload.event === "next_chunk"
                 ? "Continue to the next source chunk. Open with a one-line bridge from the previous chunk, then teach the current chunk with a guided_reading, then invite reflection. Do not repeat a hook."
                 : payload.event === "return_to_progress"
@@ -1082,10 +1091,10 @@ Output schema: {"message":"plain text fallback summary","blocks":[/* 2-4 blocks 
     payload: TurnPayload
   ): Promise<Partial<TutorTurnOutput>> {
     const settings = await this.settings.get();
-    const key = await this.secrets.getApiKey();
-    if (!settings.selectedModel || !key.value) throw new Error("AI provider is not configured");
+    const key = await this.secrets.getApiKey(settings.aiProvider);
+    if (!settings.providers[settings.aiProvider].selectedModel || !key.value) throw new Error("AI provider is not configured");
 
-    const client = new OpenAICompatibleClient({ baseUrl: settings.ollamaBaseUrl, apiKey: key.value, model: settings.selectedModel });
+    const client = createAiProviderClient(settings, key.value);
     const chunks = this.contextualChunks(artifacts, module, payload.userText, focusChunk?.id);
     const concepts = artifacts.conceptMap.filter((concept) => module.conceptIds.includes(concept.id));
     const intent = classifyIntent(payload.userText || "", payload.event);
@@ -1099,6 +1108,7 @@ Output schema: {"message":"plain text fallback summary","blocks":[/* 2-4 blocks 
           role: "system",
           content: `You are a guided lecturer. Tutor language: ${settings.tutorLanguage}.
 The structured JSON call failed, so this is a repair call. Return plain tutor text only.
+When teaching in Korean, keep hard-to-translate proper nouns and identity-bearing terms in their original language when translation would be awkward or obscure the reference. This includes names of people, places, schools, institutions, book titles, technical terms, and culturally specific concepts.
 Answer the learner's actual latest turn. Do not grade, do not say to stick closer to the source, and do not repeat a canned fallback.
 Use the source chunks as primary context, but use your own knowledge when it helps. Be concise and scannable, not discursive. The goal is to understand without reading a wall of text.
 For repair text, use plain short sentences or simple bullet points. Do not simulate flows or tables with pipe characters, markdown tables, mermaid, or numbered pseudo-diagrams.
@@ -1279,6 +1289,7 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${chunk.text}`
 
     const assembled = [...requiredStartBlocks, ...expandedBlocks]
       .filter((block) => (isOpening ? block.type !== "source_quote" : true))
+      .map((block) => this.ensureReflectionAiView(block, firstChunk, lecturePlan))
       .map((block) => this.scrubBlock(block))
       .filter((block) => (block.type === "source_quote" ? allowedRefs.has(block.sourceRef) : true));
     // Final guard against a wall of text: break any long prose block into sentence-aligned,
@@ -1310,10 +1321,21 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${chunk.text}`
     return expanded;
   }
 
+  private ensureReflectionAiView(block: TutorContentBlock, focusChunk: SourceChunk | undefined, lecturePlan: LectureModulePlan | undefined): TutorContentBlock {
+    if (block.type !== "reflection" || block.aiView?.trim()) return block;
+    const basis = lecturePlan?.guidedReading.plainParaphrase || focusChunk?.text || "";
+    const view = trimSentence(
+      basis
+        ? `저라면 이 질문을 이렇게 보겠습니다. ${basis.replace(/\s+/g, " ")}`
+        : "저라면 이 질문을 원문이 던지는 긴장을 따라가며 답하겠습니다. 단정된 결론보다, 어떤 전제가 달라질 때 해석이 달라지는지를 먼저 보겠습니다.",
+      360
+    );
+    return { ...block, aiView: view };
+  }
+
   private moduleContentSummary(module: CourseModule, focusChunk: SourceChunk | undefined, lecturePlan: LectureModulePlan | undefined) {
     const basis = lecturePlan?.guidedReading.plainParaphrase || focusChunk?.text || module.learningGoal || module.title;
-    const summary = trimSentence(basis.replace(/\s+/g, " "), 230);
-    return summary.startsWith("핵심은") ? summary : `핵심은 ${summary}`;
+    return stripTldrLead(trimSentence(basis.replace(/\s+/g, " "), 230));
   }
 
   private splitWallOfText(blocks: TutorContentBlock[]): TutorContentBlock[] {
@@ -1340,7 +1362,7 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${chunk.text}`
     if (!block || typeof block !== "object" || !("type" in block)) return null;
     const raw = block as Record<string, unknown>;
     const type = String(raw.type);
-    if (type === "hook") return { type, body: String(raw.body || "").slice(0, 280) };
+    if (type === "hook") return { type, body: stripTldrLead(String(raw.body || "").slice(0, 280)) };
     if (type === "guided_reading") {
       const sourceRef = typeof raw.sourceRef === "string" && allowedRefs.has(raw.sourceRef) ? raw.sourceRef : undefined;
       return { type, body: String(raw.body || "").slice(0, 4000), sourceRef };
@@ -1379,7 +1401,10 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${chunk.text}`
         showToLearner: showSourceQuote,
       };
     }
-    if (type === "reflection") return { type, body: String(raw.body || "").slice(0, 360) };
+    if (type === "reflection") {
+      const aiView = String(raw.aiView || "").trim().slice(0, 700);
+      return { type, body: String(raw.body || "").slice(0, 360), aiView: aiView || undefined };
+    }
     if (type === "misconception") {
       return {
         type,
@@ -1425,6 +1450,9 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${chunk.text}`
     if (block.type === "source_quote") return block;
     if (block.type === "misconception") {
       return { ...block, body: this.scrubExamLanguage(block.body), repair: this.scrubExamLanguage(block.repair) };
+    }
+    if (block.type === "reflection") {
+      return { ...block, body: this.scrubExamLanguage(block.body), aiView: block.aiView ? this.scrubExamLanguage(block.aiView) : undefined };
     }
     return { ...block, body: this.scrubExamLanguage(block.body) };
   }

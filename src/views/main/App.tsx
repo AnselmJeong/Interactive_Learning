@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Archive, BookOpen, Check, Loader2, MessageSquare, Play, Send, Settings, Upload } from "lucide-react";
+import { Archive, BookOpen, Check, Info, Loader2, MessageSquare, Play, Send, Settings, Upload } from "lucide-react";
 import type { MaterialSummary, PreparedSourceImport, ProjectArchiveExport, ProjectSummary, SourceSummary } from "../../shared/rpc-types";
 import type { AppSettings, AiProviderStatus, ProviderModel } from "../../shared/settings-types";
 import type { MaterialArtifacts } from "../../shared/artifact-types";
@@ -12,6 +12,7 @@ import { ImmersiveSourceView } from "./components/ImmersiveSourceView";
 import { NewProjectModal } from "./components/NewProjectModal";
 import { ProjectDropdown } from "./components/ProjectDropdown";
 import { SourceImportModal } from "./components/SourceImportModal";
+import { AboutModal } from "./components/AboutModal";
 
 type RpcRequest = (method: string, params: unknown) => Promise<unknown>;
 
@@ -238,6 +239,7 @@ export function App({ request }: { request: RpcRequest }) {
   const [tutorThinking, setTutorThinking] = useState(false);
   const [status, setStatus] = useState("Ready");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [aboutOpen, setAboutOpen] = useState(false);
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [providerStatus, setProviderStatus] = useState<AiProviderStatus | null>(null);
   const [models, setModels] = useState<ProviderModel[]>([]);
@@ -298,17 +300,20 @@ export function App({ request }: { request: RpcRequest }) {
     const onTutor = () => setStatus("Tutor is thinking");
     const onTutorDone = () => setStatus("Ready");
     const onTutorError = (event: Event) => setStatus((event as CustomEvent<{ error: string }>).detail.error);
+    const onOpenAbout = () => setAboutOpen(true);
     window.addEventListener("generation-progress", onGeneration);
     window.addEventListener("ingestion-progress", onIngestion);
     window.addEventListener("tutor-started", onTutor);
     window.addEventListener("tutor-completed", onTutorDone);
     window.addEventListener("tutor-error", onTutorError);
+    window.addEventListener("app-open-about", onOpenAbout);
     return () => {
       window.removeEventListener("generation-progress", onGeneration);
       window.removeEventListener("ingestion-progress", onIngestion);
       window.removeEventListener("tutor-started", onTutor);
       window.removeEventListener("tutor-completed", onTutorDone);
       window.removeEventListener("tutor-error", onTutorError);
+      window.removeEventListener("app-open-about", onOpenAbout);
     };
   }, []);
 
@@ -768,6 +773,9 @@ export function App({ request }: { request: RpcRequest }) {
           <button className="wide-button settings-button" onClick={() => setSettingsOpen(true)}>
             <Settings size={16} /> Settings
           </button>
+          <button className="wide-button settings-button" onClick={() => setAboutOpen(true)}>
+            <Info size={16} /> About
+          </button>
         </div>
       </aside>
 
@@ -1046,6 +1054,7 @@ export function App({ request }: { request: RpcRequest }) {
           }}
         />
       ) : null}
+      {aboutOpen ? <AboutModal onClose={() => setAboutOpen(false)} /> : null}
 
       {newProjectOpen ? (
         <NewProjectModal

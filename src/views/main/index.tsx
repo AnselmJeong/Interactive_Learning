@@ -14,6 +14,7 @@ const rpc = Electroview.defineRPC<AppRPC>({
       "tutor.turnStarted": (payload) => window.dispatchEvent(new CustomEvent("tutor-started", { detail: payload })),
       "tutor.turnCompleted": (payload) => window.dispatchEvent(new CustomEvent("tutor-completed", { detail: payload })),
       "tutor.turnError": (payload) => window.dispatchEvent(new CustomEvent("tutor-error", { detail: payload })),
+      "app.openAbout": () => window.dispatchEvent(new CustomEvent("app-open-about")),
     },
   },
 });

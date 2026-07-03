@@ -193,7 +193,7 @@ def _check_markdown_image_links(manifest: Manifest, output_dir: Path, report: In
             if not resolved.is_file():
                 report.issues.append(
                     InspectIssue(
-                        "error",
+                        "warning",
                         f"Chapter {chapter.index} ({chapter.path}) has a broken image link: {link}",
                     )
                 )

@@ -1,5 +1,6 @@
 import { copyFile, cp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
-import { basename, dirname, extname, join, relative } from "node:path";
+import { basename, dirname, extname, join, relative, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
 import { getDb } from "./project-db";
 import { dataPath, sourceDirAt } from "./paths";
 import { buildPreppySourcePack } from "./preppy-service";
@@ -82,6 +83,8 @@ function isFolderTextFile(path: string) {
 }
 
 const naturalPathSorter = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
+const MARKDOWN_IMAGE_LINK_RE = /!\[([^\]]*)\]\(([^)\s]+)(?:\s+"([^"]*)")?\)/g;
+const URL_SCHEME_RE = /^(?:[a-z][a-z0-9+.-]*:|#)/i;
 
 function titleForPath(path: string) {
   return basename(path).replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ").trim() || basename(path);
@@ -89,6 +92,29 @@ function titleForPath(path: string) {
 
 function relativePortable(from: string, to: string) {
   return relative(from, to).replaceAll("\\", "/");
+}
+
+function decodePathPart(path: string) {
+  try {
+    return decodeURIComponent(path);
+  } catch {
+    return path;
+  }
+}
+
+function rewriteLocalMarkdownImageLinks(markdownPath: string, text: string) {
+  const baseDir = dirname(markdownPath);
+  return text.replace(MARKDOWN_IMAGE_LINK_RE, (match, alt: string, link: string, title: string | undefined) => {
+    if (!link || URL_SCHEME_RE.test(link)) return match;
+    const hashIndex = link.indexOf("#");
+    const pathPart = hashIndex >= 0 ? link.slice(0, hashIndex) : link;
+    const fragment = hashIndex >= 0 ? link.slice(hashIndex) : "";
+    if (!pathPart) return match;
+    const filePath = pathPart.startsWith("/") ? decodePathPart(pathPart) : resolve(baseDir, decodePathPart(pathPart));
+    const url = `${pathToFileURL(filePath).href}${fragment}`;
+    const titlePart = title ? ` "${title}"` : "";
+    return `![${alt}](${url}${titlePart})`;
+  });
 }
 
 async function sourceChildPath(sourcePath: string, relativePath: string) {
@@ -426,6 +452,7 @@ export class SourceService {
   private async addPreparedFile(entry: PreparedImportEntry, path: string) {
     const fileIndex = entry.files.push({ path }) - 1;
     const text = await readFile(path, "utf8");
+    const previewSource = rewriteLocalMarkdownImageLinks(path, text);
     const itemId = crypto.randomUUID();
     entry.items.push({
       id: itemId,
@@ -434,7 +461,7 @@ export class SourceService {
       relativePath: basename(path),
       kind: null,
       charCount: text.trim().length,
-      preview: previewText(text),
+      preview: previewText(previewSource),
       selected: defaultSelected(null, text.trim().length),
     });
     entry.itemRefs.set(itemId, { kind: "file", fileIndex });
@@ -451,6 +478,7 @@ export class SourceService {
       const relativePath = relativePortable(path, file);
       const relativeToTextRoot = relativePortable(textRoot, file);
       const text = await readFile(file, "utf8");
+      const previewSource = rewriteLocalMarkdownImageLinks(file, text);
       const manifestChapter = manifestByPath.get(relativePath);
       const itemId = crypto.randomUUID();
       const charCount = manifestChapter?.charCount ?? text.trim().length;
@@ -461,7 +489,7 @@ export class SourceService {
         relativePath,
         kind: manifestChapter?.kind || null,
         charCount,
-        preview: previewText(text),
+        preview: previewText(previewSource),
         selected: defaultSelected(manifestChapter?.kind || null, charCount),
       });
       entry.itemRefs.set(itemId, { kind: "folder", folderIndex, relativePath: relativePath || relativeToTextRoot });
@@ -503,7 +531,7 @@ export class SourceService {
     const importedPath = join(dir, `original${extname(path).toLowerCase() || ".txt"}`);
     await copyFile(path, importedPath);
 
-    const chunks = normalizeMarkdownChunks(id, bytes.toString("utf8"));
+    const chunks = normalizeMarkdownChunks(id, rewriteLocalMarkdownImageLinks(importedPath, bytes.toString("utf8")));
     const status = chunks.length ? "good" : "poor";
     return this.persistSource({
       id,
@@ -610,7 +638,7 @@ export class SourceService {
 
     const id = crypto.randomUUID();
     const type = sourceTypeForPath(importedPath);
-    const chunks = normalizeMarkdownChunks(id, bytes.toString("utf8"));
+    const chunks = normalizeMarkdownChunks(id, rewriteLocalMarkdownImageLinks(importedPath, bytes.toString("utf8")));
     return this.persistSource({
       id,
       projectId,
@@ -701,6 +729,10 @@ export class SourceService {
   async loadChunks(sourceId: string) {
     const row = this.getRow(sourceId);
     if (!row.chunks_path) return [];
-    return JSON.parse(await readFile(row.chunks_path, "utf8")) as SourceChunk[];
+    const chunks = JSON.parse(await readFile(row.chunks_path, "utf8")) as SourceChunk[];
+    return chunks.map((chunk) => ({
+      ...chunk,
+      text: rewriteLocalMarkdownImageLinks(row.imported_file_path, chunk.text),
+    }));
   }
 }
