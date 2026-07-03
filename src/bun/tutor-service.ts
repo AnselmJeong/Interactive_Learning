@@ -698,6 +698,7 @@ export class TutorService {
             : "not_started",
       })),
       chunks,
+      figures: artifacts.figures,
     };
   }
 
@@ -1289,6 +1290,7 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${chunk.text}`
 
     const assembled = [...requiredStartBlocks, ...expandedBlocks]
       .filter((block) => (isOpening ? block.type !== "source_quote" : true))
+      .map((block) => (block.type === "guided_reading" && !block.sourceRef && firstChunk?.id ? { ...block, sourceRef: firstChunk.id } : block))
       .map((block) => this.ensureReflectionAiView(block, firstChunk, lecturePlan))
       .map((block) => this.scrubBlock(block))
       .filter((block) => (block.type === "source_quote" ? allowedRefs.has(block.sourceRef) : true));
@@ -1621,6 +1623,7 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${chunk.text}`
       title: meta?.title || chunk.headingPath.join(" > ") || "Source",
       locator: meta?.locator || chunk.locator,
       text: chunk.text,
+      figures: artifacts.figures.filter((figure) => figure.sourceChunkIds.includes(chunk.id)),
     };
   }
 

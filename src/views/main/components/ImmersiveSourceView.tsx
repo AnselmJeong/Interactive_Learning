@@ -1,7 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Bookmark, Highlighter, Search, StickyNote, Trash2 } from "lucide-react";
 import type { MaterialArtifacts } from "../../../shared/artifact-types";
+import { stripFigureMarkdown } from "../figure-text";
 import { MarkdownContent } from "./MarkdownContent";
+import { SourceFigureCard } from "./SourceFigureCard";
+
+type RpcRequest = (method: string, params: unknown) => Promise<unknown>;
 
 type SourceChunkStatus = "covered" | "current" | "upcoming";
 
@@ -29,6 +33,7 @@ type ImmersiveSourceViewProps = {
   sessionReadOnly: boolean;
   displayHeadingPath: (parts: string[]) => string;
   cleanSourceText: (content: string, heading: string) => string;
+  request: RpcRequest;
 };
 
 function storageKey(materialId: string) {
@@ -65,6 +70,7 @@ export function ImmersiveSourceView({
   sessionReadOnly,
   displayHeadingPath,
   cleanSourceText,
+  request,
 }: ImmersiveSourceViewProps) {
   const [query, setQuery] = useState("");
   const [selection, setSelection] = useState<{ chunkId: string; text: string; x: number; y: number } | null>(null);
@@ -95,6 +101,30 @@ export function ImmersiveSourceView({
     }
     return groups;
   }, [marks]);
+  const figuresByChunk = useMemo(() => {
+    const groups = new Map<string, typeof artifacts.figures>();
+    for (const figure of artifacts.figures || []) {
+      const targetIds = figure.sourceChunkIds.length ? figure.sourceChunkIds : [artifacts.sourceChunks[0]?.id].filter((id): id is string => Boolean(id));
+      for (const chunkId of targetIds) {
+        const group = groups.get(chunkId) || [];
+        group.push(figure);
+        groups.set(chunkId, group);
+      }
+    }
+    return groups;
+  }, [artifacts.figures, artifacts.sourceChunks]);
+  const displayFiguresByChunk = useMemo(() => {
+    const chunkOrder = new Map(artifacts.sourceChunks.map((chunk, index) => [chunk.id, index]));
+    const groups = new Map<string, typeof artifacts.figures>();
+    for (const figure of artifacts.figures || []) {
+      const firstChunkId = [...figure.sourceChunkIds].sort((a, b) => (chunkOrder.get(a) ?? 0) - (chunkOrder.get(b) ?? 0))[0] || artifacts.sourceChunks[0]?.id;
+      if (!firstChunkId) continue;
+      const group = groups.get(firstChunkId) || [];
+      group.push(figure);
+      groups.set(firstChunkId, group);
+    }
+    return groups;
+  }, [artifacts.figures, artifacts.sourceChunks]);
   const noteCount = marks.filter((mark) => mark.kind === "note").length;
   const highlightCount = marks.filter((mark) => mark.kind === "highlight").length;
 
@@ -254,6 +284,8 @@ export function ImmersiveSourceView({
           {enrichedChunks.map(({ chunk, index, heading, showHeading, text, matchesQuery }) => {
             const status = sourceProgress?.statusFor(chunk.id) || "upcoming";
             const chunkMarks = marksByChunk.get(chunk.id) || [];
+            const chunkFigures = figuresByChunk.get(chunk.id) || [];
+            const displayFigures = displayFiguresByChunk.get(chunk.id) || [];
             return (
               <article
                 key={chunk.id}
@@ -269,7 +301,14 @@ export function ImmersiveSourceView({
                   <span>{status === "current" ? "진행 중" : status === "covered" ? "다룸" : "예정"}</span>
                 </div>
                 {showHeading ? <h4 className="source-heading">{heading}</h4> : null}
-                {text ? <MarkdownContent content={text} /> : null}
+                {text ? <MarkdownContent content={stripFigureMarkdown(text, chunkFigures)} /> : null}
+                {displayFigures.length ? (
+                  <div className="source-figure-list">
+                    {displayFigures.map((figure) => (
+                      <SourceFigureCard key={figure.id} figure={figure} materialId={artifacts.manifest.id} request={request} />
+                    ))}
+                  </div>
+                ) : null}
                 {chunkMarks.length ? (
                   <div className="source-mark-list">
                     {chunkMarks.map((mark) => (

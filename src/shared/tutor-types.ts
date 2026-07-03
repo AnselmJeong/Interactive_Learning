@@ -1,4 +1,4 @@
-import type { SourceChunk, VisualSpec } from "./artifact-types";
+import type { SourceChunk, SourceFigure, VisualSpec } from "./artifact-types";
 
 export type TutorPhase = "orient" | "discuss" | "explain" | "clarify" | "synthesize" | "complete";
 
@@ -26,6 +26,7 @@ export type SourceRef = {
   title: string;
   locator: string;
   text: string;
+  figures?: SourceFigure[];
 };
 
 export type TutorContentBlock =
@@ -121,4 +122,5 @@ export type TutorContext = {
   visual: VisualSpec | null;
   moduleOutline: Array<{ id: string; title: string; status: "not_started" | "in_progress" | "completed" | "needs_review" }>;
   chunks: SourceChunk[];
+  figures?: SourceFigure[];
 };

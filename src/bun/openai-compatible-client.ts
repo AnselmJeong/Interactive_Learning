@@ -1,4 +1,5 @@
 import type { ProviderModel } from "../shared/settings-types";
+import { modelSupportsVision } from "../shared/vision-models";
 
 export type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
 
@@ -10,10 +11,19 @@ export type ChatParams = {
   timeoutMs?: number;
 };
 
+export type ImagePart = { mimeType: string; dataBase64: string };
+
 export interface AiChatClient {
   listModels(): Promise<ProviderModel[]>;
   chatJson(params: ChatParams): Promise<unknown>;
   chatText(params: ChatParams): Promise<string>;
+  describeImage?(params: {
+    image: ImagePart;
+    prompt: string;
+    system?: string;
+    model?: string;
+    timeoutMs?: number;
+  }): Promise<string>;
 }
 
 type ClientSettings = {
@@ -44,7 +54,11 @@ export class OpenAICompatibleClient implements AiChatClient {
       throw new Error(`Model list failed: ${response.status} ${await response.text()}`);
     }
     const data = (await response.json()) as { data?: Array<{ id: string; created?: number }> };
-    return (data.data || []).map((model) => ({ id: model.id, created: model.created }));
+    return (data.data || []).map((model) => ({
+      id: model.id,
+      created: model.created,
+      supportsVision: modelSupportsVision(this.providerId(), model.id),
+    }));
   }
 
   async chatJson(params: ChatParams): Promise<unknown> {
@@ -122,6 +136,13 @@ export class OpenAICompatibleClient implements AiChatClient {
 
   private providerName() {
     return this.settings.providerName || "AI provider";
+  }
+
+  private providerId() {
+    const name = this.providerName().toLowerCase();
+    if (name.includes("openai")) return "openai";
+    if (name.includes("ollama")) return "ollama";
+    return "openai";
   }
 }
 

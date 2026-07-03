@@ -1,4 +1,5 @@
 import type { AiProviderId, AppSettings, ProviderModel } from "../shared/settings-types";
+import { modelSupportsVision } from "../shared/vision-models";
 import { type AiChatClient, type ChatMessage, type ChatParams, OpenAICompatibleClient, parseJsonFromText } from "./openai-compatible-client";
 
 type ProviderClientSettings = {
@@ -54,7 +55,7 @@ class AnthropicClient implements AiChatClient {
     const response = await fetch(this.url("/v1/models"), { headers: this.headers() });
     if (!response.ok) throw new Error(`Model list failed: ${response.status} ${(await response.text()).replace(/\s+/g, " ").slice(0, 700)}`);
     const data = (await response.json()) as { data?: Array<{ id: string; created_at?: string }> };
-    return (data.data || []).map((model) => ({ id: model.id }));
+    return (data.data || []).map((model) => ({ id: model.id, supportsVision: modelSupportsVision("anthropic", model.id) }));
   }
 
   async chatJson(params: ChatParams): Promise<unknown> {
@@ -118,7 +119,10 @@ class GeminiClient implements AiChatClient {
     const data = (await response.json()) as { models?: Array<{ name?: string; displayName?: string; supportedGenerationMethods?: string[] }> };
     return (data.models || [])
       .filter((model) => !model.supportedGenerationMethods || model.supportedGenerationMethods.includes("generateContent"))
-      .map((model) => ({ id: (model.name || "").replace(/^models\//, "") }))
+      .map((model) => {
+        const id = (model.name || "").replace(/^models\//, "");
+        return { id, supportsVision: modelSupportsVision("gemini", id) };
+      })
       .filter((model) => model.id);
   }
 
@@ -128,6 +132,52 @@ class GeminiClient implements AiChatClient {
 
   async chatText(params: ChatParams): Promise<string> {
     return this.chat(params, false);
+  }
+
+  async describeImage(params: {
+    image: { mimeType: string; dataBase64: string };
+    prompt: string;
+    system?: string;
+    model?: string;
+    timeoutMs?: number;
+  }) {
+    const model = params.model || this.settings.model;
+    if (!this.settings.apiKey) throw new Error("Gemini API key is not configured");
+    if (!model) throw new Error("Model is not selected");
+    if (!modelSupportsVision("gemini", model)) throw new Error("VISION_MODEL_REQUIRED: Select a Gemini model that supports image understanding.");
+
+    let response: Response;
+    try {
+      const modelPath = model.startsWith("models/") ? model : `models/${model}`;
+      response = await fetch(this.url(`/${modelPath}:generateContent`), {
+        method: "POST",
+        headers: this.headers(),
+        signal: AbortSignal.timeout(params.timeoutMs ?? 120000),
+        body: JSON.stringify({
+          systemInstruction: params.system ? { parts: [{ text: params.system }] } : undefined,
+          contents: [
+            {
+              role: "user",
+              parts: [
+                { inlineData: { mimeType: params.image.mimeType, data: params.image.dataBase64 } },
+                { text: params.prompt },
+              ],
+            },
+          ],
+          generationConfig: {
+            temperature: 0.4,
+            maxOutputTokens: 2048,
+          },
+        }),
+      });
+    } catch (error) {
+      throw normalizeProviderError(error, "Gemini", model, params.timeoutMs);
+    }
+    if (!response.ok) throw new Error(`AI provider HTTP ${response.status}: ${(await response.text()).replace(/\s+/g, " ").slice(0, 700)}`);
+    const data = (await response.json()) as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
+    const content = data.candidates?.[0]?.content?.parts?.map((part) => part.text || "").join("\n").trim() || "";
+    if (!content) throw new Error(`AI provider returned an empty image explanation for model ${model}`);
+    return content;
   }
 
   private async chat(params: ChatParams, jsonMode: boolean) {

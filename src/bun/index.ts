@@ -1,6 +1,7 @@
 import { BrowserView, Utils } from "electrobun/bun";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { ProjectService } from "./project-service";
 import { SettingsService } from "./settings-service";
 import { AiProviderSettingsService } from "./ai-provider-settings";
@@ -12,6 +13,7 @@ import { createMainWindow } from "./app-window";
 import { installApplicationMenu } from "./app-menu";
 import type { AiProviderConnectionInput, AppRPC } from "../shared/rpc-types";
 import type { AiProviderKeyState } from "../shared/settings-types";
+import { modelSupportsVision } from "../shared/vision-models";
 
 const projects = new ProjectService();
 const settings = new SettingsService();
@@ -85,6 +87,58 @@ async function providerStatus(reachable = false, error?: string, input: AiProvid
   };
 }
 
+async function explainFigure(materialId: string, figureId: string, userPrompt?: string) {
+  const artifacts = await materials.getArtifacts(materialId);
+  const figure = artifacts.figures.find((item) => item.id === figureId);
+  if (!figure) throw new Error("Figure not found");
+  if (!existsSync(figure.assetPath)) throw new Error("FIGURE_ASSET_MISSING: The source image file is missing.");
+
+  const { publicSettings, apiKey, client } = await providerClient();
+  const model = publicSettings.providers[publicSettings.aiProvider].selectedModel;
+  if (!model || !apiKey.value) throw new Error("AI provider is not configured");
+  if (!client.describeImage || !modelSupportsVision(publicSettings.aiProvider, model)) {
+    throw new Error("VISION_MODEL_REQUIRED: 이 그림 설명에는 vision-capable model이 필요합니다. Settings에서 이미지 입력을 지원하는 Gemini 모델을 선택하세요.");
+  }
+
+  const nearby = artifacts.sourceChunks
+    .filter((chunk) => figure.sourceChunkIds.includes(chunk.id))
+    .map((chunk) => chunk.text.replace(/\s+/g, " ").trim())
+    .filter(Boolean)
+    .slice(0, 2)
+    .join("\n\n");
+  const prompt = [
+    "Explain this source figure for a learner. Ground the explanation in the visible image, the caption, and nearby source context. If the image content is uncertain, say so plainly.",
+    figure.caption ? `Caption: ${figure.caption}` : "Caption: unavailable.",
+    figure.locator ? `Locator: ${figure.locator}` : "",
+    nearby ? `Nearby source context:\n${nearby.slice(0, 2400)}` : "",
+    userPrompt?.trim() ? `Learner request: ${userPrompt.trim()}` : "",
+  ].filter(Boolean).join("\n\n");
+  const bytes = await readFile(figure.assetPath);
+  const explanation = await client.describeImage({
+    image: { mimeType: figure.mimeType, dataBase64: bytes.toString("base64") },
+    prompt,
+    system: "You are Learnie, a source-grounded tutor. Explain figures clearly and avoid inventing details not visible in the image or supported by the caption/context.",
+    model,
+    timeoutMs: 120000,
+  });
+  return { figureId, explanation, model, visionCapable: true as const };
+}
+
+async function getFigureAsset(materialId: string, figureId: string) {
+  const artifacts = await materials.getArtifacts(materialId);
+  const figure = artifacts.figures.find((item) => item.id === figureId);
+  if (!figure) throw new Error("Figure not found");
+  if (!existsSync(figure.assetPath)) throw new Error("FIGURE_ASSET_MISSING: The source image file is missing.");
+
+  const bytes = await readFile(figure.assetPath);
+  const mimeType = figure.mimeType || "image/png";
+  return {
+    figureId,
+    mimeType,
+    dataUrl: `data:${mimeType};base64,${bytes.toString("base64")}`,
+  };
+}
+
 function openPath(path: string) {
   const child = spawn("open", [path], { stdio: "ignore", detached: true });
   child.unref();
@@ -138,6 +192,8 @@ const rpc = BrowserView.defineRPC<AppRPC>({
       },
       "materials.list": ({ projectId }) => materials.list(projectId),
       "materials.getArtifacts": ({ materialId }) => materials.getArtifacts(materialId),
+      "figures.getAsset": ({ materialId, figureId }) => getFigureAsset(materialId, figureId),
+      "figures.explain": ({ materialId, figureId, userPrompt }) => explainFigure(materialId, figureId, userPrompt),
       "sessions.list": ({ materialId }) => tutor.listSessions(materialId),
       "sessions.start": ({ materialId, mode, sessionId }) => tutor.start(materialId, { mode, sessionId }),
       "sessions.load": ({ sessionId }) => tutor.load(sessionId),

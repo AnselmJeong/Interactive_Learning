@@ -13,6 +13,8 @@ import { NewProjectModal } from "./components/NewProjectModal";
 import { ProjectDropdown } from "./components/ProjectDropdown";
 import { SourceImportModal } from "./components/SourceImportModal";
 import { AboutModal } from "./components/AboutModal";
+import { SourceFigureCard } from "./components/SourceFigureCard";
+import { stripFigureMarkdown } from "./figure-text";
 
 type RpcRequest = (method: string, params: unknown) => Promise<unknown>;
 
@@ -112,7 +114,7 @@ function cleanLocator(locator: string) {
   return locator.replace(/^before\s+/i, "").replace(/^document$/i, "").trim();
 }
 
-function AnswerSourceRefs({ refs }: { refs: SourceRef[] }) {
+function AnswerSourceRefs({ refs, materialId, request }: { refs: SourceRef[]; materialId: string; request: RpcRequest }) {
   if (!refs.length) return null;
   return (
     <div className="answer-source-list">
@@ -121,6 +123,13 @@ function AnswerSourceRefs({ refs }: { refs: SourceRef[] }) {
           <strong>{ref.title}</strong>
           {cleanLocator(ref.locator) ? <small>{cleanLocator(ref.locator)}</small> : null}
           <MarkdownContent content={ref.text} compact />
+          {ref.figures?.length ? (
+            <div className="answer-source-figures">
+              {ref.figures.map((figure) => (
+                <SourceFigureCard key={figure.id} figure={figure} materialId={materialId} request={request} compact />
+              ))}
+            </div>
+          ) : null}
         </article>
       ))}
     </div>
@@ -132,12 +141,16 @@ const ChatLog = memo(function ChatLog({
   tutorThinking,
   expandedSourceMessages,
   sourceRefById,
+  materialId,
+  request,
   onToggleSource,
 }: {
   messages: TutorMessage[];
   tutorThinking: boolean;
   expandedSourceMessages: Set<string>;
   sourceRefById: Map<string, SourceRef>;
+  materialId: string;
+  request: RpcRequest;
   onToggleSource: (messageId: string) => void;
 }) {
   return (
@@ -145,7 +158,13 @@ const ChatLog = memo(function ChatLog({
       {messages.map((message) => (
         <div key={message.id} className={`bubble ${message.role}`}>
           {message.role === "assistant" && message.blocks?.length ? (
-            <TutorBlockRenderer blocks={message.blocks} />
+            <TutorBlockRenderer
+              blocks={message.blocks}
+              sourceRefById={sourceRefById}
+              fallbackSourceRefs={message.sourceRefs.map((id) => sourceRefById.get(id)).filter((ref): ref is SourceRef => Boolean(ref))}
+              materialId={materialId}
+              request={request}
+            />
           ) : (
             <MarkdownContent content={message.content} />
           )}
@@ -156,7 +175,11 @@ const ChatLog = memo(function ChatLog({
                 {expandedSourceMessages.has(message.id) ? "근거 닫기" : "근거 보기"}
               </button>
               {expandedSourceMessages.has(message.id) ? (
-                <AnswerSourceRefs refs={message.sourceRefs.map((id) => sourceRefById.get(id)).filter((ref): ref is SourceRef => Boolean(ref))} />
+                <AnswerSourceRefs
+                  refs={message.sourceRefs.map((id) => sourceRefById.get(id)).filter((ref): ref is SourceRef => Boolean(ref))}
+                  materialId={materialId}
+                  request={request}
+                />
               ) : null}
             </div>
           ) : null}
@@ -661,13 +684,22 @@ export function App({ request }: { request: RpcRequest }) {
     const refs = new Map<string, SourceRef>();
     for (const ref of context?.sourceRefs || []) refs.set(ref.chunkId, ref);
     if (artifacts) {
+      const figuresByChunk = new Map<string, MaterialArtifacts["figures"]>();
+      for (const figure of artifacts.figures || []) {
+        for (const chunkId of figure.sourceChunkIds) {
+          const group = figuresByChunk.get(chunkId) || [];
+          group.push(figure);
+          figuresByChunk.set(chunkId, group);
+        }
+      }
       for (const chunk of artifacts.sourceChunks) {
         const meta = artifacts.sourceIndex[chunk.id];
         refs.set(chunk.id, {
           chunkId: chunk.id,
           title: displayableOutlineTitle(meta?.title || displayableHeadingPath(chunk.headingPath, " > ") || "Source") || "Source",
           locator: meta?.locator || chunk.locator,
-          text: chunk.text,
+          text: stripFigureMarkdown(chunk.text, figuresByChunk.get(chunk.id) || []),
+          figures: figuresByChunk.get(chunk.id) || [],
         });
       }
     }
@@ -833,6 +865,7 @@ export function App({ request }: { request: RpcRequest }) {
               sessionReadOnly={sessionReadOnly}
               displayHeadingPath={displayableHeadingPath}
               cleanSourceText={stripRepeatedSourceHeading}
+              request={request}
             />
           ) : session ? (
             <>
@@ -857,6 +890,8 @@ export function App({ request }: { request: RpcRequest }) {
                 tutorThinking={tutorThinking}
                 expandedSourceMessages={expandedSourceMessages}
                 sourceRefById={sourceRefById}
+                materialId={artifacts?.manifest.id || session.materialId}
+                request={request}
                 onToggleSource={toggleSourceMessage}
               />
               {visibleVisual ? <VisualRenderer visual={visibleVisual} /> : null}

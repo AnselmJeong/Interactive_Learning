@@ -1,5 +1,5 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { getDb } from "./project-db";
 import { dataPath, materialDirAt } from "./paths";
 import { SourceService } from "./source-service";
@@ -13,6 +13,7 @@ import type {
   MaterialManifest,
   PresentationPlan,
   SourceChunk,
+  SourceFigure,
   VisualSpec,
 } from "../shared/artifact-types";
 import type { MaterialSummary } from "../shared/rpc-types";
@@ -280,6 +281,7 @@ export class CourseArtifactService {
 
     try {
       const sourceChunks = (await Promise.all(sourceIds.map((sourceId) => this.sources.loadChunks(sourceId)))).flat();
+      const figures = (await Promise.all(sourceIds.map((sourceId) => this.sources.loadFigures(sourceId)))).flat();
       if (!sourceChunks.length) throw new Error("No chunks were extracted for selected sources");
       const conceptMap = buildConcepts(sourceChunks);
       const coursePlan = buildCoursePlan(title, sourceChunks, conceptMap);
@@ -307,6 +309,7 @@ export class CourseArtifactService {
           },
         ])
       );
+      const figureIndex = buildFigureIndex(figures);
 
       const paths = {
         manifest: join(dir, "material_manifest.json"),
@@ -318,6 +321,8 @@ export class CourseArtifactService {
         visuals: join(dir, "visual_specs.json"),
         index: join(dir, "source_index.json"),
         chunks: join(dir, "source_chunks.json"),
+        figures: join(dir, "figures.json"),
+        figureIndex: join(dir, "figure_index.json"),
       };
       await Promise.all([
         writeFile(paths.manifest, `${JSON.stringify(manifest, null, 2)}\n`, "utf8"),
@@ -329,6 +334,8 @@ export class CourseArtifactService {
         writeFile(paths.visuals, `${JSON.stringify(visuals, null, 2)}\n`, "utf8"),
         writeFile(paths.index, `${JSON.stringify(sourceIndex, null, 2)}\n`, "utf8"),
         writeFile(paths.chunks, `${JSON.stringify(sourceChunks, null, 2)}\n`, "utf8"),
+        writeFile(paths.figures, `${JSON.stringify(figures, null, 2)}\n`, "utf8"),
+        writeFile(paths.figureIndex, `${JSON.stringify(figureIndex, null, 2)}\n`, "utf8"),
       ]);
 
       getDb()
@@ -411,6 +418,50 @@ export class CourseArtifactService {
       readFile(row.source_index_path, "utf8").then((raw) => JSON.parse(raw) as Record<string, { sourceId: string; title: string; locator: string }>),
     ]);
     const sourceChunks = (await Promise.all(this.sourceIds(materialId).map((sourceId) => this.sources.loadChunks(sourceId)))).flat();
-    return { manifest, conceptMap, coursePlan, lecturePlan, presentationPlan, criticReport, visuals, sourceChunks, sourceIndex };
+    const figures = await this.loadMaterialFigures(row);
+    const figureIndex = await this.loadMaterialFigureIndex(row, figures);
+    return { manifest, conceptMap, coursePlan, lecturePlan, presentationPlan, criticReport, visuals, sourceChunks, sourceIndex, figures, figureIndex };
   }
+
+  private async loadMaterialFigures(row: MaterialRow) {
+    if (row.manifest_path) {
+      try {
+        const figures = JSON.parse(await readFile(join(dirname(row.manifest_path), "figures.json"), "utf8")) as SourceFigure[];
+        if (figures.length) return figures;
+      } catch {
+        // Older materials did not persist figures; fall back to the current source artifacts.
+      }
+    }
+    const figures = (await Promise.all(this.sourceIds(row.id).map((sourceId) => this.sources.loadFigures(sourceId)))).flat();
+    if (figures.length && row.manifest_path) {
+      await writeFile(join(dirname(row.manifest_path), "figures.json"), `${JSON.stringify(figures, null, 2)}\n`, "utf8").catch(() => undefined);
+      await writeFile(join(dirname(row.manifest_path), "figure_index.json"), `${JSON.stringify(buildFigureIndex(figures), null, 2)}\n`, "utf8").catch(() => undefined);
+    }
+    return figures;
+  }
+
+  private async loadMaterialFigureIndex(row: MaterialRow, figures: SourceFigure[]) {
+    if (row.manifest_path) {
+      try {
+        return JSON.parse(await readFile(join(dirname(row.manifest_path), "figure_index.json"), "utf8")) as MaterialArtifacts["figureIndex"];
+      } catch {
+        // Older materials did not persist a figure index.
+      }
+    }
+    return buildFigureIndex(figures);
+  }
+}
+
+function buildFigureIndex(figures: SourceFigure[]): MaterialArtifacts["figureIndex"] {
+  return Object.fromEntries(
+    figures.map((figure) => [
+      figure.id,
+      {
+        sourceId: figure.sourceId,
+        title: figure.title,
+        locator: figure.locator,
+        sourceChunkIds: figure.sourceChunkIds,
+      },
+    ])
+  );
 }

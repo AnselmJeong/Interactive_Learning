@@ -27,6 +27,22 @@ export type SourceChunk = {
   confidence: number;
 };
 
+export type SourceFigure = {
+  id: string;
+  sourceId: string;
+  title: string;
+  assetPath: string;
+  assetUrl: string;
+  mimeType: string;
+  caption: string | null;
+  captionStatus: string;
+  width: number | null;
+  height: number | null;
+  locator: string;
+  pageRange?: [number, number];
+  sourceChunkIds: string[];
+};
+
 export type Concept = {
   id: string;
   name: string;
@@ -199,4 +215,6 @@ export type MaterialArtifacts = {
   visuals: VisualSpec[];
   sourceChunks: SourceChunk[];
   sourceIndex: Record<string, { sourceId: string; title: string; locator: string }>;
+  figures: SourceFigure[];
+  figureIndex: Record<string, { sourceId: string; title: string; locator: string; sourceChunkIds: string[] }>;
 };

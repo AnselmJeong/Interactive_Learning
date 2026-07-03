@@ -1,6 +1,9 @@
 import { memo, useState } from "react";
-import type { TutorContentBlock } from "../../../shared/tutor-types";
+import type { SourceRef, TutorContentBlock } from "../../../shared/tutor-types";
 import { MarkdownContent } from "./MarkdownContent";
+import { SourceFigureCard } from "./SourceFigureCard";
+
+type RpcRequest = (method: string, params: unknown) => Promise<unknown>;
 
 type CompareTableBlock = Extract<TutorContentBlock, { type: "compare_table" }>;
 type FlowBlock = Extract<TutorContentBlock, { type: "flow" }>;
@@ -167,15 +170,75 @@ function parseDashBulletBlocks(text: string): TutorContentBlock[] | null {
   return blocks;
 }
 
-export const TutorBlockRenderer = memo(function TutorBlockRenderer({ blocks }: { blocks: TutorContentBlock[] }) {
+function blockSourceRef(block: TutorContentBlock) {
+  if (block.type === "guided_reading" && block.sourceRef) return block.sourceRef;
+  if (block.type === "source_quote") return block.sourceRef;
+  return null;
+}
+
+export const TutorBlockRenderer = memo(function TutorBlockRenderer({
+  blocks,
+  sourceRefById,
+  fallbackSourceRefs = [],
+  materialId,
+  request,
+}: {
+  blocks: TutorContentBlock[];
+  sourceRefById?: Map<string, SourceRef>;
+  fallbackSourceRefs?: SourceRef[];
+  materialId?: string;
+  request?: RpcRequest;
+}) {
   const visibleBlocks = blocks.filter((block) => block.type !== "source_quote" || block.showToLearner);
   if (!visibleBlocks.length) return null;
+  const renderedFigureIds = new Set<string>();
+
+  function figuresFor(refId: string | null) {
+    if (!refId || !sourceRefById || !materialId || !request) return [];
+    const figures = sourceRefById.get(refId)?.figures || [];
+    return figures.filter((figure) => {
+      if (renderedFigureIds.has(figure.id)) return false;
+      renderedFigureIds.add(figure.id);
+      return true;
+    });
+  }
+
+  function fallbackFigures() {
+    if (!materialId || !request) return [];
+    return fallbackSourceRefs.flatMap((ref) => ref.figures || []).filter((figure) => {
+      if (renderedFigureIds.has(figure.id)) return false;
+      renderedFigureIds.add(figure.id);
+      return true;
+    });
+  }
 
   return (
     <div className="tutor-block-stack">
-      {visibleBlocks.map((block, index) => (
-        <TutorBlock key={`${block.type}-${index}`} block={block} />
-      ))}
+      {visibleBlocks.map((block, index) => {
+        const figures = figuresFor(blockSourceRef(block));
+        return (
+          <div key={`${block.type}-${index}`} className="tutor-block-with-figures">
+            <TutorBlock block={block} />
+            {figures.length && materialId && request ? (
+              <div className="tutor-inline-figures">
+                {figures.map((figure) => (
+                  <SourceFigureCard key={figure.id} figure={figure} materialId={materialId} request={request} compact />
+                ))}
+              </div>
+            ) : null}
+          </div>
+        );
+      })}
+      {(() => {
+        const figures = fallbackFigures();
+        return figures.length && materialId && request ? (
+          <div className="tutor-inline-figures">
+            {figures.map((figure) => (
+              <SourceFigureCard key={figure.id} figure={figure} materialId={materialId} request={request} compact />
+            ))}
+          </div>
+        ) : null;
+      })()}
     </div>
   );
 });

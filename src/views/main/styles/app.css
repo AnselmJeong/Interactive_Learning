@@ -414,6 +414,15 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   letter-spacing: 0.05em;
 }
 .tutor-block-stack { display: grid; gap: 14px; }
+.tutor-block-with-figures {
+  display: grid;
+  gap: 12px;
+}
+.tutor-inline-figures {
+  display: grid;
+  gap: 12px;
+  width: min(760px, 100%);
+}
 .tutor-block { min-width: 0; }
 .tutor-block h4 {
   margin: 0 0 8px;
@@ -1154,6 +1163,107 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   color: var(--muted);
   font-size: 0.86em;
   line-height: 1.4;
+}
+.source-figure-list,
+.answer-source-figures {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+}
+.source-figure-card {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fffdf8;
+  padding: 12px;
+}
+.source-figure-card.compact {
+  padding: 10px;
+  background: #fff;
+}
+.source-figure-media {
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 7px;
+  background: #f4f0e7;
+  min-height: 180px;
+}
+.source-figure-media img {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-width: 100%;
+}
+.source-figure-image-error {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 0.9rem;
+  font-weight: 650;
+  padding: 18px;
+}
+.source-figure-card figcaption {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+.source-figure-card figcaption > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.source-figure-card figcaption span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+.source-figure-card figcaption p {
+  margin: 0;
+  color: var(--ink);
+  font-size: 0.92rem;
+  line-height: 1.45;
+}
+.source-figure-card figcaption button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  border: 1px solid rgba(167, 125, 18, 0.34);
+  border-radius: 7px;
+  background: #fff;
+  color: var(--accent-2);
+  padding: 7px 10px;
+  font-weight: 760;
+  cursor: pointer;
+}
+.source-figure-card figcaption button:disabled {
+  cursor: default;
+  opacity: 0.68;
+}
+.source-figure-error,
+.source-figure-explanation {
+  margin: 0;
+  border-radius: 7px;
+  padding: 10px 11px;
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+.source-figure-error {
+  border: 1px solid rgba(160, 58, 48, 0.25);
+  background: rgba(160, 58, 48, 0.08);
+  color: #8f342d;
+}
+.source-figure-explanation {
+  border: 1px solid rgba(49, 112, 92, 0.22);
+  background: rgba(49, 112, 92, 0.08);
 }
 .outline-row {
   display: grid;

@@ -47,4 +47,5 @@ export type AiProviderStatus = {
 export type ProviderModel = {
   id: string;
   created?: number;
+  supportsVision?: boolean;
 };

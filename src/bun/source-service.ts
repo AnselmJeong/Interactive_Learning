@@ -4,7 +4,7 @@ import { pathToFileURL } from "node:url";
 import { getDb } from "./project-db";
 import { dataPath, sourceDirAt } from "./paths";
 import { buildPreppySourcePack } from "./preppy-service";
-import type { SourceChunk, SourceManifest, SourceType } from "../shared/artifact-types";
+import type { SourceChunk, SourceFigure, SourceManifest, SourceType } from "../shared/artifact-types";
 import type { PreparedSourceImport, PreparedSourceImportItem, SourceSummary } from "../shared/rpc-types";
 
 type SourceRow = {
@@ -35,6 +35,25 @@ type PreppyManifest = {
     kind?: string;
     char_count?: number;
   }>;
+};
+
+type PreppyFigure = {
+  id?: string;
+  asset_path?: string;
+  source_type?: string;
+  chapter_index?: number | null;
+  caption?: string | null;
+  caption_status?: string;
+  source_locator?: {
+    page_start?: number | null;
+    page_end?: number | null;
+    page?: number | null;
+    epub_href?: string | null;
+    anchor?: string | null;
+    docling_ref?: string | null;
+  };
+  width?: number | null;
+  height?: number | null;
 };
 
 type PreparedImportEntry = {
@@ -171,6 +190,11 @@ function splitLongSemanticBlock(text: string, maxChars = SEMANTIC_CHUNK_MAX_CHAR
   return chunks;
 }
 
+function piecesForSourceBlock(text: string, kind: SourceChunk["kind"]) {
+  if (kind === "caption" || kind === "table") return [text];
+  return splitLongSemanticBlock(text);
+}
+
 function semanticChunksFromBody(body: string): Array<{ text: string; kind: SourceChunk["kind"]; confidence: number }> {
   const blocks = body.split(/\n{2,}/).map((item) => item.trim()).filter(Boolean);
   const chunks: Array<{ text: string; kind: SourceChunk["kind"]; confidence: number }> = [];
@@ -187,7 +211,7 @@ function semanticChunksFromBody(body: string): Array<{ text: string; kind: Sourc
     buffer = [];
     speakerTurns = 0;
     if (!text) return;
-    for (const piece of splitLongSemanticBlock(text)) {
+    for (const piece of piecesForSourceBlock(text, bufferKind)) {
       chunks.push({ text: piece, kind: bufferKind, confidence });
     }
     bufferKind = "body";
@@ -313,22 +337,133 @@ async function readPreppyManifest(importedRoot: string) {
   try {
     const manifest = JSON.parse(await readFile(join(importedRoot, "manifest.json"), "utf8")) as PreppyManifest;
     const chapterTitleByPath = new Map<string, string>();
+    const chapterIndexByPath = new Map<string, number>();
     for (const chapter of manifest.chapters ?? []) {
-      if (!chapter.path || !chapter.title) continue;
-      chapterTitleByPath.set(chapter.path.replaceAll("\\", "/"), chapter.title);
+      if (!chapter.path) continue;
+      const normalized = chapter.path.replaceAll("\\", "/");
+      if (chapter.title) chapterTitleByPath.set(normalized, chapter.title);
+      if (typeof chapter.index === "number") chapterIndexByPath.set(normalized, chapter.index);
     }
     return {
       chaptersDir: manifest.output?.chapters_dir || "chapters",
       assetsDir: manifest.output?.assets_dir || "assets",
       chapterTitleByPath,
+      chapterIndexByPath,
     };
   } catch {
     return {
       chaptersDir: "chapters",
       assetsDir: "assets",
       chapterTitleByPath: new Map<string, string>(),
+      chapterIndexByPath: new Map<string, number>(),
     };
   }
+}
+
+async function readPreppyFigures(importedRoot: string) {
+  try {
+    const data = JSON.parse(await readFile(join(importedRoot, "figures.json"), "utf8")) as { figures?: PreppyFigure[] };
+    return Array.isArray(data.figures) ? data.figures : [];
+  } catch {
+    return [];
+  }
+}
+
+function mimeTypeForPath(path: string) {
+  const ext = extname(path).toLowerCase();
+  if (ext === ".png") return "image/png";
+  if (ext === ".webp") return "image/webp";
+  if (ext === ".gif") return "image/gif";
+  if (ext === ".svg") return "image/svg+xml";
+  return "image/jpeg";
+}
+
+function locatorForFigure(figure: PreppyFigure, fallback: string) {
+  const locator = figure.source_locator || {};
+  const pageStart = locator.page_start ?? locator.page ?? null;
+  const pageEnd = locator.page_end ?? pageStart;
+  if (pageStart && pageEnd && pageStart !== pageEnd) return `pages ${pageStart}-${pageEnd}`;
+  if (pageStart) return `page ${pageStart}`;
+  if (locator.epub_href) return locator.anchor ? `${locator.epub_href}#${locator.anchor}` : locator.epub_href;
+  if (locator.docling_ref) return locator.docling_ref;
+  return fallback;
+}
+
+function pageRangeForFigure(figure: PreppyFigure): [number, number] | undefined {
+  const locator = figure.source_locator || {};
+  const start = locator.page_start ?? locator.page ?? null;
+  const end = locator.page_end ?? start;
+  return start && end ? [start, end] : undefined;
+}
+
+function normalizedNeedle(text: string | null | undefined) {
+  return (text || "").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function figureLabel(caption: string | null | undefined) {
+  return /figure\s+\d+(?:\.\d+)*/i.exec(caption || "")?.[0] || null;
+}
+
+function chunkIdsForFigure(figure: PreppyFigure, chunks: SourceChunk[]) {
+  if (!chunks.length) return [];
+  const ids: string[] = [];
+  const label = normalizedNeedle(figureLabel(figure.caption));
+  if (label) {
+    const mention = chunks.find((chunk) => chunk.kind !== "caption" && normalizedNeedle(chunk.text).includes(label));
+    if (mention) ids.push(mention.id);
+  }
+  const caption = normalizedNeedle(figure.caption);
+  if (caption.length >= 12) {
+    const match = chunks.find((chunk) => normalizedNeedle(chunk.text).includes(caption));
+    if (match) ids.push(match.id);
+  }
+  const captionChunk = chunks.find((chunk) => chunk.kind === "caption");
+  if (captionChunk) ids.push(captionChunk.id);
+  return [...new Set(ids.length ? ids : [chunks[0]!.id])];
+}
+
+function toSourceFigures(input: {
+  sourceId: string;
+  importedRoot: string;
+  manifestPath: string;
+  chapterIndex: number | undefined;
+  figures: PreppyFigure[];
+  chunks: SourceChunk[];
+}) {
+  return input.figures
+    .filter((figure) => figure.id && figure.asset_path && figure.chapter_index === input.chapterIndex)
+    .map((figure, index): SourceFigure => {
+      const assetPath = resolve(input.importedRoot, figure.asset_path!);
+      const caption = figure.caption?.trim() || null;
+      const locator = locatorForFigure(figure, input.manifestPath);
+      const pageRange = pageRangeForFigure(figure);
+      return {
+        id: `${input.sourceId}-figure-${figure.id}`,
+        sourceId: input.sourceId,
+        title: caption ? caption.slice(0, 80) : `Figure ${index + 1}`,
+        assetPath,
+        assetUrl: pathToFileURL(assetPath).href,
+        mimeType: mimeTypeForPath(assetPath),
+        caption,
+        captionStatus: figure.caption_status || "missing",
+        width: typeof figure.width === "number" ? figure.width : null,
+        height: typeof figure.height === "number" ? figure.height : null,
+        locator,
+        pageRange,
+        sourceChunkIds: chunkIdsForFigure(figure, input.chunks),
+      };
+    });
+}
+
+function sourcePackRelativePath(row: SourceRow) {
+  const original = row.original_file_path || "";
+  const marker = original.indexOf("#");
+  if (marker >= 0) return original.slice(marker + 1).replaceAll("\\", "/");
+  const parts = row.imported_file_path.replaceAll("\\", "/").split("/source_folders/");
+  if (parts.length < 2) return null;
+  const originalIndex = parts[1]!.indexOf("/original/");
+  if (originalIndex < 0) return null;
+  return parts[1]!.slice(originalIndex + "/original/".length);
 }
 
 function previewText(text: string, max = 5200) {
@@ -560,6 +695,7 @@ export class SourceService {
     const folderDigest = await hashDirectory(path);
     const allCopiedFiles = await walkFiles(importedRoot);
     const preppyManifest = await readPreppyManifest(importedRoot);
+    const preppyFigures = await readPreppyFigures(importedRoot);
     const chaptersDir = join(importedRoot, preppyManifest.chaptersDir);
     const textRoot = (await existingDir(chaptersDir)) ? chaptersDir : importedRoot;
     const selectedRelativePathSet = selectedRelativePaths ? new Set(selectedRelativePaths) : null;
@@ -599,7 +735,14 @@ export class SourceService {
       const manifestPath = relativePortable(importedRoot, copiedFile);
       const originalPath = await sourceChildPath(originalSourcePath, manifestPath);
       const title = preppyManifest.chapterTitleByPath.get(manifestPath) || titleForPath(copiedFile);
-      imported.push(await this.importTextFileFromCopiedFolder(projectId, originalPath, copiedFile, title));
+      imported.push(
+        await this.importTextFileFromCopiedFolder(projectId, originalPath, copiedFile, title, {
+          importedRoot,
+          manifestPath,
+          chapterIndex: preppyManifest.chapterIndexByPath.get(manifestPath),
+          figures: preppyFigures,
+        })
+      );
     }
     return imported;
   }
@@ -629,7 +772,13 @@ export class SourceService {
     }
   }
 
-  private async importTextFileFromCopiedFolder(projectId: string, originalPath: string, importedPath: string, title: string) {
+  private async importTextFileFromCopiedFolder(
+    projectId: string,
+    originalPath: string,
+    importedPath: string,
+    title: string,
+    preppy?: { importedRoot: string; manifestPath: string; chapterIndex: number | undefined; figures: PreppyFigure[] }
+  ) {
     const { digest, bytes } = await hashFile(importedPath);
     const existing = getDb()
       .query<SourceRow, [string, string]>("SELECT * FROM project_sources WHERE project_id = ? AND content_hash = ?")
@@ -639,6 +788,16 @@ export class SourceService {
     const id = crypto.randomUUID();
     const type = sourceTypeForPath(importedPath);
     const chunks = normalizeMarkdownChunks(id, rewriteLocalMarkdownImageLinks(importedPath, bytes.toString("utf8")));
+    const figures = preppy
+      ? toSourceFigures({
+          sourceId: id,
+          importedRoot: preppy.importedRoot,
+          manifestPath: preppy.manifestPath,
+          chapterIndex: preppy.chapterIndex,
+          figures: preppy.figures,
+          chunks,
+        })
+      : [];
     return this.persistSource({
       id,
       projectId,
@@ -649,6 +808,7 @@ export class SourceService {
       importedPath,
       digest,
       chunks,
+      figures,
       extractionMethod: "typescript-folder-file-normalizer",
       status: chunks.length ? "good" : "poor",
       warnings: [],
@@ -665,6 +825,7 @@ export class SourceService {
     importedPath: string;
     digest: string;
     chunks: SourceChunk[];
+    figures?: SourceFigure[];
     extractionMethod: string;
     status: "good" | "warning" | "poor";
     warnings: string[];
@@ -684,8 +845,10 @@ export class SourceService {
     };
     const manifestPath = join(dir, "source_manifest.json");
     const chunksPath = join(dir, "source_chunks.json");
+    const figuresPath = join(dir, "source_figures.json");
     await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
     await writeFile(chunksPath, `${JSON.stringify(input.chunks, null, 2)}\n`, "utf8");
+    await writeFile(figuresPath, `${JSON.stringify(input.figures || [], null, 2)}\n`, "utf8");
     const now = Date.now();
     getDb()
       .query(
@@ -734,5 +897,50 @@ export class SourceService {
       ...chunk,
       text: rewriteLocalMarkdownImageLinks(row.imported_file_path, chunk.text),
     }));
+  }
+
+  async loadFigures(sourceId: string) {
+    const row = this.getRow(sourceId);
+    if (!row.chunks_path) return [];
+    const figuresPath = join(dirname(row.chunks_path), "source_figures.json");
+    try {
+      const figures = JSON.parse(await readFile(figuresPath, "utf8")) as SourceFigure[];
+      if (figures.length) return figures;
+    } catch {
+      // Older imports predate source_figures.json.
+    }
+    const recovered = await this.recoverFiguresFromSourcePack(row);
+    if (recovered.length) await writeFile(figuresPath, `${JSON.stringify(recovered, null, 2)}\n`, "utf8").catch(() => undefined);
+    return recovered;
+  }
+
+  private async recoverFiguresFromSourcePack(row: SourceRow) {
+    const relativePath = sourcePackRelativePath(row);
+    if (!relativePath) return [];
+    const sourceFoldersDir = join(this.projectRoot(row.project_id), row.project_id, "source_folders");
+    let folders: string[] = [];
+    try {
+      folders = (await readdir(sourceFoldersDir, { withFileTypes: true }))
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => join(sourceFoldersDir, entry.name, "original"));
+    } catch {
+      return [];
+    }
+    const chunks = row.chunks_path ? (JSON.parse(await readFile(row.chunks_path, "utf8")) as SourceChunk[]) : [];
+    for (const importedRoot of folders) {
+      const manifest = await readPreppyManifest(importedRoot);
+      const chapterIndex = manifest.chapterIndexByPath.get(relativePath);
+      if (chapterIndex == null) continue;
+      const figures = await readPreppyFigures(importedRoot);
+      return toSourceFigures({
+        sourceId: row.id,
+        importedRoot,
+        manifestPath: relativePath,
+        chapterIndex,
+        figures,
+        chunks,
+      });
+    }
+    return [];
   }
 }
