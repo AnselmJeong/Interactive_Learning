@@ -9,6 +9,7 @@ export type ChatParams = {
   temperature?: number;
   maxTokens?: number;
   timeoutMs?: number;
+  thinking?: "enabled" | "disabled";
 };
 
 export type ImagePart = { mimeType: string; dataBase64: string };
@@ -97,6 +98,21 @@ export class OpenAICompatibleClient implements AiChatClient {
     if (!this.settings.apiKey) throw new Error(`${this.providerName()} API key is not configured`);
     if (!model) throw new Error("Model is not selected");
 
+    const body: Record<string, unknown> = {
+      model,
+      messages: params.messages,
+      temperature: params.temperature ?? 0.7,
+      // Output token budget. NOTE: this is TOKENS, not characters — and Korean is token-dense
+      // (~2-3 tokens per syllable), while the response also carries the full JSON envelope
+      // (blocks, choices, stateUpdate, sourceRefs). So 2048 tokens only buys ~600-900 Korean
+      // characters of actual teaching before the turn truncates mid-sentence. Keep this high.
+      max_tokens: params.maxTokens ?? 8192,
+      response_format: responseFormat,
+    };
+    if (params.thinking && this.supportsThinkingToggle(model)) {
+      body.thinking = { type: params.thinking };
+    }
+
     // Bound every request so a stalled provider fails fast instead of hanging the turn forever.
     let response: Response;
     try {
@@ -104,17 +120,7 @@ export class OpenAICompatibleClient implements AiChatClient {
         method: "POST",
         headers: this.headers(),
         signal: AbortSignal.timeout(params.timeoutMs ?? 120000),
-        body: JSON.stringify({
-          model,
-          messages: params.messages,
-          temperature: params.temperature ?? 0.7,
-          // Output token budget. NOTE: this is TOKENS, not characters — and Korean is token-dense
-          // (~2-3 tokens per syllable), while the response also carries the full JSON envelope
-          // (blocks, choices, stateUpdate, sourceRefs). So 2048 tokens only buys ~600-900 Korean
-          // characters of actual teaching before the turn truncates mid-sentence. Keep this high.
-          max_tokens: params.maxTokens ?? 8192,
-          response_format: responseFormat,
-        }),
+        body: JSON.stringify(body),
       });
     } catch (error) {
       const name = (error as { name?: string })?.name;
@@ -143,6 +149,13 @@ export class OpenAICompatibleClient implements AiChatClient {
     if (name.includes("openai")) return "openai";
     if (name.includes("ollama")) return "ollama";
     return "openai";
+  }
+
+  private supportsThinkingToggle(model: string) {
+    const name = this.providerName().toLowerCase();
+    const baseUrl = this.settings.baseUrl.toLowerCase();
+    const modelId = model.toLowerCase();
+    return name.includes("deepseek") || baseUrl.includes("deepseek") || modelId.startsWith("deepseek-v4-");
   }
 }
 

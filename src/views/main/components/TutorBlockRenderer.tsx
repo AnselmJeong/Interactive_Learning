@@ -215,9 +215,11 @@ export const TutorBlockRenderer = memo(function TutorBlockRenderer({
   return (
     <div className="tutor-block-stack">
       {visibleBlocks.map((block, index) => {
-        const figures = figuresFor(blockSourceRef(block));
+        const refId = blockSourceRef(block);
+        const figures = figuresFor(refId);
+        const lookupChunkId = refId || fallbackSourceRefs[0]?.chunkId || undefined;
         return (
-          <div key={`${block.type}-${index}`} className="tutor-block-with-figures">
+          <div key={`${block.type}-${index}`} className="tutor-block-with-figures" data-lookup-chunk-id={lookupChunkId}>
             <TutorBlock block={block} />
             {figures.length && materialId && request ? (
               <div className="tutor-inline-figures">

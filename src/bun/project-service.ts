@@ -172,6 +172,39 @@ function coursePlanMarkdown(artifacts: MaterialArtifacts) {
     .join("\n");
 }
 
+function annotationsMarkdown(artifacts: MaterialArtifacts) {
+  const lines = ["# Saved Lookups", ""];
+  if (!artifacts.annotations.length) {
+    lines.push("No saved lookups.", "");
+    return lines.join("\n");
+  }
+
+  for (const annotation of artifacts.annotations) {
+    const meta = artifacts.sourceIndex[annotation.chunkId];
+    lines.push(`## ${annotation.selectedText}`, "");
+    lines.push(`Type: ${annotation.kind}`);
+    if (meta?.title || meta?.locator) lines.push(`Source: ${[meta.title, meta.locator].filter(Boolean).join(", ")}`);
+    lines.push("");
+    const result = annotation.result;
+    if (result.kind === "define" || result.kind === "lookup") {
+      lines.push(result.body, "");
+    } else if (result.kind === "image") {
+      if (result.body) lines.push(result.body, "");
+      for (const image of result.images) {
+        lines.push(`- ${image.title}: ${image.pageUrl || image.imageUrl || image.thumbnailUrl}`);
+      }
+      lines.push("");
+    } else if (result.kind === "note") {
+      lines.push(result.note, "");
+    }
+    for (const source of annotation.sourceMeta) {
+      lines.push(`- ${source.provider || "Source"}: ${source.url || source.title}`);
+    }
+    lines.push("");
+  }
+  return `${lines.join("\n").trim()}\n`;
+}
+
 export class ProjectService {
   private readonly settings = new SettingsService();
   private readonly artifacts = new CourseArtifactService();
@@ -275,6 +308,8 @@ export class ProjectService {
         try {
           artifacts = await this.artifacts.getArtifacts(material.id);
           await writeFile(join(materialDir, "course_plan.md"), coursePlanMarkdown(artifacts), "utf8");
+          await writeFile(join(materialDir, "annotations.json"), `${JSON.stringify(artifacts.annotations, null, 2)}\n`, "utf8");
+          await writeFile(join(materialDir, "annotations.md"), annotationsMarkdown(artifacts), "utf8");
         } catch (error) {
           await writeFile(join(materialDir, "course_plan.md"), `# ${material.title}\n\nMaterial artifacts could not be loaded: ${(error as Error).message}\n`, "utf8");
         }

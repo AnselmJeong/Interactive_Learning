@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Bookmark, Highlighter, Search, StickyNote, Trash2 } from "lucide-react";
-import type { MaterialArtifacts } from "../../../shared/artifact-types";
+import { useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
+import { BookOpen, Bookmark, Highlighter, Image as ImageIcon, Loader2, Save, Search, Sparkles, StickyNote, Trash2, X } from "lucide-react";
+import type { ImageLookupResult, LookupResult, MaterialAnnotation, MaterialArtifacts } from "../../../shared/artifact-types";
 import { stripFigureMarkdown } from "../figure-text";
 import { MarkdownContent } from "./MarkdownContent";
 import { SourceFigureCard } from "./SourceFigureCard";
@@ -27,6 +27,25 @@ type SourceMark = {
   createdAt: number;
 };
 
+type LookupAction = "define" | "lookup" | "image";
+
+type SelectionState = {
+  chunkId: string;
+  text: string;
+  x: number;
+  y: number;
+};
+
+type LookupPanelState = {
+  action: LookupAction;
+  selection: SelectionState;
+  status: "loading" | "ready" | "saving" | "saved" | "error";
+  x: number;
+  y: number;
+  result?: LookupResult | ImageLookupResult;
+  error?: string;
+};
+
 type ImmersiveSourceViewProps = {
   artifacts: MaterialArtifacts;
   sourceProgress: SourceProgress | null;
@@ -36,12 +55,46 @@ type ImmersiveSourceViewProps = {
   request: RpcRequest;
 };
 
+const LOOKUP_PANEL_WIDTH = 420;
+const LOOKUP_PANEL_HEIGHT = 560;
+
 function storageKey(materialId: string) {
   return `learnie.source-marks.${materialId}`;
 }
 
 function normalizeQuery(value: string) {
   return value.trim().toLowerCase();
+}
+
+function clampPoint(x: number, y: number) {
+  const width = Math.min(LOOKUP_PANEL_WIDTH, window.innerWidth - 24);
+  const height = Math.min(LOOKUP_PANEL_HEIGHT, window.innerHeight - 88);
+  return {
+    x: Math.max(12, Math.min(window.innerWidth - width - 12, x)),
+    y: Math.max(76, Math.min(window.innerHeight - height - 24, y)),
+  };
+}
+
+function toolbarPointForRange(rect: DOMRect, container: HTMLElement | null) {
+  const toolbarWidth = 58;
+  const toolbarHeight = 248;
+  const margin = 14;
+  const containerRect = container?.getBoundingClientRect();
+  const preferredRight = containerRect ? containerRect.right - toolbarWidth - margin : window.innerWidth - toolbarWidth - margin;
+  const x = Math.max(12, Math.min(window.innerWidth - toolbarWidth - 12, preferredRight));
+  const centeredY = rect.top + rect.height / 2 - toolbarHeight / 2;
+  const y = Math.max(92, Math.min(window.innerHeight - toolbarHeight - 14, centeredY));
+  return { x, y };
+}
+
+function actionLabel(action: LookupAction) {
+  if (action === "define") return "원문 정의";
+  if (action === "lookup") return "위키 요약";
+  return "이미지 후보";
+}
+
+function resultSourceMeta(result: LookupResult | ImageLookupResult | undefined) {
+  return result?.sourceMeta || [];
 }
 
 function useSourceMarks(materialId: string) {
@@ -73,11 +126,14 @@ export function ImmersiveSourceView({
   request,
 }: ImmersiveSourceViewProps) {
   const [query, setQuery] = useState("");
-  const [selection, setSelection] = useState<{ chunkId: string; text: string; x: number; y: number } | null>(null);
+  const [selection, setSelection] = useState<SelectionState | null>(null);
+  const [lookupPanel, setLookupPanel] = useState<LookupPanelState | null>(null);
+  const [annotations, setAnnotations] = useState<MaterialAnnotation[]>(artifacts.annotations || []);
   const [editingMarkId, setEditingMarkId] = useState<string | null>(null);
   const { marks, commit } = useSourceMarks(artifacts.manifest.id);
   const chunkRefs = useRef(new Map<string, HTMLElement>());
   const sourceDocRef = useRef<HTMLDivElement | null>(null);
+  const selectionTimerRef = useRef<number | null>(null);
   const q = normalizeQuery(query);
 
   const enrichedChunks = useMemo(() => {
@@ -113,6 +169,15 @@ export function ImmersiveSourceView({
     }
     return groups;
   }, [artifacts.figures, artifacts.sourceChunks]);
+  const annotationsByChunk = useMemo(() => {
+    const groups = new Map<string, MaterialAnnotation[]>();
+    for (const annotation of annotations) {
+      const group = groups.get(annotation.chunkId) || [];
+      group.push(annotation);
+      groups.set(annotation.chunkId, group);
+    }
+    return groups;
+  }, [annotations]);
   const displayFiguresByChunk = useMemo(() => {
     const chunkOrder = new Map(artifacts.sourceChunks.map((chunk, index) => [chunk.id, index]));
     const groups = new Map<string, typeof artifacts.figures>();
@@ -129,27 +194,48 @@ export function ImmersiveSourceView({
   const highlightCount = marks.filter((mark) => mark.kind === "highlight").length;
 
   useEffect(() => {
+    setAnnotations(artifacts.annotations || []);
+  }, [artifacts.annotations, artifacts.manifest.id]);
+
+  useEffect(() => {
     if (sourceProgress?.firstCurrentIndex == null || sourceProgress.firstCurrentIndex < 0) return;
     const chunk = artifacts.sourceChunks[sourceProgress.firstCurrentIndex];
     const el = chunk ? chunkRefs.current.get(chunk.id) : null;
     el?.scrollIntoView({ block: "center", behavior: "smooth" });
   }, [artifacts.sourceChunks, sourceProgress?.firstCurrentIndex]);
 
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      setSelection(null);
+      setLookupPanel(null);
+      window.getSelection()?.removeAllRanges();
+    }
+    function onSelectionIntent() {
+      scheduleCaptureSelection();
+    }
+    window.addEventListener("keydown", onKeyDown);
+    document.addEventListener("selectionchange", onSelectionIntent);
+    window.addEventListener("pointerup", onSelectionIntent);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("selectionchange", onSelectionIntent);
+      window.removeEventListener("pointerup", onSelectionIntent);
+      if (selectionTimerRef.current != null) {
+        window.clearTimeout(selectionTimerRef.current);
+      }
+    };
+  }, []);
+
   function scrollToChunk(chunkId: string) {
     chunkRefs.current.get(chunkId)?.scrollIntoView({ block: "center", behavior: "smooth" });
   }
 
-  function captureSelection() {
+  function readSelection(): SelectionState | null {
     const selected = window.getSelection();
-    if (!selected || selected.isCollapsed || !selected.rangeCount) {
-      setSelection(null);
-      return;
-    }
+    if (!selected || selected.isCollapsed || !selected.rangeCount) return null;
     const text = selected.toString().replace(/\s+/g, " ").trim();
-    if (text.length < 3) {
-      setSelection(null);
-      return;
-    }
+    if (text.length < 3) return null;
     const range = selected.getRangeAt(0);
     const startElement = range.startContainer.nodeType === Node.ELEMENT_NODE
       ? (range.startContainer as Element)
@@ -160,16 +246,31 @@ export function ImmersiveSourceView({
     const startChunk = startElement?.closest<HTMLElement>(".source-chunk");
     const endChunk = endElement?.closest<HTMLElement>(".source-chunk");
     if (!startChunk || startChunk !== endChunk || !sourceDocRef.current?.contains(startChunk)) {
-      setSelection(null);
-      return;
+      return null;
     }
     const rect = range.getBoundingClientRect();
-    setSelection({
+    const point = toolbarPointForRange(rect, sourceDocRef.current);
+    return {
       chunkId: startChunk.dataset.chunkId || "",
       text: text.slice(0, 420),
-      x: rect.left + rect.width / 2,
-      y: Math.max(76, rect.top - 48),
-    });
+      x: point.x,
+      y: point.y,
+    };
+  }
+
+  function scheduleCaptureSelection() {
+    if (selectionTimerRef.current != null) {
+      window.clearTimeout(selectionTimerRef.current);
+    }
+    selectionTimerRef.current = window.setTimeout(() => {
+      selectionTimerRef.current = null;
+      captureSelection();
+    }, 40);
+  }
+
+  function captureSelection() {
+    const next = readSelection();
+    setSelection(next);
   }
 
   function addMark(kind: SourceMark["kind"]) {
@@ -195,6 +296,68 @@ export function ImmersiveSourceView({
   function removeMark(markId: string) {
     commit(marks.filter((mark) => mark.id !== markId));
     if (editingMarkId === markId) setEditingMarkId(null);
+  }
+
+  async function runLookup(action: LookupAction, sourceSelection = selection) {
+    if (!sourceSelection?.chunkId || !sourceSelection.text) return;
+    const panelPoint = clampPoint(sourceSelection.x - 448, sourceSelection.y);
+    const nextSelection = { ...sourceSelection };
+    setSelection(nextSelection);
+    setLookupPanel({ action, selection: nextSelection, status: "loading", x: panelPoint.x, y: panelPoint.y });
+    const method = action === "define" ? "annotations.define" : action === "lookup" ? "annotations.lookup" : "annotations.findImages";
+    try {
+      const result = (await request(method, {
+        materialId: artifacts.manifest.id,
+        chunkId: sourceSelection.chunkId,
+        selectedText: sourceSelection.text,
+      })) as LookupResult | ImageLookupResult;
+      setLookupPanel({ action, selection: nextSelection, status: "ready", x: panelPoint.x, y: panelPoint.y, result });
+    } catch (error) {
+      setLookupPanel({
+        action,
+        selection: nextSelection,
+        status: "error",
+        x: panelPoint.x,
+        y: panelPoint.y,
+        error: (error as Error).message || String(error),
+      });
+    }
+  }
+
+  async function saveLookupResult(panel: LookupPanelState) {
+    if (!panel.result || panel.status === "saving" || panel.status === "saved") return;
+    if (panel.result.kind === "image" && panel.result.images.length === 0) return;
+    setLookupPanel({ ...panel, status: "saving" });
+    try {
+      const saved = (await request("annotations.save", {
+        materialId: artifacts.manifest.id,
+        chunkId: panel.selection.chunkId,
+        kind: panel.result.kind,
+        selectedText: panel.selection.text,
+        result: panel.result,
+        sourceMeta: resultSourceMeta(panel.result),
+      })) as MaterialAnnotation;
+      setAnnotations((current) => [saved, ...current.filter((annotation) => annotation.id !== saved.id)]);
+      setLookupPanel({ ...panel, status: "saved" });
+      window.getSelection()?.removeAllRanges();
+      setSelection(null);
+    } catch (error) {
+      setLookupPanel({
+        ...panel,
+        status: "error",
+        error: `Save failed: ${(error as Error).message || String(error)}`,
+      });
+    }
+  }
+
+  async function removeAnnotation(annotationId: string) {
+    const previous = annotations;
+    setAnnotations((current) => current.filter((annotation) => annotation.id !== annotationId));
+    try {
+      await request("annotations.delete", { annotationId });
+    } catch {
+      setAnnotations(previous);
+    }
   }
 
   return (
@@ -235,6 +398,7 @@ export function ImmersiveSourceView({
           </label>
           <span><Highlighter size={14} /> {highlightCount}</span>
           <span><StickyNote size={14} /> {noteCount}</span>
+          <span><Sparkles size={14} /> {annotations.length}</span>
         </div>
       </header>
 
@@ -269,16 +433,74 @@ export function ImmersiveSourceView({
           )}
         </nav>
 
-        <div className="source-doc immersive-source-doc" ref={sourceDocRef} onMouseUp={() => setTimeout(captureSelection, 0)}>
+        <div
+          className="source-doc immersive-source-doc"
+          ref={sourceDocRef}
+          onMouseUp={scheduleCaptureSelection}
+          onPointerUp={scheduleCaptureSelection}
+          onKeyUp={scheduleCaptureSelection}
+        >
           {selection ? (
-            <div className="selection-toolbar" style={{ left: selection.x, top: selection.y }}>
-              <button type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => addMark("highlight")}>
-                <Highlighter size={14} /> 표시
+            <div className="selection-toolbar" style={{ left: selection.x, top: selection.y }} aria-label="선택 텍스트 작업">
+              <button
+                type="button"
+                className="mark-action"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => addMark("highlight")}
+                aria-label="표시"
+                title="표시"
+              >
+                <Highlighter size={20} />
               </button>
-              <button type="button" onMouseDown={(event) => event.preventDefault()} onClick={() => addMark("note")}>
-                <StickyNote size={14} /> 노트
+              <button
+                type="button"
+                className="note-action"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => addMark("note")}
+                aria-label="노트"
+                title="노트"
+              >
+                <StickyNote size={20} />
+              </button>
+              <button
+                type="button"
+                className="define-action"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => void runLookup("define")}
+                aria-label="원문 정의"
+                title="원문 정의"
+              >
+                <BookOpen size={20} />
+              </button>
+              <button
+                type="button"
+                className="lookup-action"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => void runLookup("lookup")}
+                aria-label="위키 요약"
+                title="위키 요약"
+              >
+                <Search size={20} />
+              </button>
+              <button
+                type="button"
+                className="image-action"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => void runLookup("image")}
+                aria-label="이미지 후보"
+                title="이미지 후보"
+              >
+                <ImageIcon size={20} />
               </button>
             </div>
+          ) : null}
+          {lookupPanel ? (
+            <LookupPopover
+              panel={lookupPanel}
+              onSave={() => void saveLookupResult(lookupPanel)}
+              onClose={() => setLookupPanel(null)}
+              onMove={(x, y) => setLookupPanel((current) => (current ? { ...current, x, y } : current))}
+            />
           ) : null}
 
           {enrichedChunks.map(({ chunk, index, heading, showHeading, text, matchesQuery }) => {
@@ -286,6 +508,7 @@ export function ImmersiveSourceView({
             const chunkMarks = marksByChunk.get(chunk.id) || [];
             const chunkFigures = figuresByChunk.get(chunk.id) || [];
             const displayFigures = displayFiguresByChunk.get(chunk.id) || [];
+            const chunkAnnotations = annotationsByChunk.get(chunk.id) || [];
             return (
               <article
                 key={chunk.id}
@@ -302,6 +525,17 @@ export function ImmersiveSourceView({
                 </div>
                 {showHeading ? <h4 className="source-heading">{heading}</h4> : null}
                 {text ? <MarkdownContent content={stripFigureMarkdown(text, chunkFigures)} /> : null}
+                {chunkAnnotations.length ? (
+                  <div className="source-annotation-list">
+                    {chunkAnnotations.map((annotation) => (
+                      <SavedAnnotationCard
+                        key={annotation.id}
+                        annotation={annotation}
+                        onDelete={() => void removeAnnotation(annotation.id)}
+                      />
+                    ))}
+                  </div>
+                ) : null}
                 {displayFigures.length ? (
                   <div className="source-figure-list">
                     {displayFigures.map((figure) => (
@@ -338,6 +572,173 @@ export function ImmersiveSourceView({
           })}
         </div>
       </div>
+    </div>
+  );
+}
+
+function LookupPopover({
+  panel,
+  onSave,
+  onClose,
+  onMove,
+}: {
+  panel: LookupPanelState;
+  onSave: () => void;
+  onClose: () => void;
+  onMove: (x: number, y: number) => void;
+}) {
+  const canSave = Boolean(panel.result && panel.status === "ready" && (panel.result.kind !== "image" || panel.result.images.length > 0));
+  const dragRef = useRef<{ offsetX: number; offsetY: number } | null>(null);
+  const [dragging, setDragging] = useState(false);
+
+  useEffect(() => {
+    if (!dragging) return;
+    function onPointerMove(event: globalThis.PointerEvent) {
+      const drag = dragRef.current;
+      if (!drag) return;
+      const next = clampPoint(event.clientX - drag.offsetX, event.clientY - drag.offsetY);
+      onMove(next.x, next.y);
+    }
+    function onPointerUp() {
+      dragRef.current = null;
+      setDragging(false);
+    }
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+    window.addEventListener("pointercancel", onPointerUp);
+    return () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+      window.removeEventListener("pointercancel", onPointerUp);
+    };
+  }, [dragging, onMove]);
+
+  function startDrag(event: PointerEvent<HTMLElement>) {
+    if ((event.target as Element).closest("button")) return;
+    event.preventDefault();
+    dragRef.current = {
+      offsetX: event.clientX - panel.x,
+      offsetY: event.clientY - panel.y,
+    };
+    setDragging(true);
+  }
+
+  return (
+    <aside className={`lookup-popover ${dragging ? "dragging" : ""}`} role="dialog" aria-label={`${actionLabel(panel.action)} result`} style={{ left: panel.x, top: panel.y }}>
+      <header className="lookup-popover-drag-handle" onPointerDown={startDrag} title="드래그해서 이동">
+        <div>
+          <span>{actionLabel(panel.action)}</span>
+          <strong>{panel.selection.text}</strong>
+        </div>
+        <button type="button" onClick={onClose} title="닫기">
+          <X size={15} />
+        </button>
+      </header>
+
+      {panel.status === "loading" || panel.status === "saving" ? (
+        <div className="lookup-state">
+          <Loader2 size={18} className="spin" />
+          <span>{panel.status === "saving" ? "저장 중" : "찾는 중"}</span>
+        </div>
+      ) : null}
+
+      {panel.status === "error" ? (
+        <div className="lookup-error">
+          <p>{panel.error || "Lookup failed."}</p>
+        </div>
+      ) : null}
+
+      {panel.result && panel.status !== "loading" && panel.status !== "saving" && panel.status !== "error" ? (
+        <LookupResultBody result={panel.result} />
+      ) : null}
+
+      {panel.status === "saved" ? <p className="lookup-saved">저장되었습니다.</p> : null}
+
+      <footer>
+        <button type="button" className="wide-button" onClick={onClose}>
+          닫기
+        </button>
+        <button type="button" className="wide-button primary" onClick={onSave} disabled={!canSave}>
+          <Save size={15} /> Save
+        </button>
+      </footer>
+    </aside>
+  );
+}
+
+function LookupResultBody({ result }: { result: LookupResult | ImageLookupResult }) {
+  if (result.kind === "image") {
+    return (
+      <div className="lookup-result-body">
+        {result.images.length ? (
+          <div className="lookup-image-grid">
+            {result.images.map((image, index) => (
+              <a
+                key={`${image.title}-${image.pageUrl || image.imageUrl || index}`}
+                href={image.pageUrl || image.imageUrl || image.thumbnailUrl}
+                target="_blank"
+                rel="noreferrer"
+                title={image.title}
+              >
+                <img src={image.thumbnailUrl} alt={image.title} loading="lazy" />
+              </a>
+            ))}
+          </div>
+        ) : (
+          <p className="lookup-empty">관련 이미지를 찾지 못했습니다.</p>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="lookup-result-body">
+      <h4>{result.title}</h4>
+      <MarkdownContent content={result.body} compact />
+      <SourceMetaLinks sourceMeta={result.sourceMeta} />
+    </div>
+  );
+}
+
+function SavedAnnotationCard({ annotation, onDelete }: { annotation: MaterialAnnotation; onDelete: () => void }) {
+  const result = annotation.result;
+  return (
+    <article className={`source-annotation-card ${annotation.kind}`}>
+      <header>
+        <div>
+          <span>{annotation.kind === "image" ? "Image" : annotation.kind === "define" ? "Define" : "Lookup"}</span>
+          <strong>{annotation.selectedText}</strong>
+        </div>
+        <button type="button" onClick={onDelete} title="삭제">
+          <Trash2 size={14} />
+        </button>
+      </header>
+      {result.kind === "define" || result.kind === "lookup" || result.kind === "image" ? (
+        <LookupResultBody result={result} />
+      ) : result.kind === "note" ? (
+        <p className="lookup-result-summary">{result.note}</p>
+      ) : (
+        <p className="lookup-result-summary">표시된 텍스트입니다.</p>
+      )}
+    </article>
+  );
+}
+
+function SourceMetaLinks({ sourceMeta }: { sourceMeta: Array<{ title: string; url?: string; provider?: string; retrievedAt?: string }> }) {
+  if (!sourceMeta.length) return null;
+  return (
+    <div className="lookup-source-meta">
+      {sourceMeta.map((source, index) => (
+        source.url ? (
+          <a key={`${source.title}-${index}`} href={source.url} target="_blank" rel="noreferrer">
+            {source.provider || "Source"}: {source.title}
+          </a>
+        ) : (
+          <span key={`${source.title}-${index}`}>
+            {source.provider || "Source"}: {source.title}
+          </span>
+        )
+      ))}
     </div>
   );
 }

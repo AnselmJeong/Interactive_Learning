@@ -1,5 +1,15 @@
 import type { RPCSchema } from "electrobun/bun";
-import type { MaterialArtifacts, MaterialStatus, QualityStatus, SourceType } from "./artifact-types";
+import type {
+  ImageLookupResult,
+  LookupResult,
+  LookupSourceMeta,
+  MaterialAnnotation,
+  MaterialAnnotationKind,
+  MaterialArtifacts,
+  MaterialStatus,
+  QualityStatus,
+  SourceType,
+} from "./artifact-types";
 import type { AiProviderId, AiProviderStatus, AppSettings, ProviderModel, PublicAiProviderUpdate } from "./settings-types";
 import type { SessionSnapshot, SessionSummary, TutorContext, TutorTurnOutput } from "./tutor-types";
 
@@ -93,6 +103,7 @@ export type AppRPC = {
       "projects.archive": { params: { projectId: string }; response: boolean };
       "projects.exportArchive": { params: { projectId: string; destinationFolder?: string }; response: ProjectArchiveExport };
       "projects.openFolder": { params: { projectId?: string }; response: boolean };
+      "app.openExternal": { params: { url: string }; response: boolean };
       "sources.importPaths": { params: { projectId: string; paths: string[] }; response: SourceSummary[] };
       "sources.prepareImport": { params: { projectId: string; paths: string[] }; response: PreparedSourceImport };
       "sources.commitPreparedImport": { params: { projectId: string; importId: string; selectedItemIds: string[] }; response: SourceSummary[] };
@@ -105,6 +116,21 @@ export type AppRPC = {
       "materials.getArtifacts": { params: { materialId: string }; response: MaterialArtifacts };
       "figures.getAsset": { params: { materialId: string; figureId: string }; response: { figureId: string; mimeType: string; dataUrl: string } };
       "figures.explain": { params: { materialId: string; figureId: string; userPrompt?: string }; response: { figureId: string; explanation: string; model: string; visionCapable: true } };
+      "annotations.define": { params: { materialId: string; chunkId: string; selectedText: string }; response: LookupResult };
+      "annotations.lookup": { params: { materialId: string; chunkId: string; selectedText: string }; response: LookupResult };
+      "annotations.findImages": { params: { materialId: string; chunkId: string; selectedText: string }; response: ImageLookupResult };
+      "annotations.save": {
+        params: {
+          materialId: string;
+          chunkId: string;
+          kind: MaterialAnnotationKind;
+          selectedText: string;
+          result: LookupResult | ImageLookupResult;
+          sourceMeta: LookupSourceMeta[];
+        };
+        response: MaterialAnnotation;
+      };
+      "annotations.delete": { params: { annotationId: string }; response: boolean };
       "sessions.list": { params: { materialId: string }; response: SessionSummary[] };
       "sessions.start": { params: { materialId: string; mode: "new" | "continue"; sessionId?: string }; response: { session: SessionSnapshot; context: TutorContext; firstTurn?: TutorTurnOutput } };
       "sessions.load": { params: { sessionId: string }; response: { session: SessionSnapshot; context: TutorContext } };

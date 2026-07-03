@@ -8,6 +8,7 @@ import { AiProviderSettingsService } from "./ai-provider-settings";
 import { createAiProviderClient } from "./ai-provider-client";
 import { SourceService } from "./source-service";
 import { CourseArtifactService } from "./course-artifact-service";
+import { AnnotationService } from "./annotation-service";
 import { TutorService } from "./tutor-service";
 import { createMainWindow } from "./app-window";
 import { installApplicationMenu } from "./app-menu";
@@ -20,6 +21,7 @@ const settings = new SettingsService();
 const secrets = new AiProviderSettingsService();
 const sources = new SourceService();
 const materials = new CourseArtifactService();
+const annotations = new AnnotationService(materials, providerClient);
 const tutor = new TutorService();
 
 void settings.get().then((current) => projects.migrateUnsetProjectRoots(current.projectRootFolder)).catch((error) => {
@@ -145,6 +147,20 @@ function openPath(path: string) {
   return true;
 }
 
+async function openExternalUrl(value: string) {
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    throw new Error("Invalid URL");
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    throw new Error("Only http(s) URLs can be opened externally");
+  }
+  await Utils.openExternal(url.toString());
+  return true;
+}
+
 const rpc = BrowserView.defineRPC<AppRPC>({
   maxRequestTime: Infinity,
   handlers: {
@@ -155,6 +171,7 @@ const rpc = BrowserView.defineRPC<AppRPC>({
       "projects.archive": ({ projectId }) => projects.archive(projectId),
       "projects.exportArchive": ({ projectId, destinationFolder }) => projects.exportArchive(projectId, destinationFolder),
       "projects.openFolder": ({ projectId }) => openPath(projects.folder(projectId)),
+      "app.openExternal": ({ url }) => openExternalUrl(url),
       "sources.openDialog": () => chooseSourcePaths(),
       "sources.chooseAndImport": async ({ projectId }) => {
         const paths = await chooseSourcePaths();
@@ -194,6 +211,11 @@ const rpc = BrowserView.defineRPC<AppRPC>({
       "materials.getArtifacts": ({ materialId }) => materials.getArtifacts(materialId),
       "figures.getAsset": ({ materialId, figureId }) => getFigureAsset(materialId, figureId),
       "figures.explain": ({ materialId, figureId, userPrompt }) => explainFigure(materialId, figureId, userPrompt),
+      "annotations.define": (params) => annotations.define(params),
+      "annotations.lookup": (params) => annotations.lookup(params),
+      "annotations.findImages": (params) => annotations.findImages(params),
+      "annotations.save": (params) => annotations.save(params),
+      "annotations.delete": ({ annotationId }) => annotations.delete(annotationId),
       "sessions.list": ({ materialId }) => tutor.listSessions(materialId),
       "sessions.start": ({ materialId, mode, sessionId }) => tutor.start(materialId, { mode, sessionId }),
       "sessions.load": ({ sessionId }) => tutor.load(sessionId),

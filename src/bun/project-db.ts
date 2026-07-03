@@ -122,6 +122,24 @@ export function getDb() {
       updated_at INTEGER NOT NULL,
       PRIMARY KEY (session_id, module_id)
     );
+
+    CREATE TABLE IF NOT EXISTS material_annotations (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      material_id TEXT NOT NULL REFERENCES learning_materials(id) ON DELETE CASCADE,
+      source_id TEXT,
+      chunk_id TEXT NOT NULL,
+      kind TEXT NOT NULL CHECK (kind IN ('define', 'lookup', 'image', 'note', 'highlight')),
+      selected_text TEXT NOT NULL,
+      normalized_text TEXT NOT NULL,
+      result_json TEXT NOT NULL,
+      source_meta_json TEXT NOT NULL DEFAULT '[]',
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_material_annotations_material_chunk
+      ON material_annotations(material_id, chunk_id, created_at ASC);
   `);
 
   const projectColumns = db.query<{ name: string }, []>("PRAGMA table_info(projects)").all().map((column) => column.name);

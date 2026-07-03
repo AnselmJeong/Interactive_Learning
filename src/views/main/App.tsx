@@ -2,13 +2,14 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Archive, BookOpen, Check, Info, Loader2, MessageSquare, Play, Send, Settings, Upload } from "lucide-react";
 import type { MaterialSummary, PreparedSourceImport, ProjectArchiveExport, ProjectSummary, SourceSummary } from "../../shared/rpc-types";
 import type { AppSettings, AiProviderStatus, ProviderModel } from "../../shared/settings-types";
-import type { MaterialArtifacts } from "../../shared/artifact-types";
+import type { MaterialAnnotation, MaterialArtifacts } from "../../shared/artifact-types";
 import type { SessionSnapshot, SessionSummary, SourceRef, TutorContext, TutorMessage } from "../../shared/tutor-types";
 import { SettingsModal } from "./components/SettingsModal";
 import { VisualRenderer } from "./components/VisualRenderer";
 import { MarkdownContent } from "./components/MarkdownContent";
 import { TutorBlockRenderer } from "./components/TutorBlockRenderer";
 import { ImmersiveSourceView } from "./components/ImmersiveSourceView";
+import { LearningSelectionLookup } from "./components/LearningSelectionLookup";
 import { NewProjectModal } from "./components/NewProjectModal";
 import { ProjectDropdown } from "./components/ProjectDropdown";
 import { SourceImportModal } from "./components/SourceImportModal";
@@ -119,7 +120,7 @@ function AnswerSourceRefs({ refs, materialId, request }: { refs: SourceRef[]; ma
   return (
     <div className="answer-source-list">
       {refs.map((ref) => (
-        <article key={ref.chunkId} className="answer-source-ref">
+        <article key={ref.chunkId} className="answer-source-ref" data-lookup-chunk-id={ref.chunkId}>
           <strong>{ref.title}</strong>
           {cleanLocator(ref.locator) ? <small>{cleanLocator(ref.locator)}</small> : null}
           <MarkdownContent content={ref.text} compact />
@@ -155,36 +156,39 @@ const ChatLog = memo(function ChatLog({
 }) {
   return (
     <div className="chat-log">
-      {messages.map((message) => (
-        <div key={message.id} className={`bubble ${message.role}`}>
-          {message.role === "assistant" && message.blocks?.length ? (
-            <TutorBlockRenderer
-              blocks={message.blocks}
-              sourceRefById={sourceRefById}
-              fallbackSourceRefs={message.sourceRefs.map((id) => sourceRefById.get(id)).filter((ref): ref is SourceRef => Boolean(ref))}
-              materialId={materialId}
-              request={request}
-            />
-          ) : (
-            <MarkdownContent content={message.content} />
-          )}
-          {message.role === "assistant" && message.sourceRefs.length ? (
-            <div className="answer-sources">
-              <button type="button" onClick={() => onToggleSource(message.id)}>
-                <BookOpen size={15} />
-                {expandedSourceMessages.has(message.id) ? "근거 닫기" : "근거 보기"}
-              </button>
-              {expandedSourceMessages.has(message.id) ? (
-                <AnswerSourceRefs
-                  refs={message.sourceRefs.map((id) => sourceRefById.get(id)).filter((ref): ref is SourceRef => Boolean(ref))}
-                  materialId={materialId}
-                  request={request}
-                />
-              ) : null}
-            </div>
-          ) : null}
-        </div>
-      ))}
+      {messages.map((message) => {
+        const lookupChunkId = message.sourceRefs[0] || undefined;
+        return (
+          <div key={message.id} className={`bubble ${message.role}`} data-lookup-chunk-id={lookupChunkId}>
+            {message.role === "assistant" && message.blocks?.length ? (
+              <TutorBlockRenderer
+                blocks={message.blocks}
+                sourceRefById={sourceRefById}
+                fallbackSourceRefs={message.sourceRefs.map((id) => sourceRefById.get(id)).filter((ref): ref is SourceRef => Boolean(ref))}
+                materialId={materialId}
+                request={request}
+              />
+            ) : (
+              <MarkdownContent content={message.content} />
+            )}
+            {message.role === "assistant" && message.sourceRefs.length ? (
+              <div className="answer-sources">
+                <button type="button" onClick={() => onToggleSource(message.id)}>
+                  <BookOpen size={15} />
+                  {expandedSourceMessages.has(message.id) ? "근거 닫기" : "근거 보기"}
+                </button>
+                {expandedSourceMessages.has(message.id) ? (
+                  <AnswerSourceRefs
+                    refs={message.sourceRefs.map((id) => sourceRefById.get(id)).filter((ref): ref is SourceRef => Boolean(ref))}
+                    materialId={materialId}
+                    request={request}
+                  />
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        );
+      })}
       {tutorThinking ? (
         <div className="bubble assistant thinking-bubble">
           <span className="typing-spinner" aria-hidden="true" />
@@ -316,6 +320,31 @@ export function App({ request }: { request: RpcRequest }) {
     void refreshProjects();
     void refreshSettings();
   }, []);
+
+  useEffect(() => {
+    function onExternalLinkClick(event: MouseEvent) {
+      const target = event.target instanceof Element ? event.target : null;
+      const anchor = target?.closest<HTMLAnchorElement>("a[href]");
+      if (!anchor) return;
+      const href = anchor.href || anchor.getAttribute("href") || "";
+      let url: URL;
+      try {
+        url = new URL(href);
+      } catch {
+        return;
+      }
+      if (url.protocol !== "http:" && url.protocol !== "https:") return;
+      event.preventDefault();
+      event.stopPropagation();
+      void request("app.openExternal", { url: url.toString() }).catch((error) => {
+        console.warn("Failed to open external link", error);
+      });
+    }
+    document.addEventListener("click", onExternalLinkClick, true);
+    return () => {
+      document.removeEventListener("click", onExternalLinkClick, true);
+    };
+  }, [request]);
 
   useEffect(() => {
     const onGeneration = (event: Event) => setStatus((event as CustomEvent<{ message: string }>).detail.message);
@@ -713,6 +742,15 @@ export function App({ request }: { request: RpcRequest }) {
       return next;
     });
   }, []);
+  const handleAnnotationSaved = useCallback((annotation: MaterialAnnotation) => {
+    setArtifacts((current) => {
+      if (!current || current.manifest.id !== annotation.materialId) return current;
+      return {
+        ...current,
+        annotations: [annotation, ...(current.annotations || []).filter((item) => item.id !== annotation.id)],
+      };
+    });
+  }, []);
 
   // Source-coverage model, driven by the source-chunk cursor. Each semantic source chunk is
   // "covered" (already taught and stepped past), "current" (the chunk being taught right now),
@@ -732,6 +770,7 @@ export function App({ request }: { request: RpcRequest }) {
     const firstCurrentIndex = chunks.findIndex((chunk) => statusFor(chunk.id) === "current");
     return { total, reached, coveredCount, percent: total ? Math.round((reached / total) * 100) : 0, statusFor, firstCurrentIndex };
   }, [artifacts, session?.coveredChunkIds, session?.currentChunkId]);
+  const defaultLookupChunkId = latestAssistant?.sourceRefs[0] || currentChunkId || artifacts?.sourceChunks[0]?.id || null;
 
   const importedSourceLabel = `${state.sources.length} source${state.sources.length === 1 ? "" : "s"} imported`;
   const inspectorModules = useMemo(() => {
@@ -997,6 +1036,15 @@ export function App({ request }: { request: RpcRequest }) {
               <h3>Learning Workspace</h3>
             </div>
           )}
+          {viewMode === "chat" && artifacts ? (
+            <LearningSelectionLookup
+              rootRef={tutorSurfaceRef}
+              materialId={artifacts.manifest.id}
+              defaultChunkId={defaultLookupChunkId}
+              request={request}
+              onAnnotationSaved={handleAnnotationSaved}
+            />
+          ) : null}
         </section>
       </main>
 

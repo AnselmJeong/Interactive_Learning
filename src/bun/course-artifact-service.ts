@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { getDb } from "./project-db";
 import { dataPath, materialDirAt } from "./paths";
 import { SourceService } from "./source-service";
+import { listMaterialAnnotations } from "./annotation-store";
 import type {
   Concept,
   CourseModule,
@@ -420,7 +421,8 @@ export class CourseArtifactService {
     const sourceChunks = (await Promise.all(this.sourceIds(materialId).map((sourceId) => this.sources.loadChunks(sourceId)))).flat();
     const figures = await this.loadMaterialFigures(row);
     const figureIndex = await this.loadMaterialFigureIndex(row, figures);
-    return { manifest, conceptMap, coursePlan, lecturePlan, presentationPlan, criticReport, visuals, sourceChunks, sourceIndex, figures, figureIndex };
+    const annotations = listMaterialAnnotations(materialId);
+    return { manifest, conceptMap, coursePlan, lecturePlan, presentationPlan, criticReport, visuals, sourceChunks, sourceIndex, figures, figureIndex, annotations };
   }
 
   private async loadMaterialFigures(row: MaterialRow) {

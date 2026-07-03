@@ -43,6 +43,75 @@ export type SourceFigure = {
   sourceChunkIds: string[];
 };
 
+export type LookupSourceMeta = {
+  title: string;
+  url?: string;
+  provider?: string;
+  retrievedAt?: string;
+};
+
+export type LookupResult = {
+  kind: "define" | "lookup";
+  title: string;
+  body: string;
+  query: string;
+  provider: "ai" | "wikipedia";
+  model?: string;
+  url?: string;
+  sourceTitle?: string;
+  retrievedAt: string;
+  sourceMeta: LookupSourceMeta[];
+};
+
+export type ImageLookupItem = {
+  title: string;
+  thumbnailUrl: string;
+  imageUrl?: string;
+  pageUrl?: string;
+  sourceTitle?: string;
+  provider: "wikipedia";
+  width?: number;
+  height?: number;
+  caption?: string;
+};
+
+export type ImageLookupResult = {
+  kind: "image";
+  title: string;
+  query: string;
+  body?: string;
+  provider: "wikipedia";
+  images: ImageLookupItem[];
+  retrievedAt: string;
+  sourceMeta: LookupSourceMeta[];
+};
+
+export type NoteResult = {
+  kind: "note";
+  note: string;
+};
+
+export type HighlightResult = {
+  kind: "highlight";
+};
+
+export type MaterialAnnotationKind = "define" | "lookup" | "image" | "note" | "highlight";
+
+export type MaterialAnnotation = {
+  id: string;
+  projectId: string;
+  materialId: string;
+  sourceId: string | null;
+  chunkId: string;
+  kind: MaterialAnnotationKind;
+  selectedText: string;
+  normalizedText: string;
+  result: LookupResult | ImageLookupResult | NoteResult | HighlightResult;
+  sourceMeta: LookupSourceMeta[];
+  createdAt: number;
+  updatedAt: number;
+};
+
 export type Concept = {
   id: string;
   name: string;
@@ -217,4 +286,5 @@ export type MaterialArtifacts = {
   sourceIndex: Record<string, { sourceId: string; title: string; locator: string }>;
   figures: SourceFigure[];
   figureIndex: Record<string, { sourceId: string; title: string; locator: string; sourceChunkIds: string[] }>;
+  annotations: MaterialAnnotation[];
 };
