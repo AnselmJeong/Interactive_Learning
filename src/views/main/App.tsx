@@ -29,7 +29,7 @@ type CoursePlanModule = MaterialArtifacts["coursePlan"]["modules"][number];
 type ModuleStatus = TutorContext["moduleOutline"][number]["status"];
 type InspectorTab = "modules" | "sessions";
 
-const PROGRESSION_CHOICES = new Set(["다음 진도로 넘어가주세요.", "다음 대목으로 넘어가주세요.", "다음 문단으로 넘어가주세요.", "다음 모듈로 넘어가주세요.", "진도로 돌아갈게요."]);
+const PROGRESSION_CHOICES = new Set(["계속해줘", "계속해줘.", "다음 진도로 넘어가주세요.", "다음 대목으로 넘어가주세요.", "다음 문단으로 넘어가주세요.", "다음 모듈로 넘어가주세요.", "진도로 돌아갈게요."]);
 const FINISH_CONFIRMATION_CHOICE = "네, 마칠게요.";
 const FALLBACK_CHOICES = ["힌트를 하나만 더 주세요.", "예시 답변을 하나 보여주세요.", "이 질문을 더 쉽게 다시 물어봐 주세요."];
 const EMPTY_MESSAGES: TutorMessage[] = [];
@@ -496,7 +496,7 @@ export function App({ request }: { request: RpcRequest }) {
     }
   }
 
-  async function advanceLearning(mode: "chunk" | "module") {
+  async function advanceLearning(mode: "paragraph" | "chunk" | "module") {
     if (!session || sessionReadOnly) return;
     setBusy(true);
     setTutorThinking(true);
@@ -916,6 +916,9 @@ export function App({ request }: { request: RpcRequest }) {
                           진도로 돌아가기
                         </button>
                       ) : null}
+                      <button type="button" onClick={() => advanceLearning("paragraph")} disabled={busy || selectedModuleWaiting}>
+                        계속해줘
+                      </button>
                       <button type="button" onClick={() => advanceLearning("chunk")} disabled={busy || selectedModuleWaiting}>
                         다음 대목으로
                       </button>

@@ -9,21 +9,22 @@ import type { CourseModule, LectureModulePlan, MaterialArtifacts, PresentationMo
 import type { SessionSnapshot, SessionSummary, SourceRef, TutorContentBlock, TutorContext, TutorIntent, TutorMessage, TutorStateUpdate, TutorTurnOutput } from "../shared/tutor-types";
 
 // "start_module": open the first source chunk of a (new) module with a content summary.
+// "continue_chunk": keep the cursor on the current source chunk and continue teaching it.
 // "next_chunk": continue to the next source chunk within the same module. "return_to_progress":
 // resume after a detour on the next active source chunk. "user_message": the learner replied.
-type TurnPayload = { event: "start_module" | "next_chunk" | "return_to_progress" | "user_message"; userText?: string };
+type TurnPayload = { event: "start_module" | "continue_chunk" | "next_chunk" | "return_to_progress" | "user_message"; userText?: string };
 
 const VALID_INTENTS: TutorIntent[] = ["start", "answer", "question", "off_topic", "deeper", "meta_complaint", "satisfied"];
 const DIGRESSION_INTENTS = new Set<TutorIntent>(["question", "off_topic", "deeper", "meta_complaint"]);
 const MAX_HISTORY_TURNS = 8;
 const MAX_HISTORY_CHARS = 1200;
-const PROGRESSION_CHOICES = new Set(["다음 진도로 넘어가주세요.", "다음 대목으로 넘어가주세요.", "다음 문단으로 넘어가주세요.", "다음 모듈로 넘어가주세요.", "진도로 돌아갈게요."]);
+const PROGRESSION_CHOICES = new Set(["계속해줘", "계속해줘.", "다음 진도로 넘어가주세요.", "다음 대목으로 넘어가주세요.", "다음 문단으로 넘어가주세요.", "다음 모듈로 넘어가주세요.", "진도로 돌아갈게요."]);
 
 // A lightweight Korean-aware heuristic. It is only a hint and a fallback; when the model
 // returns its own userIntent we trust that instead. The point is that a substantive
 // question must never be mistaken for "ready to advance".
 function classifyIntent(userText: string, event: TurnPayload["event"]): TutorIntent {
-  if (event === "start_module" || event === "next_chunk" || event === "return_to_progress") return "start";
+  if (event === "start_module" || event === "continue_chunk" || event === "next_chunk" || event === "return_to_progress") return "start";
   const t = (userText || "").trim();
   if (!t) return "answer";
   const has = (...needles: string[]) => needles.some((needle) => t.includes(needle));
@@ -507,6 +508,12 @@ export class TutorService {
     const currentModule = this.ownerModuleOf(artifacts, focusChunk?.id);
     if (!focusChunk) throw new Error("No current source chunk is available");
 
+    if (mode === "paragraph") {
+      const output = await this.createTutorTurn(sessionId, { event: "continue_chunk" });
+      await this.persistSessionSnapshot(sessionId);
+      return { session: this.snapshot(sessionId), context: await this.context(sessionId), output };
+    }
+
     let nextChunk: SourceChunk | undefined;
     if (mode === "module") {
       for (const id of currentModule.sourceChunkIds) covered.add(id);
@@ -976,6 +983,8 @@ export class TutorService {
       ? payload.event === "user_message"
         ? "Every source chunk has been covered. There is no next module to open. If the learner asks a review question or names something they want to revisit, answer that specific question using the covered source and your broader knowledge where useful. Do NOT start a new module. End by offering either to finish the session or keep discussing a specific point."
         : "Every source chunk has been covered. Do NOT teach new content. Briefly synthesize what the learner has covered, then ask: 원문의 모든 대목을 다뤘습니다. 학습을 마칠까요? Wait for their confirmation before ending."
+      : payload.event === "continue_chunk"
+        ? "The learner chose 계속해줘. Stay on the same current source chunk. Continue with parts, implications, examples, or connective tissue from this chunk that the earlier assistant turns have not fully covered. Do NOT mark the chunk complete, do NOT move to the next chunk, and avoid repeating the same guided reading."
       : payload.event === "return_to_progress"
         ? "The learner is returning from a detour. The cursor is already on the next active source chunk. Bridge back in one sentence, do NOT repeat the detour or pre-detour chunk, then teach the current source chunk as the continuation."
       : this.courseManagerHint(module, payload, intent);
@@ -1039,7 +1048,7 @@ Never simulate a flow, bullet list, or table inside paragraph or guided_reading 
 Reflection blocks should not trap the learner before progress can continue. Whenever you emit a reflection block, include aiView: your own concise answer or interpretive stance, grounded in the current source, so the learner can reveal it without typing a reply.
 	You teach the source ONE SOURCE CHUNK AT A TIME, in order. Teach only the current chunk below this turn; do not summarize or race ahead to later chunks. The learner steps to the next chunk by choosing the progression option.
 	If the learner asks a detour question, answer it fully while preserving the current source chunk as the lesson anchor. When returning from a detour, continue from the next active chunk; do not replay the pre-detour explanation.
-	When starting a new module (or the very first chunk), open with a hook block that naturally summarizes the module's actual content without formulaic labels such as "핵심은", "요약하면", or "TLDR". It must NOT give study advice or talk about how to read. Then provide guided_reading before any reflective question. When simply continuing to the next chunk of the same module, open with a one-line bridge and a guided_reading of the new chunk — do not repeat a hook every time. Do not open by showing a raw source sentence unless the learner explicitly asks for the exact wording.
+	When starting a new module (or the very first chunk), open with a hook block that naturally summarizes the module's actual content without formulaic labels such as "핵심은", "요약하면", or "TLDR". It must NOT give study advice or talk about how to read. Then provide guided_reading before any reflective question. When simply continuing to the next chunk of the same module, open with a one-line bridge and a guided_reading of the new chunk — do not repeat a hook every time. When continuing the same chunk, do not replay the same explanation; teach the still-undiscussed details, examples, mechanism, contrast, or implication inside the current chunk. Do not open by showing a raw source sentence unless the learner explicitly asks for the exact wording.
 	Always provide exactly 3 choices that work as complete learner replies or exploration paths, phrased as learner continuations, not exam answers or UI commands. Do NOT include progression commands such as "다음 대목으로", "다음 문단으로", "다음 모듈로", or "다음 진도로"; the app shows those separately.
 Current course: ${artifacts.coursePlan.title}
 Current topic title: ${module.title}
@@ -1074,9 +1083,11 @@ Output schema: {"message":"plain text fallback summary","blocks":[/* 2-4 blocks 
                 : "Open this module's first source chunk as a guided lecture: first a natural content-summary hook without formulaic labels such as '핵심은', then guided_reading of the current chunk, then invite reflection."
               : payload.event === "next_chunk"
                 ? "Continue to the next source chunk. Open with a one-line bridge from the previous chunk, then teach the current chunk with a guided_reading, then invite reflection. Do not repeat a hook."
-                : payload.event === "return_to_progress"
-                  ? "Return to the lesson path after a detour. Do not repeat the detour or the previously taught chunk. Briefly bridge, then continue with the current source chunk below."
-                : `Learner just said: ${payload.userText}\nIntent looks like: ${intent}. Respond to what they actually said. If it is a question or complaint, answer it this turn; do not move on. Use their words as material, not as an exam submission.`,
+                : payload.event === "continue_chunk"
+                  ? "Continue the SAME current source chunk. Do not move to the next chunk. Do not repeat the earlier explanation; extend it by covering what remains implicit, under-explained, or newly useful in this chunk. Keep it concise and end with learner exploration choices."
+                  : payload.event === "return_to_progress"
+                    ? "Return to the lesson path after a detour. Do not repeat the detour or the previously taught chunk. Briefly bridge, then continue with the current source chunk below."
+                    : `Learner just said: ${payload.userText}\nIntent looks like: ${intent}. Respond to what they actually said. If it is a question or complaint, answer it this turn; do not move on. Use their words as material, not as an exam submission.`,
         },
       ],
     });
@@ -1127,7 +1138,9 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${chunk.text}`
           content:
             payload.event === "start_module" || payload.event === "next_chunk" || payload.event === "return_to_progress"
               ? "Teach the current source chunk as a guided lecture. Teach first, then invite reflection."
-              : `Learner just said: ${payload.userText}\nIntent looks like: ${intent}. Answer this turn.`,
+              : payload.event === "continue_chunk"
+                ? "Continue the SAME current source chunk. Do not move to the next chunk. Do not repeat the earlier explanation; cover still-undiscussed details, examples, mechanism, contrast, or implication from this chunk."
+                : `Learner just said: ${payload.userText}\nIntent looks like: ${intent}. Answer this turn.`,
         },
       ],
     });
@@ -1467,7 +1480,7 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${chunk.text}`
     event: TurnPayload["event"]
   ): TutorStateUpdate {
     const isDigression = DIGRESSION_INTENTS.has(intent);
-    const nextPhase = ready ? "complete" : isDigression ? "explain" : state?.nextPhase || (event === "start_module" || event === "next_chunk" ? "discuss" : "clarify");
+    const nextPhase = ready ? "complete" : isDigression ? "explain" : state?.nextPhase || (event === "start_module" || event === "continue_chunk" || event === "next_chunk" ? "discuss" : "clarify");
     const conversationMode = event === "return_to_progress" ? "returning" : isDigression ? "detour" : "on_track";
     // `ready` is the ONLY authority for advancement. We deliberately ignore the model's raw
     // checkpointPassed/advanceModule flags so a stray flag during a digression cannot skip ahead.
@@ -1633,6 +1646,9 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${chunk.text}`
     }
     if (payload.event === "next_chunk") {
       return "Continue to the next source chunk. Bridge in one line from the previous chunk, teach THIS chunk with a guided_reading, and end with a reflective invitation. Do not repeat a hook and do not jump ahead.";
+    }
+    if (payload.event === "continue_chunk") {
+      return "Continue teaching THIS SAME source chunk. Focus on material from this chunk that has not yet been explained, add a concrete example or contrast if useful, and do not jump ahead.";
     }
     if (payload.event === "return_to_progress") {
       return "Return from the learner's detour to the next active source chunk. Bridge briefly, do not repeat the pre-detour chunk, then teach THIS chunk as the continuation.";
