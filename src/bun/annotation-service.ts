@@ -176,7 +176,7 @@ async function fetchJson<T>(url: string, timeoutMs = 10000): Promise<T> {
   const response = await fetch(url, {
     headers: {
       accept: "application/json",
-      "user-agent": "Learnie/0.4.0 desktop learning app",
+      "user-agent": "Learnie/0.4.2 desktop learning app",
     },
     signal: AbortSignal.timeout(timeoutMs),
   });
@@ -196,7 +196,7 @@ async function fetchImageDataUrl(value: string, timeoutMs = 10000): Promise<stri
   const response = await fetch(url.toString(), {
     headers: {
       accept: "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
-      "user-agent": "Learnie/0.4.0 desktop learning app",
+      "user-agent": "Learnie/0.4.2 desktop learning app",
     },
     signal: AbortSignal.timeout(timeoutMs),
   });

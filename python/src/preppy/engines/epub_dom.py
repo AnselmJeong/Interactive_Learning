@@ -66,6 +66,10 @@ BLOCK_NAMES = {
     "ul",
 }
 CONTAINER_NAMES = {"div", "section", "article", "main"}
+_WEAK_TITLE_RE = re.compile(
+    r"^(?:\d+|[ivxlcdm]+|chapter\s+(?:\d+|[ivxlcdm]+))[.\-:]?$",
+    re.IGNORECASE,
+)
 
 
 @dataclass(slots=True)
@@ -226,6 +230,7 @@ def convert(
     figures_found = 0
     figures_skipped = 0
     figures_duplicate = 0
+    resolved_candidate_titles: dict[int, str] = {}
 
     output_index = 1
     for doc_href, group in _group_candidates_by_doc(plan.candidates).items():
@@ -256,6 +261,8 @@ def convert(
             for node in segment_soup.select("script, style, nav"):
                 node.decompose()
             _merge_leading_headings(segment_soup)
+            chapter_title = _refine_chapter_title(candidate.title, segment_soup)
+            resolved_candidate_titles[candidate.id] = chapter_title
 
             chapter_figure_ids: list[str] = []
             for img in segment_soup.find_all("img"):
@@ -280,13 +287,13 @@ def convert(
                     chapter_figure_ids.append(outcome.figure_id)
 
             body_markdown = html_to_markdown(str(segment_soup))
-            markdown = render_chapter_markdown(candidate.title, body_markdown)
+            markdown = render_chapter_markdown(chapter_title, body_markdown)
             text_len = len(segment_soup.get_text(" ", strip=True))
 
-            slug = slugify(candidate.title)
+            slug = slugify(chapter_title)
             chapter_meta = Chapter(
                 index=output_index,
-                title=candidate.title,
+                title=chapter_title,
                 kind=candidate.kind,
                 slug=slug,
                 path=chapter_relpath(output_index, slug),
@@ -301,7 +308,7 @@ def convert(
                     QualityWarning(
                         code="short-chapter",
                         message=(
-                            f"Chapter {output_index} ('{candidate.title}') has {text_len} "
+                            f"Chapter {output_index} ('{chapter_title}') has {text_len} "
                             f"characters, below --min-chapter-chars={min_chapter_chars}."
                         ),
                         context={"chapter_index": output_index},
@@ -326,7 +333,11 @@ def convert(
     document_model = DocumentModel(
         source_type="epub",
         items=[
-            DocumentItem(kind="boundary", text=c.title, source_locator=c.source_locator)
+            DocumentItem(
+                kind="boundary",
+                text=resolved_candidate_titles.get(c.id, c.title),
+                source_locator=c.source_locator,
+            )
             for c in plan.candidates
         ],
         meta={
@@ -352,7 +363,7 @@ def convert(
             method="epub-toc-spine",
             candidates=[
                 BoundaryDiagnostic(
-                    title=c.title,
+                    title=resolved_candidate_titles.get(c.id, c.title),
                     kind=c.kind,
                     reason=c.reason,
                     confidence=c.confidence,
@@ -564,10 +575,9 @@ def _heading_level_of(node: Tag) -> int | None:
 
 def _infer_document_title(soup: BeautifulSoup, file_name: str) -> str:
     body = soup.body or soup
-    for node in body.find_all(["h1", "h2", "h3"], limit=3):
-        title = normalize_title(node.get_text(" ", strip=True))
-        if title:
-            return title
+    title = _best_heading_title(_heading_titles(body, limit=6))
+    if title:
+        return title
     if soup.title and normalize_title(soup.title.get_text(" ", strip=True)):
         return normalize_title(soup.title.get_text(" ", strip=True))
     return fallback_title(file_name, 1)
@@ -583,6 +593,49 @@ def _infer_segment_title(node: Tag) -> str | None:
     if text:
         return " ".join(text.split()[:10])
     return None
+
+
+def _refine_chapter_title(candidate_title: str, soup: BeautifulSoup) -> str:
+    title = _best_heading_title([candidate_title, *_heading_titles(soup.body or soup, limit=6)])
+    return title or candidate_title
+
+
+def _heading_titles(parent: Tag | BeautifulSoup, *, limit: int) -> list[str]:
+    titles: list[str] = []
+    for node in parent.find_all(["h1", "h2", "h3"], limit=limit):
+        title = normalize_title(node.get_text(" ", strip=True))
+        if title:
+            titles.append(title)
+    return titles
+
+
+def _best_heading_title(titles: list[str]) -> str | None:
+    if not titles:
+        return None
+    first = titles[0]
+    if not _is_weak_title(first):
+        return first
+    for title in titles[1:]:
+        if _is_substantive_heading(title):
+            return _join_heading_prefix(first, title)
+    return first
+
+
+def _is_weak_title(title: str) -> bool:
+    return bool(_WEAK_TITLE_RE.fullmatch(normalize_title(title)))
+
+
+def _is_substantive_heading(title: str) -> bool:
+    title = normalize_title(title)
+    return bool(title and not _is_weak_title(title) and sum(ch.isalpha() for ch in title) >= 3)
+
+
+def _join_heading_prefix(prefix: str, title: str) -> str:
+    clean_prefix = normalize_title(prefix).rstrip(".-:")
+    clean_title = normalize_title(title)
+    if re.match(rf"^{re.escape(clean_prefix)}(?:[.\-:\s]|$)", clean_title, re.IGNORECASE):
+        return clean_title
+    return f"{clean_prefix} {clean_title}".strip()
 
 
 def _merge_leading_headings(soup: BeautifulSoup) -> None:
