@@ -531,6 +531,27 @@ export class TutorService {
     if (!focusChunk) throw new Error("No current source chunk is available");
 
     if (mode === "paragraph") {
+      if (curriculum.length > 0 && covered.size >= curriculum.length) {
+        const output = await this.createTutorTurn(sessionId, { event: "continue_chunk" });
+        await this.persistSessionSnapshot(sessionId);
+        return { session: this.snapshot(sessionId), context: await this.context(sessionId), output };
+      }
+      if (this.shouldContinueAdvanceToNextChunk(session, focusChunk, curriculum)) {
+        covered.add(focusChunk.id);
+        const index = curriculum.findIndex((chunk) => chunk.id === focusChunk.id);
+        const nextChunk = curriculum[index + 1];
+        if (!nextChunk) {
+          this.persistCursor(sessionId, artifacts, focusChunk.id, [...covered]);
+          const output = this.finishPromptTurn(sessionId, currentModule);
+          await this.persistSessionSnapshot(sessionId);
+          return { session: this.snapshot(sessionId), context: await this.context(sessionId), output };
+        }
+        this.persistCursor(sessionId, artifacts, nextChunk.id, [...covered]);
+        const nextModule = this.ownerModuleOf(artifacts, nextChunk.id);
+        const output = await this.createTutorTurn(sessionId, { event: nextModule.id !== currentModule.id ? "start_module" : "next_chunk" });
+        await this.persistSessionSnapshot(sessionId);
+        return { session: this.snapshot(sessionId), context: await this.context(sessionId), output };
+      }
       const output = await this.createTutorTurn(sessionId, { event: "continue_chunk" });
       await this.persistSessionSnapshot(sessionId);
       return { session: this.snapshot(sessionId), context: await this.context(sessionId), output };
@@ -962,6 +983,41 @@ export class TutorService {
   private currentChunkOf(artifacts: MaterialArtifacts, session: SessionSnapshot): SourceChunk | undefined {
     const curriculum = this.orderedCurriculum(artifacts);
     return curriculum.find((chunk) => chunk.id === session.currentChunkId) || curriculum[0];
+  }
+
+  private shouldContinueAdvanceToNextChunk(session: SessionSnapshot, focusChunk: SourceChunk, curriculum: SourceChunk[]): boolean {
+    const requiredTurns = this.requiredTeachingTurnsForChunk(focusChunk);
+    return this.currentChunkTeachingTurnCount(session, focusChunk.id, curriculum) >= requiredTurns;
+  }
+
+  private requiredTeachingTurnsForChunk(chunk: SourceChunk): number {
+    const length = chunk.text.replace(/\s+/g, " ").trim().length;
+    if (length <= 700) return 1;
+    if (length <= 1600) return 2;
+    return 3;
+  }
+
+  private currentChunkTeachingTurnCount(session: SessionSnapshot, chunkId: string, curriculum: SourceChunk[]): number {
+    const curriculumIds = new Set(curriculum.map((chunk) => chunk.id));
+    let count = 0;
+    for (let index = session.messages.length - 1; index >= 0; index -= 1) {
+      const message = session.messages[index]!;
+      if (message.role !== "assistant") continue;
+      if (message.stateUpdate?.turnMode === "digress") continue;
+      const refs = this.messageTeachingChunkRefs(message).filter((id) => curriculumIds.has(id));
+      if (!refs.length) continue;
+      if (refs.includes(chunkId)) {
+        count += 1;
+        continue;
+      }
+      if (count > 0) break;
+    }
+    return count;
+  }
+
+  private messageTeachingChunkRefs(message: TutorMessage): string[] {
+    const blockRefs = this.collectBlockSourceRefs(message.blocks || []);
+    return blockRefs.length ? blockRefs : message.sourceRefs;
   }
 
   private completedModuleIdsFromChunks(artifacts: MaterialArtifacts, covered: Set<string>): string[] {
