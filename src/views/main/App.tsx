@@ -16,6 +16,7 @@ import { SourceImportModal } from "./components/SourceImportModal";
 import { AboutModal } from "./components/AboutModal";
 import { SourceFigureCard } from "./components/SourceFigureCard";
 import { stripFigureMarkdown } from "./figure-text";
+import { playAnswerReadySound, primeAnswerReadySound } from "./notification-sound";
 
 type RpcRequest = (method: string, params: unknown) => Promise<unknown>;
 
@@ -275,6 +276,17 @@ export function App({ request }: { request: RpcRequest }) {
   const [selectedModuleId, setSelectedModuleId] = useState<string | null>(null);
   const [composerFocusToken, setComposerFocusToken] = useState(0);
   const tutorSurfaceRef = useRef<HTMLElement | null>(null);
+  const answerReadyNotificationPendingRef = useRef(false);
+  const latestNotifiedAssistantIdRef = useRef<string | null>(null);
+
+  function queueAnswerReadySound() {
+    answerReadyNotificationPendingRef.current = true;
+    primeAnswerReadySound();
+  }
+
+  function cancelAnswerReadySound() {
+    answerReadyNotificationPendingRef.current = false;
+  }
 
   async function refreshProjects() {
     const projects = (await request("projects.list", {})) as ProjectSummary[];
@@ -453,6 +465,7 @@ export function App({ request }: { request: RpcRequest }) {
   // Core session starter, independent of activeMaterial state so it can be called right after
   // selectMaterial without waiting for a state tick. Both startSession and learnFromSource use it.
   async function beginSession(materialId: string, mode: "new" | "continue") {
+    if (mode === "new") queueAnswerReadySound();
     setTutorThinking(true);
     try {
       const result = (await request("sessions.start", { materialId, mode })) as { session: SessionSnapshot; context: TutorContext };
@@ -464,6 +477,7 @@ export function App({ request }: { request: RpcRequest }) {
       await refreshSessions(materialId);
       return result;
     } catch (error) {
+      cancelAnswerReadySound();
       setStatus((error as Error).message);
       return null;
     } finally {
@@ -496,6 +510,7 @@ export function App({ request }: { request: RpcRequest }) {
 
   async function sendAnswer(text: string) {
     if (!session || !text.trim()) return false;
+    queueAnswerReadySound();
     setBusy(true);
     setTutorThinking(true);
     try {
@@ -506,6 +521,7 @@ export function App({ request }: { request: RpcRequest }) {
       await refreshSessions(result.session.materialId);
       return true;
     } catch (error) {
+      cancelAnswerReadySound();
       // The turn was killed server-side (timeout/connection error). Surface it and re-sync so the
       // dangling user message is gone, the spinner stops, and the learner can resubmit their input
       // (we intentionally keep their text in the composer).
@@ -527,6 +543,7 @@ export function App({ request }: { request: RpcRequest }) {
 
   async function advanceLearning(mode: "paragraph" | "chunk" | "module") {
     if (!session || sessionReadOnly) return;
+    queueAnswerReadySound();
     setBusy(true);
     setTutorThinking(true);
     try {
@@ -536,6 +553,7 @@ export function App({ request }: { request: RpcRequest }) {
       setSelectedModuleId(result.session.currentModuleId);
       await refreshSessions(result.session.materialId);
     } catch (error) {
+      cancelAnswerReadySound();
       setStatus(`진행 실패: ${(error as Error).message}`);
     } finally {
       setBusy(false);
@@ -545,6 +563,7 @@ export function App({ request }: { request: RpcRequest }) {
 
   async function returnToProgress() {
     if (!session || sessionReadOnly) return;
+    queueAnswerReadySound();
     setBusy(true);
     setTutorThinking(true);
     try {
@@ -554,6 +573,7 @@ export function App({ request }: { request: RpcRequest }) {
       setSelectedModuleId(result.session.currentModuleId);
       await refreshSessions(result.session.materialId);
     } catch (error) {
+      cancelAnswerReadySound();
       setStatus(`진도 복귀 실패: ${(error as Error).message}`);
     } finally {
       setBusy(false);
@@ -584,6 +604,7 @@ export function App({ request }: { request: RpcRequest }) {
 
   async function openSelectedModule() {
     if (!session || !selectedModuleId || sessionReadOnly) return;
+    queueAnswerReadySound();
     setBusy(true);
     setTutorThinking(true);
     try {
@@ -593,6 +614,7 @@ export function App({ request }: { request: RpcRequest }) {
       setSelectedModuleId(result.session.currentModuleId);
       await refreshSessions(result.session.materialId);
     } catch (error) {
+      cancelAnswerReadySound();
       setStatus(`Module 시작 실패: ${(error as Error).message}`);
     } finally {
       setBusy(false);
@@ -675,7 +697,28 @@ export function App({ request }: { request: RpcRequest }) {
   const activeModule = context?.moduleOutline.find((item) => item.status === "in_progress");
   const progressPercent = totalChunks ? Math.round((reachedChunks / totalChunks) * 100) : 0;
   const latestAssistant = [...currentMessages].reverse().find((message) => message.role === "assistant");
+  const latestAssistantId = latestAssistant?.id || null;
   const canReturnToProgress = !selectedModuleWaiting && (latestAssistant?.stateUpdate?.conversationMode === "detour" || latestAssistant?.stateUpdate?.turnMode === "digress");
+
+  useEffect(() => {
+    if (!answerReadyNotificationPendingRef.current) return;
+    if (!settings?.answerReadySound) {
+      cancelAnswerReadySound();
+      return;
+    }
+    if (tutorThinking || !latestAssistantId) return;
+    if (latestNotifiedAssistantIdRef.current === latestAssistantId) {
+      cancelAnswerReadySound();
+      return;
+    }
+    latestNotifiedAssistantIdRef.current = latestAssistantId;
+    cancelAnswerReadySound();
+    const frame = requestAnimationFrame(() => {
+      void playAnswerReadySound();
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [latestAssistantId, settings?.answerReadySound, tutorThinking]);
+
   // Once every chunk is covered, the tutor offers an explicit "마칠게요 / 더 질문 있어요" pair.
   // Normal turns show three exploratory choices, while chunk/module progression lives in
   // separate command buttons below the choices.

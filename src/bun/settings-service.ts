@@ -26,6 +26,7 @@ export const defaultSettings: AppSettings = {
   tutorLanguage: "ko",
   autoAdvanceOnMastery: true,
   showSourceInspector: true,
+  answerReadySound: true,
 };
 
 export class SettingsService {

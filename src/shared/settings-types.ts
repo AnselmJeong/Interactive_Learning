@@ -23,6 +23,7 @@ export type AppSettings = {
   tutorLanguage: TutorLanguage;
   autoAdvanceOnMastery: boolean;
   showSourceInspector: boolean;
+  answerReadySound: boolean;
 };
 
 export type PublicAiProviderUpdate = {

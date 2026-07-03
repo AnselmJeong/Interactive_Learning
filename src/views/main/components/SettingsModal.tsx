@@ -232,6 +232,10 @@ export function SettingsModal({
             <span>Auto advance on mastery</span>
           </label>
           <label className="toggle-row">
+            <input type="checkbox" checked={draft.answerReadySound} onChange={(event) => updateDraft({ answerReadySound: event.target.checked })} />
+            <span>Answer ready sound</span>
+          </label>
+          <label className="toggle-row">
             <input type="checkbox" checked={draft.showSourceInspector} onChange={(event) => updateDraft({ showSourceInspector: event.target.checked })} />
             <span>Show source inspector</span>
           </label>
