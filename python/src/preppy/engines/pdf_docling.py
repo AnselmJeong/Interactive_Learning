@@ -87,7 +87,8 @@ def build_plan(
     )
     doc = result.document
     flat_items = _flatten(doc)
-    candidates = _detect_candidates(flat_items, boundary_pattern, pdf_path, doc)
+    running_header_refs = _running_heading_refs(flat_items, doc)
+    candidates = _detect_candidates(flat_items, boundary_pattern, pdf_path, doc, running_header_refs)
     return SplitPlan(
         source_path=str(pdf_path),
         source_type="pdf",
@@ -140,8 +141,9 @@ def convert(
             )
 
     flat_items = _flatten(doc)
+    running_header_refs = _running_heading_refs(flat_items, doc)
     candidates = plan.candidates if plan is not None else _detect_candidates(
-        flat_items, boundary_pattern, pdf_path, doc
+        flat_items, boundary_pattern, pdf_path, doc, running_header_refs
     )
 
     source = SourceInfo(
@@ -192,6 +194,8 @@ def convert(
 
         for fi in slice_items:
             if fi.label in SKIP_BODY_LABELS:
+                continue
+            if fi.self_ref in running_header_refs:
                 continue
             if fi.label == "caption" and fi.self_ref in consumed_caption_refs:
                 continue
@@ -422,8 +426,10 @@ def _detect_candidates(
     boundary_pattern: str | None,
     pdf_path: Path,
     doc: DoclingDocument,
+    running_header_refs: set[str] | None = None,
 ) -> list[SplitCandidate]:
     pattern = re.compile(boundary_pattern, re.IGNORECASE) if boundary_pattern else None
+    running_header_refs = running_header_refs or set()
     candidates: list[SplitCandidate] = []
 
     for fi in flat_items:
@@ -432,19 +438,20 @@ def _detect_candidates(
         title = normalize_title(fi.text)
         if not title:
             continue
-        chapter_like = is_chapter_like(title, pattern)
+        is_running_header = fi.self_ref in running_header_refs
+        chapter_like = False if is_running_header else is_chapter_like(title, pattern)
         kind: ChapterKind = "chapter" if chapter_like else classify_kind(title, unmatched="unknown")
         level = getattr(fi.item, "level", 1) if fi.label == "section_header" else 1
-        confidence = 0.85 if fi.label == "title" else (0.75 if level == 1 else 0.55)
+        confidence = 0.2 if is_running_header else (0.85 if fi.label == "title" else (0.75 if level == 1 else 0.55))
         candidates.append(
             SplitCandidate(
                 id=0,
                 order=0,
                 title=title,
                 kind=kind,
-                reason=f"docling-{fi.label.replace('_', '-')}",
+                reason="running-header" if is_running_header else f"docling-{fi.label.replace('_', '-')}",
                 confidence=confidence,
-                selected=kind == "chapter",
+                selected=False if is_running_header else kind == "chapter",
                 heading_level=level,
                 source_locator=SourceLocator(page_start=fi.page_no, bbox=fi.bbox, docling_ref=fi.self_ref),
                 pdf_item_index=fi.index,
@@ -510,6 +517,49 @@ def _detect_candidates(
         )
 
     return candidates
+
+
+def _running_heading_refs(flat_items: list[_FlatItem], doc: DoclingDocument) -> set[str]:
+    """Detect Docling headings that are actually repeated page furniture."""
+    page_heights = _page_heights(doc)
+    occurrences: dict[str, list[_FlatItem]] = {}
+    for fi in flat_items:
+        if fi.label not in HEADING_LABELS or not fi.text or not fi.self_ref or fi.page_no is None:
+            continue
+        height = page_heights.get(fi.page_no)
+        if height is None or not _is_page_edge_bbox(fi.bbox, height):
+            continue
+        key = normalize_title(fi.text).casefold()
+        if key:
+            occurrences.setdefault(key, []).append(fi)
+
+    refs: set[str] = set()
+    for items in occurrences.values():
+        pages = {fi.page_no for fi in items}
+        if len(pages) < 2:
+            continue
+        refs.update(fi.self_ref for fi in items if fi.self_ref)
+    return refs
+
+
+def _page_heights(doc: DoclingDocument) -> dict[int, float]:
+    heights: dict[int, float] = {}
+    pages = getattr(doc, "pages", {}) or {}
+    for page_no, page in pages.items():
+        try:
+            heights[int(page_no)] = float(page.size.height)
+        except Exception:  # noqa: BLE001
+            continue
+    return heights
+
+
+def _is_page_edge_bbox(bbox: list[float] | None, page_height: float) -> bool:
+    if not bbox or page_height <= 0:
+        return False
+    y_values = [bbox[1], bbox[3]]
+    top_y = max(y_values)
+    bottom_y = min(y_values)
+    return top_y >= page_height * 0.9 or bottom_y <= page_height * 0.1
 
 
 def _enrich_with_outline(candidates: list[SplitCandidate], outline: list[tuple[int, str, int]]) -> None:
