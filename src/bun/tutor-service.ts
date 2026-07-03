@@ -19,6 +19,13 @@ const DIGRESSION_INTENTS = new Set<TutorIntent>(["question", "off_topic", "deepe
 const MAX_HISTORY_TURNS = 8;
 const MAX_HISTORY_CHARS = 1200;
 const PROGRESSION_CHOICES = new Set(["계속해줘", "계속해줘.", "다음 진도로 넘어가주세요.", "다음 대목으로 넘어가주세요.", "다음 문단으로 넘어가주세요.", "다음 모듈로 넘어가주세요.", "진도로 돌아갈게요."]);
+const TERM_RENDERING_RULE = [
+  "TERM RENDERING RULE:",
+  "When teaching in Korean, do not replace romanized proper nouns or culturally specific technical terms with Korean-only transliterations.",
+  "If the source gives a romanized original form, preserve that form.",
+  "If a Korean gloss or transliteration helps, put the original form in parentheses on first mention, e.g. 알마문(al-Ma'mun), 무타질라(Mu'tazila), 이성('aql).",
+  "For people, schools, movements, book titles, Arabic/Islamic terms, and other identity-bearing names, prefer the original form alone when the Korean transliteration would be awkward or obscure.",
+].join(" ");
 
 // A lightweight Korean-aware heuristic. It is only a hint and a fallback; when the model
 // returns its own userIntent we trust that instead. The point is that a substantive
@@ -38,6 +45,21 @@ function classifyIntent(userText: string, event: TurnPayload["event"]): TutorInt
 function normalizeChoiceText(choice: string) {
   if (choice.includes("원래 흐름") || choice.includes("돌아갈게요")) return "이 설명을 원문 흐름과 다시 연결해 주세요.";
   return choice;
+}
+
+function originalTermCandidates(chunks: SourceChunk[], limit = 18) {
+  const candidates = new Set<string>();
+  const romanized = /(?:\b(?:al|ibn|bint|abu|ahl|dar|bayt|mu|muta|mutaz|ash|ahl)[-'][A-Za-z][A-Za-z'’\-]+|\b[A-Z][A-Za-z]+(?:['’\-][A-Za-z]+)+|\b[A-Za-z]+[ʿ‘'’][A-Za-z]+|\b[A-Z][A-Za-z]+(?:\s+[A-Z][A-Za-z]+){1,3})/g;
+  for (const chunk of chunks) {
+    for (const field of [...chunk.headingPath, chunk.locator, chunk.text]) {
+      for (const match of field.matchAll(romanized)) {
+        const term = match[0].replace(/[),.;:]+$/g, "").trim();
+        if (term.length >= 3 && term.length <= 60) candidates.add(term);
+        if (candidates.size >= limit) return [...candidates];
+      }
+    }
+  }
+  return [...candidates];
 }
 
 // Detects an explicit learner confirmation to end the session after all modules are done.
@@ -977,6 +999,10 @@ export class TutorService {
     const client = createAiProviderClient(settings, key.value);
     const chunks = this.contextualChunks(artifacts, module, payload.userText, focusChunk?.id);
     const concepts = artifacts.conceptMap.filter((concept) => module.conceptIds.includes(concept.id));
+    const originalTerms = originalTermCandidates(focusChunk ? [focusChunk, ...chunks] : chunks);
+    const originalTermLine = originalTerms.length
+      ? `Original terms visible in the current context. Preserve these spellings when mentioning them, or add them in parentheses after a Korean gloss/transliteration: ${originalTerms.join(", ")}`
+      : "";
     const intent = classifyIntent(payload.userText || "", payload.event);
     const allComplete = artifacts.sourceChunks.length > 0 && session.coveredChunkIds.length >= artifacts.sourceChunks.length;
     const instruction = allComplete
@@ -1015,7 +1041,8 @@ After that overview hook, teach the first source chunk with a guided_reading and
           role: "system",
           content: `You are a guided lecturer who teaches a source the learner has not read. Reply only as JSON. Tutor language: ${settings.tutorLanguage}.
 Invariant: assume the learner has not read the source. Teach it well enough that they feel a good teacher read it with them.
-When teaching in Korean, keep hard-to-translate proper nouns and identity-bearing terms in their original language when translation would be awkward or obscure the reference. This includes names of people, places, schools, institutions, book titles, technical terms, and culturally specific concepts.
+${TERM_RENDERING_RULE}
+${originalTermLine}
 
 ANSWER THE LEARNER. This is the most important rule. When the learner asks a question, raises a tangent, or says you are dodging, you MUST answer their actual question this turn. Never deflect with "let's move on", "that is a good starting point", or a transition to the next topic instead of answering. Dodging a direct question is a failure.
 
@@ -1109,6 +1136,10 @@ Output schema: {"message":"plain text fallback summary","blocks":[/* 2-4 blocks 
     const client = createAiProviderClient(settings, key.value);
     const chunks = this.contextualChunks(artifacts, module, payload.userText, focusChunk?.id);
     const concepts = artifacts.conceptMap.filter((concept) => module.conceptIds.includes(concept.id));
+    const originalTerms = originalTermCandidates(focusChunk ? [focusChunk, ...chunks] : chunks);
+    const originalTermLine = originalTerms.length
+      ? `Original terms visible in the current context. Preserve these spellings when mentioning them, or add them in parentheses after a Korean gloss/transliteration: ${originalTerms.join(", ")}`
+      : "";
     const intent = classifyIntent(payload.userText || "", payload.event);
     const isDigression = DIGRESSION_INTENTS.has(intent);
     const ready = payload.event === "user_message" && intent === "satisfied";
@@ -1120,7 +1151,8 @@ Output schema: {"message":"plain text fallback summary","blocks":[/* 2-4 blocks 
           role: "system",
           content: `You are a guided lecturer. Tutor language: ${settings.tutorLanguage}.
 The structured JSON call failed, so this is a repair call. Return plain tutor text only.
-When teaching in Korean, keep hard-to-translate proper nouns and identity-bearing terms in their original language when translation would be awkward or obscure the reference. This includes names of people, places, schools, institutions, book titles, technical terms, and culturally specific concepts.
+${TERM_RENDERING_RULE}
+${originalTermLine}
 Answer the learner's actual latest turn. Do not grade, do not say to stick closer to the source, and do not repeat a canned fallback.
 Use the source chunks as primary context, but use your own knowledge when it helps. Be concise and scannable, not discursive. The goal is to understand without reading a wall of text.
 For repair text, use plain short sentences or simple bullet points. Do not simulate flows or tables with pipe characters, markdown tables, mermaid, or numbered pseudo-diagrams.
@@ -1197,7 +1229,9 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${chunk.text}`
     // never advances on its own. We only record the learner's intent for digression handling and
     // choice shaping. `ready` stays false here.
     const heuristicIntent = classifyIntent(payload.userText || "", payload.event);
-    const intent = coerceIntent(output.stateUpdate?.userIntent) || heuristicIntent;
+    // UI-driven progression events are commands, not learner detours. The model may label
+    // "continue this chunk" as "deeper"; do not let that surface a return-to-progress action.
+    const intent = payload.event === "user_message" ? coerceIntent(output.stateUpdate?.userIntent) || heuristicIntent : heuristicIntent;
     const isDigression = DIGRESSION_INTENTS.has(intent) || DIGRESSION_INTENTS.has(heuristicIntent);
     const ready = false;
     // Keep the recorded intent consistent with the digression veto above.

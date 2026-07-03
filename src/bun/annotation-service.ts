@@ -64,6 +64,11 @@ type WikipediaMediaItem = {
 const WIKIPEDIA_LANG = "en";
 const MAX_LOOKUP_IMAGE_BYTES = 1_500_000;
 const MAX_LOOKUP_IMAGE_RESULTS = 3;
+const TERM_RENDERING_RULE = [
+  "When writing in Korean, do not replace romanized proper nouns or culturally specific technical terms with Korean-only transliterations.",
+  "If the source or lookup result gives a romanized original form, preserve that form.",
+  "If a Korean gloss or transliteration helps, put the original form in parentheses on first mention, e.g. 알마문(al-Ma'mun), 무타질라(Mu'tazila), 이성('aql).",
+].join(" ");
 
 function normalizeSelectedText(value: string, max = 160) {
   return cleanupLookupQuery(value.replace(/\s+/g, " ").trim()).slice(0, max);
@@ -526,8 +531,8 @@ export class AnnotationService {
     if (!apiKey.value || !model) throw new Error("AI provider is not configured");
 
     const system = kind === "define"
-      ? "You are Learnie, a source-grounded tutor. Define the selected term for a learner. Use the provided source context first. If the context is insufficient, say that the definition is general. Keep the answer under 80 Korean words. Do not expose internal app terminology."
-      : "You are Learnie, a concise encyclopedia-style tutor. Explain the selected term for a learner. Prefer stable facts and explain why it matters in this source context. If uncertain, say what is uncertain. Keep the answer under 140 Korean words. Do not expose internal app terminology.";
+      ? `You are Learnie, a source-grounded tutor. Define the selected term for a learner. Use the provided source context first. If the context is insufficient, say that the definition is general. Keep the answer under 80 Korean words. Do not expose internal app terminology. ${TERM_RENDERING_RULE}`
+      : `You are Learnie, a concise encyclopedia-style tutor. Explain the selected term for a learner. Prefer stable facts and explain why it matters in this source context. If uncertain, say what is uncertain. Keep the answer under 140 Korean words. Do not expose internal app terminology. ${TERM_RENDERING_RULE}`;
     const prompt = [
       `Selected term: ${term}`,
       `Source title: ${sourceTitle}`,
@@ -589,6 +594,7 @@ export class AnnotationService {
             "You are Learnie, a Korean learning assistant.",
             "Write a deeper lookup note, not a one-line definition.",
             "Use the English Wikipedia extract as the factual basis and explain the selected term in Korean.",
+            TERM_RENDERING_RULE,
             "Structure the answer as separated short paragraphs.",
             "The first paragraph must be the most important takeaway: one compact paragraph explaining the core meaning and why it matters.",
             "After a blank line, add supporting explanation in 2-4 shorter paragraphs covering mechanism/background, important examples or distinctions, and one common confusion or boundary.",
