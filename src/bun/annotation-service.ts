@@ -608,6 +608,11 @@ function wikipediaFallbackResult(term: string, wiki: WikipediaLookup, reason?: s
   };
 }
 
+function shouldRetryWikipediaSummary(error: unknown) {
+  const message = ((error as Error)?.message || String(error)).toLowerCase();
+  return message.includes("empty message") || message.includes("timed out") || message.includes("timeout");
+}
+
 function sanitizeWikipediaSummaryBody(value: string) {
   return value
     .replace(/(?:이\s*)?(?:본문|원문|학습\s*자료|자료|문맥|context)\s*(?:에 따르면|에서는|에서)\s*,?\s*/giu, "")
@@ -767,33 +772,59 @@ export class AnnotationService {
       `Wikipedia extract:\n${wiki.extract}`,
     ].filter(Boolean).join("\n\n");
 
-    const body = await client.chatText({
-      model,
-      temperature: 0.15,
-      maxTokens: 2200,
-      timeoutMs: 70000,
-      thinking: "disabled",
-      messages: [
-        {
-          role: "system",
-          content: [
-            "You are Learnie, a Korean learning assistant.",
-            "Write a deeper lookup note, not a one-line definition.",
-            "Use the Wikipedia extract as the factual basis and explain the selected term in Korean.",
-            TERM_RENDERING_RULE,
-            "Structure the answer as separated short paragraphs.",
-            "The first paragraph must be the most important takeaway: one compact paragraph explaining the core meaning and why it matters.",
-            "After a blank line, add supporting explanation in 2-4 shorter paragraphs covering mechanism/background, important examples or distinctions, and one common confusion or boundary.",
-            "Do not make a single long paragraph. Do not use numbered section labels unless they are genuinely helpful.",
-            "Do not introduce unrelated concepts. If the extract does not match the selected term, say that the lookup result is unreliable.",
-            "Do not mention learner materials, source context, original text, current text, or phrases like '본문에 따르면', '원문에 따르면', '자료에 따르면', or '문맥상'.",
-            "If you need to name the basis, call it the Wikipedia article, not '본문'.",
-            "Use 3-5 short paragraphs total. Avoid bullets unless they genuinely improve readability. Keep the answer around 220-360 Korean words.",
-          ].join(" "),
-        },
-        { role: "user", content: prompt },
-      ],
-    });
+    let body = "";
+    try {
+      body = await client.chatText({
+        model,
+        temperature: 0.15,
+        maxTokens: 2200,
+        timeoutMs: 70000,
+        thinking: "disabled",
+        messages: [
+          {
+            role: "system",
+            content: [
+              "You are Learnie, a Korean learning assistant.",
+              "Write a deeper lookup note, not a one-line definition.",
+              "Use the Wikipedia extract as the factual basis and explain the selected term in Korean.",
+              TERM_RENDERING_RULE,
+              "Structure the answer as separated short paragraphs.",
+              "The first paragraph must be the most important takeaway: one compact paragraph explaining the core meaning and why it matters.",
+              "After a blank line, add supporting explanation in 2-4 shorter paragraphs covering mechanism/background, important examples or distinctions, and one common confusion or boundary.",
+              "Do not make a single long paragraph. Do not use numbered section labels unless they are genuinely helpful.",
+              "Do not introduce unrelated concepts. If the extract does not match the selected term, say that the lookup result is unreliable.",
+              "Do not mention learner materials, source context, original text, current text, or phrases like '본문에 따르면', '원문에 따르면', '자료에 따르면', or '문맥상'.",
+              "If you need to name the basis, call it the Wikipedia article, not '본문'.",
+              "Use 3-5 short paragraphs total. Avoid bullets unless they genuinely improve readability. Keep the answer around 220-360 Korean words.",
+            ].join(" "),
+          },
+          { role: "user", content: prompt },
+        ],
+      });
+    } catch (error) {
+      if (!shouldRetryWikipediaSummary(error)) throw error;
+      body = await client.chatText({
+        model,
+        temperature: 0.1,
+        maxTokens: 900,
+        timeoutMs: 45000,
+        messages: [
+          {
+            role: "system",
+            content: [
+              "You are Learnie. Summarize the provided Wikipedia extract in Korean.",
+              TERM_RENDERING_RULE,
+              "Return 2 short paragraphs only.",
+              "Paragraph 1: who or what the term is and why it matters.",
+              "Paragraph 2: one key background point or common confusion.",
+              "Do not mention source text, learner materials, or internal app wording.",
+              "Never return an empty response.",
+            ].join(" "),
+          },
+          { role: "user", content: prompt },
+        ],
+      });
+    }
     const providerLabel = publicSettings.aiProvider;
     const retrievedAt = new Date().toISOString();
     return {
