@@ -1290,7 +1290,8 @@ export function App({ request }: { request: RpcRequest }) {
           </section>
         ) : null}
 
-        <section className="tutor-surface" ref={tutorSurfaceRef}>
+        <div className="tutor-shell">
+          <section className="tutor-surface" ref={tutorSurfaceRef}>
           {viewMode === "source" && artifacts ? (
             <ImmersiveSourceView
               artifacts={artifacts}
@@ -1401,23 +1402,7 @@ export function App({ request }: { request: RpcRequest }) {
                     <MessageSquare size={16} /> Start new from this material
                   </button>
                 </div>
-              ) : (
-                <ChatComposer
-                  key={`${session.id}:${selectedModuleId || "all"}`}
-                  busy={busy}
-                  disabled={selectedModuleWaiting}
-                  autoFocusToken={composerFocusToken}
-                  submitShortcut={settings?.chatSubmitShortcut || "cmd-enter"}
-                  placeholder={
-                    selectedModuleWaiting
-                      ? "이 module을 시작하면 질문할 수 있습니다"
-                      : allModulesCovered
-                        ? "더 짚어 보고 싶은 부분을 적어 주세요"
-                        : "궁금한 점을 묻거나 위 탐색 경로 중 하나를 선택하세요"
-                  }
-                  onSend={sendAnswer}
-                />
-              )}
+              ) : null}
             </>
           ) : artifacts ? (
             <div className="empty-state">
@@ -1452,7 +1437,25 @@ export function App({ request }: { request: RpcRequest }) {
               onAnnotationSaved={handleAnnotationSaved}
             />
           ) : null}
-        </section>
+          </section>
+          {viewMode === "chat" && session && !sessionReadOnly && !selectedModuleReadOnly ? (
+            <ChatComposer
+              key={`${session.id}:${selectedModuleId || "all"}`}
+              busy={busy}
+              disabled={selectedModuleWaiting}
+              autoFocusToken={composerFocusToken}
+              submitShortcut={settings?.chatSubmitShortcut || "cmd-enter"}
+              placeholder={
+                selectedModuleWaiting
+                  ? "이 module을 시작하면 질문할 수 있습니다"
+                  : allModulesCovered
+                    ? "더 짚어 보고 싶은 부분을 적어 주세요"
+                    : "궁금한 점을 묻거나 위 탐색 경로 중 하나를 선택하세요"
+              }
+              onSend={sendAnswer}
+            />
+          ) : null}
+        </div>
       </main>
 
       <aside className="inspector">
