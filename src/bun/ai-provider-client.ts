@@ -111,7 +111,8 @@ class AnthropicClient implements AiChatClient {
       throw normalizeProviderError(error, "Claude", model, params.timeoutMs);
     }
     if (!response.ok) throw await providerHttpError(response, "Claude", model);
-    const data = (await response.json()) as { content?: Array<{ type?: string; text?: string }> };
+    const data = (await response.json()) as { stop_reason?: string | null; content?: Array<{ type?: string; text?: string }> };
+    assertAnthropicFinished("Claude", model, data.stop_reason);
     const content = (data.content || []).filter((part) => part.type === "text" && part.text).map((part) => part.text).join("\n").trim();
     if (!content) throw new Error(`AI provider returned an empty image explanation for model ${model}`);
     return content;
@@ -142,7 +143,8 @@ class AnthropicClient implements AiChatClient {
       throw normalizeProviderError(error, "Claude", model, params.timeoutMs);
     }
     if (!response.ok) throw await providerHttpError(response, "Claude", model);
-    const data = (await response.json()) as { content?: Array<{ type?: string; text?: string }> };
+    const data = (await response.json()) as { stop_reason?: string | null; content?: Array<{ type?: string; text?: string }> };
+    assertAnthropicFinished("Claude", model, data.stop_reason);
     const content = (data.content || []).filter((part) => part.type === "text" && part.text).map((part) => part.text).join("\n").trim();
     if (!content) throw new Error(`AI provider returned an empty message for model ${model}`);
     return content;
@@ -224,8 +226,10 @@ class GeminiClient implements AiChatClient {
       throw normalizeProviderError(error, "Gemini", model, params.timeoutMs);
     }
     if (!response.ok) throw await providerHttpError(response, "Gemini", model);
-    const data = (await response.json()) as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
-    const content = data.candidates?.[0]?.content?.parts?.map((part) => part.text || "").join("\n").trim() || "";
+    const data = (await response.json()) as { candidates?: Array<{ finishReason?: string; content?: { parts?: Array<{ text?: string }> } }> };
+    const candidate = data.candidates?.[0];
+    assertGeminiFinished("Gemini", model, candidate?.finishReason);
+    const content = candidate?.content?.parts?.map((part) => part.text || "").join("\n").trim() || "";
     if (!content) throw new Error(`AI provider returned an empty image explanation for model ${model}`);
     return content;
   }
@@ -261,8 +265,10 @@ class GeminiClient implements AiChatClient {
       throw normalizeProviderError(error, "Gemini", model, params.timeoutMs);
     }
     if (!response.ok) throw await providerHttpError(response, "Gemini", model);
-    const data = (await response.json()) as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
-    const content = data.candidates?.[0]?.content?.parts?.map((part) => part.text || "").join("\n").trim() || "";
+    const data = (await response.json()) as { candidates?: Array<{ finishReason?: string; content?: { parts?: Array<{ text?: string }> } }> };
+    const candidate = data.candidates?.[0];
+    assertGeminiFinished("Gemini", model, candidate?.finishReason);
+    const content = candidate?.content?.parts?.map((part) => part.text || "").join("\n").trim() || "";
     if (!content) throw new Error(`AI provider returned an empty message for model ${model}`);
     return content;
   }
@@ -289,4 +295,20 @@ function normalizeProviderError(error: unknown, provider: string, model: string,
     return providerTimeoutError(provider, model, timeoutMs ?? 120000);
   }
   return providerNetworkError(error, provider, model);
+}
+
+function assertAnthropicFinished(provider: string, model: string, reason: string | null | undefined) {
+  if (!reason || reason === "end_turn" || reason === "stop_sequence") return;
+  if (reason === "max_tokens") {
+    throw new Error(`${provider} ${model} stopped before finishing because it hit the output token limit (stop_reason=max_tokens)`);
+  }
+  throw new Error(`${provider} ${model} stopped before finishing (stop_reason=${reason})`);
+}
+
+function assertGeminiFinished(provider: string, model: string, reason: string | undefined) {
+  if (!reason || reason === "STOP") return;
+  if (reason === "MAX_TOKENS") {
+    throw new Error(`${provider} ${model} stopped before finishing because it hit the output token limit (finishReason=MAX_TOKENS)`);
+  }
+  throw new Error(`${provider} ${model} stopped before finishing (finishReason=${reason})`);
 }

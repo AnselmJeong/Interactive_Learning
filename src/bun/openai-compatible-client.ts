@@ -143,8 +143,10 @@ export class OpenAICompatibleClient implements AiChatClient {
       throw await providerHttpError(response, this.providerName(), model);
     }
 
-    const data = (await response.json()) as { choices?: Array<{ message?: { content?: string | Array<{ text?: string }> } }> };
-    const raw = data.choices?.[0]?.message?.content;
+    const data = (await response.json()) as { choices?: Array<{ finish_reason?: string | null; message?: { content?: string | Array<{ text?: string }> } }> };
+    const choice = data.choices?.[0];
+    assertOpenAIChoiceFinished(this.providerName(), model, choice);
+    const raw = choice?.message?.content;
     const content = typeof raw === "string" ? raw : (raw || []).map((part) => part.text || "").join("\n");
     if (!content.trim()) throw new Error(`AI provider returned an empty image explanation for model ${model}`);
     return content.trim();
@@ -194,8 +196,10 @@ export class OpenAICompatibleClient implements AiChatClient {
       throw await providerHttpError(response, this.providerName(), model);
     }
 
-    const data = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
-    const content = data.choices?.[0]?.message?.content || "";
+    const data = (await response.json()) as { choices?: Array<{ finish_reason?: string | null; message?: { content?: string } }> };
+    const choice = data.choices?.[0];
+    assertOpenAIChoiceFinished(this.providerName(), model, choice);
+    const content = choice?.message?.content || "";
     if (!content.trim()) throw new Error(`AI provider returned an empty message for model ${model}`);
     return content;
   }
@@ -217,6 +221,22 @@ export class OpenAICompatibleClient implements AiChatClient {
     const modelId = model.toLowerCase();
     return name.includes("deepseek") || baseUrl.includes("deepseek") || modelId.startsWith("deepseek-v4-");
   }
+}
+
+function assertOpenAIChoiceFinished(
+  provider: string,
+  model: string,
+  choice: { finish_reason?: string | null } | undefined
+) {
+  const reason = choice?.finish_reason;
+  if (!reason || reason === "stop") return;
+  if (reason === "length") {
+    throw new Error(`${provider} ${model} stopped before finishing because it hit the output token limit (finish_reason=length)`);
+  }
+  if (reason === "content_filter") {
+    throw new Error(`${provider} ${model} stopped because the provider content filter interrupted the response (finish_reason=content_filter)`);
+  }
+  throw new Error(`${provider} ${model} stopped before finishing (finish_reason=${reason})`);
 }
 
 export function parseJsonFromText(text: string) {

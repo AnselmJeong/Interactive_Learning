@@ -131,7 +131,21 @@ function normalizeMarkdownText(value: string) {
 function compactMarkdownText(value: string, max: number) {
   const normalized = normalizeMarkdownText(value);
   if (normalized.length <= max) return normalized;
-  return `${normalized.slice(0, max).replace(/\s+\S*$/u, "").trimEnd()}...`;
+  const candidate = normalized.slice(0, max).trimEnd();
+  const minUsefulLength = Math.floor(max * 0.55);
+  const paragraphBoundary = candidate.lastIndexOf("\n\n");
+  if (paragraphBoundary >= minUsefulLength) {
+    return `${candidate.slice(0, paragraphBoundary).trimEnd()}...`;
+  }
+
+  const sentenceBoundaries = [...candidate.matchAll(/[.!?。！？](?:["'”’)\]]+)?/gu)];
+  const lastSentence = sentenceBoundaries.at(-1);
+  if (lastSentence?.index != null && lastSentence.index + lastSentence[0].length >= minUsefulLength) {
+    return `${candidate.slice(0, lastSentence.index + lastSentence[0].length).trimEnd()}...`;
+  }
+
+  // If there is no usable boundary, prefer a longer result over a visibly broken sentence.
+  return normalized;
 }
 
 function splitSentences(value: string) {
@@ -175,7 +189,7 @@ function paragraphizeLongBlock(value: string) {
   ];
 }
 
-function formatWikipediaSummaryBody(value: string, max = 1500) {
+function formatWikipediaSummaryBody(value: string, max = 2400) {
   const normalized = normalizeMarkdownText(sanitizeWikipediaSummaryBody(value));
   const paragraphs = normalized
     .split(/\n{2,}/)
@@ -610,7 +624,15 @@ function wikipediaFallbackResult(term: string, wiki: WikipediaLookup, reason?: s
 
 function shouldRetryWikipediaSummary(error: unknown) {
   const message = ((error as Error)?.message || String(error)).toLowerCase();
-  return message.includes("empty message") || message.includes("timed out") || message.includes("timeout");
+  return (
+    message.includes("empty message") ||
+    message.includes("timed out") ||
+    message.includes("timeout") ||
+    message.includes("output token limit") ||
+    message.includes("finish_reason=length") ||
+    message.includes("stop_reason=max_tokens") ||
+    message.includes("finishreason=max_tokens")
+  );
 }
 
 function sanitizeWikipediaSummaryBody(value: string) {
@@ -790,12 +812,12 @@ export class AnnotationService {
               TERM_RENDERING_RULE,
               "Structure the answer as separated short paragraphs.",
               "The first paragraph must be the most important takeaway: one compact paragraph explaining the core meaning and why it matters.",
-              "After a blank line, add supporting explanation in 2-4 shorter paragraphs covering mechanism/background, important examples or distinctions, and one common confusion or boundary.",
+              "After a blank line, add one supporting paragraph covering only the most useful background, example, distinction, or common confusion.",
               "Do not make a single long paragraph. Do not use numbered section labels unless they are genuinely helpful.",
               "Do not introduce unrelated concepts. If the extract does not match the selected term, say that the lookup result is unreliable.",
               "Do not mention learner materials, source context, original text, current text, or phrases like '본문에 따르면', '원문에 따르면', '자료에 따르면', or '문맥상'.",
               "If you need to name the basis, call it the Wikipedia article, not '본문'.",
-              "Use 3-5 short paragraphs total. Avoid bullets unless they genuinely improve readability. Keep the answer around 220-360 Korean words.",
+              "Use 2 short paragraphs total. Avoid bullets unless they genuinely improve readability. Keep the answer to 4-6 Korean sentences total.",
             ].join(" "),
           },
           { role: "user", content: prompt },
@@ -806,7 +828,7 @@ export class AnnotationService {
       body = await client.chatText({
         model,
         temperature: 0.1,
-        maxTokens: 900,
+        maxTokens: 700,
         timeoutMs: 45000,
         messages: [
           {
