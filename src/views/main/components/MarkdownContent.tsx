@@ -3,6 +3,9 @@ import ReactMarkdown from "react-markdown";
 import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
+import type { PluggableList } from "unified";
+
+const remarkPlugins: PluggableList = [[remarkGfm, { singleTilde: false }], remarkMath];
 
 function normalizeMarkdownContent(content: string): string {
   return content
@@ -20,7 +23,7 @@ export const MarkdownContent = memo(function MarkdownContent({ content, compact 
   return (
     <div className={`markdown-content ${compact ? "compact" : ""}`}>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkMath]}
+        remarkPlugins={remarkPlugins}
         rehypePlugins={[rehypeKatex]}
         components={{
           table({ children }) {
@@ -45,6 +48,9 @@ export const MarkdownContent = memo(function MarkdownContent({ content, compact 
                 {alt ? <figcaption>{alt}</figcaption> : null}
               </figure>
             );
+          },
+          del({ children }) {
+            return <span>{children}</span>;
           },
           code({ className, children, ...props }) {
             const inline = !className;

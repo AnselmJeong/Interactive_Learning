@@ -945,7 +945,11 @@ export function App({ request }: { request: RpcRequest }) {
   const selectedModuleTitle = selectedModule ? displayModuleTitle(selectedModule) : "";
 
   useEffect(() => {
-    if (viewMode !== "chat" || !latestAssistantForScrollId) return;
+    if (viewMode !== "chat") {
+      latestAlignedAssistantKeyRef.current = null;
+      return;
+    }
+    if (!latestAssistantForScrollId) return;
     const alignmentKey = `${selectedModuleId || "all"}:${latestAssistantForScrollId}`;
     if (latestAlignedAssistantKeyRef.current === alignmentKey) return;
     latestAlignedAssistantKeyRef.current = alignmentKey;
@@ -958,7 +962,7 @@ export function App({ request }: { request: RpcRequest }) {
       if (!target) return;
       const surfaceRect = surface.getBoundingClientRect();
       const targetRect = target.getBoundingClientRect();
-      const topInset = 42;
+      const topInset = 0;
       const nextTop = surface.scrollTop + targetRect.top - surfaceRect.top - topInset;
       const maxTop = Math.max(0, surface.scrollHeight - surface.clientHeight);
       surface.scrollTo({ top: Math.max(0, Math.min(nextTop, maxTop)), behavior: "auto" });

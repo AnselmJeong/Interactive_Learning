@@ -143,8 +143,45 @@ function splitDashBulletTail(segment: string) {
   };
 }
 
+function parseInlineBulletBlocks(text: string): TutorContentBlock[] | null {
+  const normalized = text.replace(/\s+/g, " ").trim();
+  const matches = [...normalized.matchAll(/(?:^|\s)([-*•])\s+(?=\S)/gu)];
+  if (matches.length < 2) return null;
+
+  const prefixEnd = matches[0]?.index ?? 0;
+  const prefix = normalized.slice(0, prefixEnd).trim();
+  const rawItems = matches.map((match, index) => {
+    const start = (match.index ?? 0) + match[0].length;
+    const end = index + 1 < matches.length ? matches[index + 1]?.index ?? normalized.length : normalized.length;
+    return normalized.slice(start, end).trim();
+  });
+  const labeledCount = rawItems.filter((item) => /^[^:：]{1,48}[：:]\s*\S/u.test(item)).length;
+  const startsAsLiteralList = !prefix && Boolean(matches[0]?.[1]);
+  if (labeledCount < 2 && !startsAsLiteralList) return null;
+
+  let tail = "";
+  const items = rawItems
+    .map((item, index) => {
+      if (index !== rawItems.length - 1) return item.trim();
+      const split = splitDashBulletTail(item);
+      tail = split.tail;
+      return split.item;
+    })
+    .filter(Boolean)
+    .slice(0, 6);
+  if (items.length < 2) return null;
+
+  const blocks: TutorContentBlock[] = [];
+  if (prefix) blocks.push({ type: "paragraph", body: prefix.slice(0, 500) });
+  blocks.push({ type: "bullets", items });
+  if (tail) blocks.push({ type: "paragraph", body: tail.slice(0, 500) });
+  return blocks;
+}
+
 function parseDashBulletBlocks(text: string): TutorContentBlock[] | null {
   const normalized = text.replace(/\s+/g, " ").trim();
+  const inlineBlocks = parseInlineBulletBlocks(normalized);
+  if (inlineBlocks) return inlineBlocks;
   if (!normalized.includes(" - ")) return null;
   const parts = normalized.split(/\s+-\s+/u).map((part) => part.trim()).filter(Boolean);
   if (parts.length < 3) return null;
