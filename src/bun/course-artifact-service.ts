@@ -44,6 +44,8 @@ type LearningSection = {
   text: string;
 };
 
+type SourceTitleForChunk = (chunk: SourceChunk) => string | undefined;
+
 function toMaterial(row: MaterialRow, sourceIds: string[]): MaterialSummary {
   return {
     id: row.id,
@@ -84,20 +86,30 @@ function chunkTitle(chunk: SourceChunk, fallback: string) {
   return chunk.headingPath.at(-1) || fallback;
 }
 
-function cleanHeadingParts(parts: string[]) {
+function normalizeHeadingTitle(title: string) {
+  return title
+    .replace(/\s+course$/i, "")
+    .replace(/\.[A-Za-z0-9]+$/u, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function cleanHeadingParts(parts: string[], leadingTitle?: string) {
   const normalized = parts.map((part) => part.replace(/\s+course$/i, "").trim()).filter(Boolean);
+  if (normalized.length > 1 && leadingTitle && normalizeHeadingTitle(normalized[0] || "") === normalizeHeadingTitle(leadingTitle)) return normalized.slice(1);
   if (normalized.length > 1 && /^chapter\s+\d+\b/i.test(normalized[0] || "")) return normalized.slice(1);
   return normalized;
 }
 
-function sectionTitle(chunk: SourceChunk, fallback: string) {
-  return cleanHeadingParts(chunk.headingPath).join(" > ") || chunkTitle(chunk, fallback);
+function sectionTitle(chunk: SourceChunk, fallback: string, leadingTitle?: string) {
+  return cleanHeadingParts(chunk.headingPath, leadingTitle).join(" > ") || chunkTitle(chunk, fallback);
 }
 
-function learningSections(chunks: SourceChunk[]): LearningSection[] {
+function learningSections(chunks: SourceChunk[], sourceTitleForChunk?: SourceTitleForChunk): LearningSection[] {
   const sections: LearningSection[] = [];
   for (const chunk of chunks) {
-    const title = sectionTitle(chunk, `학습 단계 ${sections.length + 1}`);
+    const title = sectionTitle(chunk, `학습 단계 ${sections.length + 1}`, sourceTitleForChunk?.(chunk));
     const current = sections.at(-1);
     if (current?.title === title) {
       current.chunks.push(chunk);
@@ -126,8 +138,8 @@ function buildConcepts(chunks: SourceChunk[]): Concept[] {
   });
 }
 
-function buildCoursePlan(title: string, chunks: SourceChunk[], concepts: Concept[]): CoursePlan {
-  const sections = learningSections(chunks);
+function buildCoursePlan(title: string, chunks: SourceChunk[], concepts: Concept[], sourceTitleForChunk?: SourceTitleForChunk): CoursePlan {
+  const sections = learningSections(chunks, sourceTitleForChunk);
   const selectedSections = sections;
   const modules: CourseModule[] = selectedSections.map((section, index) => {
     const sourceChunkIds = section.chunks.map((chunk) => chunk.id);
@@ -161,8 +173,8 @@ function buildCoursePlan(title: string, chunks: SourceChunk[], concepts: Concept
   };
 }
 
-function buildVisuals(chunks: SourceChunk[]): VisualSpec[] {
-  const labels = learningSections(chunks).slice(0, 5).map((section, index) => section.title || `단계 ${index + 1}`);
+function buildVisuals(chunks: SourceChunk[], sourceTitleForChunk?: SourceTitleForChunk): VisualSpec[] {
+  const labels = learningSections(chunks, sourceTitleForChunk).slice(0, 5).map((section, index) => section.title || `단계 ${index + 1}`);
   return [
     {
       id: "visual-course-map",
@@ -173,8 +185,8 @@ function buildVisuals(chunks: SourceChunk[]): VisualSpec[] {
   ];
 }
 
-function buildLecturePlan(materialId: string, chunks: SourceChunk[]): LecturePlan {
-  const sections = learningSections(chunks);
+function buildLecturePlan(materialId: string, chunks: SourceChunk[], sourceTitleForChunk?: SourceTitleForChunk): LecturePlan {
+  const sections = learningSections(chunks, sourceTitleForChunk);
   const selectedSections = sections;
   return {
     materialId,
@@ -210,8 +222,8 @@ function buildLecturePlan(materialId: string, chunks: SourceChunk[]): LecturePla
   };
 }
 
-function buildPresentationPlan(materialId: string, chunks: SourceChunk[]): PresentationPlan {
-  const sections = learningSections(chunks);
+function buildPresentationPlan(materialId: string, chunks: SourceChunk[], sourceTitleForChunk?: SourceTitleForChunk): PresentationPlan {
+  const sections = learningSections(chunks, sourceTitleForChunk);
   const selectedSections = sections;
   return {
     materialId,
@@ -257,6 +269,10 @@ export class CourseArtifactService {
     return row?.root_path || dataPath("projects");
   }
 
+  private sourceIdForChunk(chunk: SourceChunk, sourceIds: string[]) {
+    return sourceIds.find((sourceId) => chunk.id.startsWith(`${sourceId}-`));
+  }
+
   async generate(projectId: string, sourceIds: string[]) {
     if (!sourceIds.length) throw new Error("At least one source is required");
     const existing = this.findBySourceSet(projectId, sourceIds).find((material) => material.status === "ready" || material.status === "generating");
@@ -265,6 +281,11 @@ export class CourseArtifactService {
     const id = crypto.randomUUID();
     const now = Date.now();
     const rows = sourceIds.map((sourceId) => this.sources.getRow(sourceId));
+    const sourceTitleById = new Map(rows.map((row) => [row.id, row.title]));
+    const sourceTitleForChunk: SourceTitleForChunk = (chunk) => {
+      const sourceId = this.sourceIdForChunk(chunk, sourceIds);
+      return sourceId ? sourceTitleById.get(sourceId) : undefined;
+    };
     const title = rows.length === 1 ? rows[0]!.title : `${rows[0]!.title} 외 ${rows.length - 1}개`;
     const dir = materialDirAt(this.projectRoot(projectId), projectId, id);
     await mkdir(dir, { recursive: true });
@@ -285,10 +306,10 @@ export class CourseArtifactService {
       const figures = (await Promise.all(sourceIds.map((sourceId) => this.sources.loadFigures(sourceId)))).flat();
       if (!sourceChunks.length) throw new Error("No chunks were extracted for selected sources");
       const conceptMap = buildConcepts(sourceChunks);
-      const coursePlan = buildCoursePlan(title, sourceChunks, conceptMap);
-      const visuals = buildVisuals(sourceChunks);
-      const lecturePlan = buildLecturePlan(id, sourceChunks);
-      const presentationPlan = buildPresentationPlan(id, sourceChunks);
+      const coursePlan = buildCoursePlan(title, sourceChunks, conceptMap, sourceTitleForChunk);
+      const visuals = buildVisuals(sourceChunks, sourceTitleForChunk);
+      const lecturePlan = buildLecturePlan(id, sourceChunks, sourceTitleForChunk);
+      const presentationPlan = buildPresentationPlan(id, sourceChunks, sourceTitleForChunk);
       const criticReport = buildCriticReport(id, lecturePlan, visuals);
       const manifest: MaterialManifest = {
         id,
@@ -304,8 +325,8 @@ export class CourseArtifactService {
         sourceChunks.map((chunk) => [
           chunk.id,
           {
-            sourceId: sourceIds.find((sourceId) => chunk.id.startsWith(sourceId)) || sourceIds[0]!,
-            title: sectionTitle(chunk, title),
+            sourceId: this.sourceIdForChunk(chunk, sourceIds) || sourceIds[0]!,
+            title: sectionTitle(chunk, title, sourceTitleForChunk(chunk)),
             locator: chunk.locator,
           },
         ])

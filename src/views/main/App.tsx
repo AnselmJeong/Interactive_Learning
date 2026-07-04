@@ -98,21 +98,43 @@ function displayableCourseTitle(title: string) {
   return title.replace(/\s+course$/i, "").trim();
 }
 
-function cleanHeadingParts(parts: string[]) {
+function comparableHeadingTitle(title: string) {
+  return displayableCourseTitle(title)
+    .replace(/\.[A-Za-z0-9]+$/u, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+}
+
+function cleanHeadingParts(parts: string[], leadingTitles: string[] = []) {
   const normalized = parts.map((part) => displayableCourseTitle(part.trim())).filter(Boolean);
+  if (
+    normalized.length > 1
+    && leadingTitles.some((title) => comparableHeadingTitle(title) === comparableHeadingTitle(normalized[0] || ""))
+  ) {
+    return normalized.slice(1);
+  }
   if (normalized.length > 1 && /^chapter\s+\d+\b/i.test(normalized[0] || "")) return normalized.slice(1);
   return normalized;
 }
 
-function displayableHeadingPath(parts: string[], separator = " › ") {
-  return cleanHeadingParts(parts).join(separator);
+function displayableHeadingPath(parts: string[], separator = " › ", leadingTitles: string[] = []) {
+  return cleanHeadingParts(parts, leadingTitles).join(separator);
 }
 
-function displayableOutlineTitle(title: string) {
-  return displayableCourseTitle(title)
+function displayableOutlineTitle(title: string, leadingTitles: string[] = []) {
+  const normalized = displayableCourseTitle(title)
     .replace(/^chapter\s+\d+\s*(?:>|›|:|-)\s*/i, "")
     .replace(/\s*(?:>|›)\s*/g, " › ")
     .trim();
+  const parts = normalized.split(" › ").map((part) => part.trim()).filter(Boolean);
+  if (
+    parts.length > 1
+    && leadingTitles.some((leadingTitle) => comparableHeadingTitle(leadingTitle) === comparableHeadingTitle(parts[0] || ""))
+  ) {
+    return parts.slice(1).join(" › ");
+  }
+  return normalized;
 }
 
 function displayableSourceName(source: SourceSummary) {
@@ -905,7 +927,22 @@ export function App({ request }: { request: RpcRequest }) {
       && selectedModuleStatus !== "completed"
       && selectedModuleStatus !== "needs_review"
   );
-  const selectedModuleTitle = selectedModule ? displayableOutlineTitle(selectedModule.title) || selectedModule.title : "";
+  const sourceTitleById = useMemo(() => new Map(state.sources.map((source) => [source.id, source.title])), [state.sources]);
+  const sourceTitlesForModule = useCallback((moduleId: string | null | undefined) => {
+    const module = moduleId ? artifacts?.coursePlan.modules.find((item) => item.id === moduleId) : null;
+    if (!module || !artifacts) return [];
+    const titles: string[] = [];
+    for (const chunkId of module.sourceChunkIds) {
+      const sourceId = artifacts.sourceIndex[chunkId]?.sourceId;
+      const title = sourceId ? sourceTitleById.get(sourceId) : undefined;
+      if (title && !titles.includes(title)) titles.push(title);
+    }
+    return titles;
+  }, [artifacts, sourceTitleById]);
+  const displayModuleTitle = useCallback((module: { id: string; title: string }) => {
+    return displayableOutlineTitle(module.title, sourceTitlesForModule(module.id)) || module.title;
+  }, [sourceTitlesForModule]);
+  const selectedModuleTitle = selectedModule ? displayModuleTitle(selectedModule) : "";
 
   useEffect(() => {
     if (viewMode !== "chat" || !latestAssistantForScrollId) return;
@@ -1089,15 +1126,15 @@ export function App({ request }: { request: RpcRequest }) {
     if (context?.moduleOutline.length) {
       return context.moduleOutline.map((item) => ({
         ...item,
-        title: displayableOutlineTitle(item.title) || item.title,
+        title: displayModuleTitle(item),
       }));
     }
     return (artifacts?.coursePlan.modules || []).map((module, index) => ({
       id: module.id,
-      title: displayableOutlineTitle(module.title) || module.title,
+      title: displayModuleTitle(module),
       status: (index === 0 ? "in_progress" : "not_started") as ModuleStatus,
     }));
-  }, [artifacts?.coursePlan.modules, context?.moduleOutline]);
+  }, [artifacts?.coursePlan.modules, context?.moduleOutline, displayModuleTitle]);
 
   return (
     <div className="app-shell">
@@ -1352,11 +1389,10 @@ export function App({ request }: { request: RpcRequest }) {
                 <div className="module-grid">
                   {overviewModules.map((module) => {
                     const learningGoal = displayableLearningGoal(module);
+                    const moduleTitle = displayModuleTitle(module) || displayableCourseTitle(module.title);
                     return (
                       <div key={module.id} className="module-tile">
-                        <strong title={displayableOutlineTitle(module.title) || displayableCourseTitle(module.title)}>
-                          {displayableOutlineTitle(module.title) || displayableCourseTitle(module.title)}
-                        </strong>
+                        <strong title={moduleTitle}>{moduleTitle}</strong>
                         {learningGoal ? <span>{learningGoal}</span> : null}
                       </div>
                     );
