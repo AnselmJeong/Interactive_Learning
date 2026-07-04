@@ -545,7 +545,7 @@ export function ImmersiveSourceView({
                 {displayFigures.length ? (
                   <div className="source-figure-list">
                     {displayFigures.map((figure) => (
-                      <SourceFigureCard key={figure.id} figure={figure} materialId={artifacts.manifest.id} request={request} />
+                      <SourceFigureCard key={figure.id} figure={figure} materialId={artifacts.manifest.id} request={request} contextChunkIds={[chunk.id]} />
                     ))}
                   </div>
                 ) : null}

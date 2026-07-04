@@ -1448,6 +1448,13 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   border: 1px solid rgba(49, 112, 92, 0.22);
   background: rgba(49, 112, 92, 0.08);
 }
+.source-figure-explanation .markdown-content,
+.source-figure-explanation .markdown-content p,
+.source-figure-explanation .markdown-content ul,
+.source-figure-explanation .markdown-content ol {
+  font-size: 14px;
+  line-height: 1.55;
+}
 .outline-row {
   display: grid;
   gap: 12px;

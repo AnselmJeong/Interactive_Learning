@@ -117,7 +117,7 @@ export type AppRPC = {
       "materials.list": { params: { projectId: string }; response: MaterialSummary[] };
       "materials.getArtifacts": { params: { materialId: string }; response: MaterialArtifacts };
       "figures.getAsset": { params: { materialId: string; figureId: string }; response: { figureId: string; mimeType: string; dataUrl: string } };
-      "figures.explain": { params: { materialId: string; figureId: string; userPrompt?: string }; response: { figureId: string; explanation: string; model: string; visionCapable: true } };
+      "figures.explain": { params: { materialId: string; figureId: string; userPrompt?: string; contextChunkIds?: string[] }; response: { figureId: string; explanation: string; model: string; visionCapable: true } };
       "annotations.define": { params: { materialId: string; chunkId: string; selectedText: string }; response: LookupResult };
       "annotations.lookup": { params: { materialId: string; chunkId: string; selectedText: string }; response: LookupResult };
       "annotations.findImages": { params: { materialId: string; chunkId: string; selectedText: string }; response: ImageLookupResult };

@@ -10,6 +10,7 @@ type SourceFigureCardProps = {
   materialId: string;
   request: RpcRequest;
   compact?: boolean;
+  contextChunkIds?: string[];
 };
 
 function cleanLocator(locator: string) {
@@ -20,7 +21,7 @@ function captionFor(figure: SourceFigure) {
   return figure.caption?.trim() || "Figure from source";
 }
 
-export function SourceFigureCard({ figure, materialId, request, compact = false }: SourceFigureCardProps) {
+export function SourceFigureCard({ figure, materialId, request, compact = false, contextChunkIds = [] }: SourceFigureCardProps) {
   const [busy, setBusy] = useState(false);
   const [imageSrc, setImageSrc] = useState(figure.assetUrl);
   const [imageError, setImageError] = useState("");
@@ -54,7 +55,7 @@ export function SourceFigureCard({ figure, materialId, request, compact = false 
     setBusy(true);
     setError("");
     try {
-      const result = (await request("figures.explain", { materialId, figureId: figure.id })) as { explanation: string; model: string };
+      const result = (await request("figures.explain", { materialId, figureId: figure.id, contextChunkIds })) as { explanation: string; model: string };
       setExplanation(result.explanation);
     } catch (err) {
       const message = (err as Error).message || String(err);

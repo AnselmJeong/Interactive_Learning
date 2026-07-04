@@ -265,7 +265,7 @@ export const TutorBlockRenderer = memo(function TutorBlockRenderer({
             {figures.length && materialId && request ? (
               <div className="tutor-inline-figures">
                 {figures.map((figure) => (
-                  <SourceFigureCard key={figure.id} figure={figure} materialId={materialId} request={request} compact />
+                  <SourceFigureCard key={figure.id} figure={figure} materialId={materialId} request={request} compact contextChunkIds={lookupChunkId ? [lookupChunkId] : []} />
                 ))}
               </div>
             ) : null}
@@ -277,7 +277,7 @@ export const TutorBlockRenderer = memo(function TutorBlockRenderer({
         return figures.length && materialId && request ? (
           <div className="tutor-inline-figures">
             {figures.map((figure) => (
-              <SourceFigureCard key={figure.id} figure={figure} materialId={materialId} request={request} compact />
+              <SourceFigureCard key={figure.id} figure={figure} materialId={materialId} request={request} compact contextChunkIds={fallbackSourceRefs.map((ref) => ref.chunkId)} />
             ))}
           </div>
         ) : null;

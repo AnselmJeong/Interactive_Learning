@@ -92,7 +92,22 @@ async function providerStatus(reachable = false, error?: string, input: AiProvid
   };
 }
 
-async function explainFigure(materialId: string, figureId: string, userPrompt?: string) {
+function uniqueValues(values: string[]) {
+  return [...new Set(values.filter(Boolean))];
+}
+
+function languageInstruction(tutorLanguage: string) {
+  if (tutorLanguage === "ko") {
+    return [
+      "Reply in Korean.",
+      "Keep proper nouns and visible English source terms when they matter, but explain their meaning in Korean.",
+      "Do not open with English stock phrases such as 'Based on the visible text'.",
+    ].join(" ");
+  }
+  return "Reply in English.";
+}
+
+async function explainFigure(materialId: string, figureId: string, userPrompt?: string, contextChunkIds: string[] = []) {
   const artifacts = await materials.getArtifacts(materialId);
   const figure = artifacts.figures.find((item) => item.id === figureId);
   if (!figure) throw new Error("Figure not found");
@@ -108,24 +123,44 @@ async function explainFigure(materialId: string, figureId: string, userPrompt?: 
     throw new Error("VISION_MODEL_REQUIRED: 이 그림 설명에는 vision-capable model이 필요합니다. Settings에서 Figure vision model을 선택하세요.");
   }
 
-  const nearby = artifacts.sourceChunks
-    .filter((chunk) => figure.sourceChunkIds.includes(chunk.id))
-    .map((chunk) => chunk.text.replace(/\s+/g, " ").trim())
+  const chunksById = new Map(artifacts.sourceChunks.map((chunk) => [chunk.id, chunk]));
+  const validContextChunkIds = uniqueValues(contextChunkIds).filter((id) => chunksById.has(id));
+  const primaryChunkIds = uniqueValues([...validContextChunkIds, ...figure.sourceChunkIds]).filter((id) => chunksById.has(id));
+  const contextModule = artifacts.coursePlan.modules.find((module) => primaryChunkIds.some((id) => module.sourceChunkIds.includes(id)));
+  const contextChunkIdsForPrompt = uniqueValues([
+    ...primaryChunkIds,
+    ...(contextModule?.sourceChunkIds || []),
+  ]).filter((id) => chunksById.has(id)).slice(0, 6);
+  const contextChunks = contextChunkIdsForPrompt
+    .map((id) => {
+      const chunk = chunksById.get(id)!;
+      const meta = artifacts.sourceIndex[id];
+      const labels = [
+        validContextChunkIds.includes(id) ? "current chunk" : "",
+        figure.sourceChunkIds.includes(id) ? "figure-linked chunk" : "",
+      ].filter(Boolean).join(", ");
+      return [
+        `Chunk: ${meta?.title || chunk.headingPath.join(" > ") || id}${labels ? ` (${labels})` : ""}`,
+        `Locator: ${meta?.locator || chunk.locator}`,
+        chunk.text.replace(/\s+/g, " ").trim().slice(0, 900),
+      ].filter(Boolean).join("\n");
+    })
     .filter(Boolean)
-    .slice(0, 2)
     .join("\n\n");
   const prompt = [
-    "Explain this source figure for a learner. Ground the explanation in the visible image, the caption, and nearby source context. If the image content is uncertain, say so plainly.",
+    languageInstruction(publicSettings.tutorLanguage),
+    "Explain this source figure for a learner. Ground the explanation in the visible image, the caption, the current source chunk, and the current module context. Do not interpret the figure as a detached image. If the image content is uncertain, say so plainly.",
     figure.caption ? `Caption: ${figure.caption}` : "Caption: unavailable.",
     figure.locator ? `Locator: ${figure.locator}` : "",
-    nearby ? `Nearby source context:\n${nearby.slice(0, 2400)}` : "",
+    contextModule ? `Current module:\nTitle: ${contextModule.title}\nLearning goal: ${contextModule.learningGoal}` : "",
+    contextChunks ? `Current chunk/module source context:\n${contextChunks.slice(0, 3600)}` : "",
     userPrompt?.trim() ? `Learner request: ${userPrompt.trim()}` : "",
   ].filter(Boolean).join("\n\n");
   const bytes = await readFile(figure.assetPath);
   const explanation = await client.describeImage({
     image: { mimeType: figure.mimeType, dataBase64: bytes.toString("base64") },
     prompt,
-    system: "You are Learnie, a source-grounded tutor. Explain figures clearly and avoid inventing details not visible in the image or supported by the caption/context.",
+    system: `You are Learnie, a source-grounded tutor. ${languageInstruction(publicSettings.tutorLanguage)} Explain figures clearly and avoid inventing details not visible in the image or supported by the caption/context.`,
     model,
     timeoutMs: 120000,
   });
@@ -216,7 +251,7 @@ const rpc = BrowserView.defineRPC<AppRPC>({
       "materials.list": ({ projectId }) => materials.list(projectId),
       "materials.getArtifacts": ({ materialId }) => materials.getArtifacts(materialId),
       "figures.getAsset": ({ materialId, figureId }) => getFigureAsset(materialId, figureId),
-      "figures.explain": ({ materialId, figureId, userPrompt }) => explainFigure(materialId, figureId, userPrompt),
+      "figures.explain": ({ materialId, figureId, userPrompt, contextChunkIds }) => explainFigure(materialId, figureId, userPrompt, contextChunkIds),
       "annotations.define": (params) => annotations.define(params),
       "annotations.lookup": (params) => annotations.lookup(params),
       "annotations.findImages": (params) => annotations.findImages(params),

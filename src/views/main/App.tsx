@@ -188,7 +188,7 @@ function AnswerSourceRefs({ refs, materialId, request }: { refs: SourceRef[]; ma
           {ref.figures?.length ? (
             <div className="answer-source-figures">
               {ref.figures.map((figure) => (
-                <SourceFigureCard key={figure.id} figure={figure} materialId={materialId} request={request} compact />
+                <SourceFigureCard key={figure.id} figure={figure} materialId={materialId} request={request} compact contextChunkIds={[ref.chunkId]} />
               ))}
             </div>
           ) : null}
