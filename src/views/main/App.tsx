@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
-import { Archive, BookOpen, Check, Info, Loader2, MessageSquare, Moon, Play, Send, Settings, Sun, Upload } from "lucide-react";
+import { Archive, BookOpen, Check, Info, Loader2, MessageSquare, Moon, Play, Send, Settings, Sun, Trash2, Upload } from "lucide-react";
 import type { MaterialSummary, PreparedSourceImport, ProjectArchiveExport, ProjectSummary, SourceSummary } from "../../shared/rpc-types";
 import type { AppSettings, AiProviderStatus, ChatSubmitShortcut, ProviderModel } from "../../shared/settings-types";
 import type { MaterialAnnotation, MaterialArtifacts } from "../../shared/artifact-types";
@@ -224,13 +224,16 @@ function AnnotationSourceLinks({ sourceMeta }: { sourceMeta: MaterialAnnotation[
   );
 }
 
-function ChatSavedAnnotationCard({ annotation }: { annotation: MaterialAnnotation }) {
+function ChatSavedAnnotationCard({ annotation, onDelete }: { annotation: MaterialAnnotation; onDelete: (annotationId: string) => void }) {
   const result = annotation.result;
   return (
     <article className={`chat-annotation-card ${annotation.kind}`}>
       <header>
         <span>{annotationKindLabel(annotation.kind)}</span>
         <strong>{annotation.selectedText}</strong>
+        <button type="button" onClick={() => onDelete(annotation.id)} title="삭제">
+          <Trash2 size={14} />
+        </button>
       </header>
       {result.kind === "define" || result.kind === "lookup" ? (
         <>
@@ -262,12 +265,12 @@ function ChatSavedAnnotationCard({ annotation }: { annotation: MaterialAnnotatio
   );
 }
 
-function ChatSavedAnnotations({ annotations }: { annotations: MaterialAnnotation[] }) {
+function ChatSavedAnnotations({ annotations, onDelete }: { annotations: MaterialAnnotation[]; onDelete: (annotationId: string) => void }) {
   if (!annotations.length) return null;
   return (
     <div className="chat-annotation-list" aria-label="저장된 선택 설명">
       {annotations.map((annotation) => (
-        <ChatSavedAnnotationCard key={annotation.id} annotation={annotation} />
+        <ChatSavedAnnotationCard key={annotation.id} annotation={annotation} onDelete={onDelete} />
       ))}
     </div>
   );
@@ -282,6 +285,7 @@ const ChatLog = memo(function ChatLog({
   annotations,
   request,
   onToggleSource,
+  onDeleteAnnotation,
 }: {
   messages: TutorMessage[];
   tutorThinking: boolean;
@@ -291,6 +295,7 @@ const ChatLog = memo(function ChatLog({
   annotations: MaterialAnnotation[];
   request: RpcRequest;
   onToggleSource: (messageId: string) => void;
+  onDeleteAnnotation: (annotationId: string) => void;
 }) {
   const annotationPlacement = useMemo(() => {
     const assistantMessageIds = new Set(messages.filter((message) => message.role === "assistant").map((message) => message.id));
@@ -355,7 +360,7 @@ const ChatLog = memo(function ChatLog({
               <MarkdownContent content={message.content} />
             )}
             {message.role === "assistant" && savedAnnotations.length ? (
-              <ChatSavedAnnotations annotations={savedAnnotations} />
+              <ChatSavedAnnotations annotations={savedAnnotations} onDelete={onDeleteAnnotation} />
             ) : null}
             {message.role === "assistant" && message.sourceRefs.length ? (
               <div className="answer-sources">
@@ -377,7 +382,7 @@ const ChatLog = memo(function ChatLog({
       })}
       {annotationPlacement.unplaced.length ? (
         <div className="bubble assistant annotation-fallback">
-          <ChatSavedAnnotations annotations={annotationPlacement.unplaced} />
+          <ChatSavedAnnotations annotations={annotationPlacement.unplaced} onDelete={onDeleteAnnotation} />
         </div>
       ) : null}
       {tutorThinking ? (
@@ -1122,6 +1127,16 @@ export function App({ request }: { request: RpcRequest }) {
       annotations: (current.annotations || []).filter((annotation) => annotation.id !== annotationId),
     } : current);
   }, []);
+  const deleteSavedAnnotation = useCallback(async (annotationId: string) => {
+    const previous = artifacts;
+    handleAnnotationDeleted(annotationId);
+    try {
+      await request("annotations.delete", { annotationId });
+    } catch (error) {
+      setArtifacts(previous);
+      setStatus(`Annotation 삭제 실패: ${(error as Error).message}`);
+    }
+  }, [artifacts, handleAnnotationDeleted, request]);
 
   // Source-coverage model, driven by the source-chunk cursor. Each semantic source chunk is
   // "covered" (already taught and stepped past), "current" (the chunk being taught right now),
@@ -1314,6 +1329,7 @@ export function App({ request }: { request: RpcRequest }) {
                 annotations={artifacts?.annotations || []}
                 request={request}
                 onToggleSource={toggleSourceMessage}
+                onDeleteAnnotation={(annotationId) => void deleteSavedAnnotation(annotationId)}
               />
               {visibleVisual ? <VisualRenderer visual={visibleVisual} /> : null}
               {latestChoices.length || showProgressActions || showCompletionActions ? (

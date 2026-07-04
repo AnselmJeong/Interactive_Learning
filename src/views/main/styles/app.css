@@ -743,12 +743,28 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
 }
 .chat-annotation-card.define > header span { color: var(--accent-2); }
 .chat-annotation-card > header strong {
+  flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--ink);
   font-size: 13px;
+}
+.chat-annotation-card > header button {
+  width: 28px;
+  min-height: 28px;
+  border: 0;
+  border-radius: 7px;
+  display: grid;
+  place-items: center;
+  flex: none;
+  color: var(--muted);
+  background: transparent;
+}
+.chat-annotation-card > header button:hover {
+  color: var(--danger);
+  background: rgba(38, 36, 33, 0.08);
 }
 .chat-annotation-card .markdown-content {
   color: #3b352d;

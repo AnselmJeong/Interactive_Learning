@@ -139,6 +139,7 @@ export function ImmersiveSourceView({
   const sourceDocRef = useRef<HTMLDivElement | null>(null);
   const selectionTimerRef = useRef<number | null>(null);
   const markMigrationStartedRef = useRef(new Set<string>());
+  const lookupRequestSeqRef = useRef(0);
   const q = normalizeQuery(query);
 
   const enrichedChunks = useMemo(() => {
@@ -257,6 +258,7 @@ export function ImmersiveSourceView({
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       if (event.key !== "Escape") return;
+      lookupRequestSeqRef.current += 1;
       setSelection(null);
       setLookupPanel(null);
       window.getSelection()?.removeAllRanges();
@@ -367,6 +369,8 @@ export function ImmersiveSourceView({
     const panelPoint = clampPoint(sourceSelection.x - 448, sourceSelection.y);
     const nextSelection = { ...sourceSelection };
     const queryText = sourceSelection.text;
+    const requestSeq = lookupRequestSeqRef.current + 1;
+    lookupRequestSeqRef.current = requestSeq;
     setSelection(nextSelection);
     setLookupPanel({ action, selection: nextSelection, status: "loading", x: panelPoint.x, y: panelPoint.y, queryText });
     const method = annotationMethod(action);
@@ -376,8 +380,10 @@ export function ImmersiveSourceView({
         chunkId: sourceSelection.chunkId,
         selectedText: queryText,
       })) as LookupResult | ImageLookupResult;
+      if (lookupRequestSeqRef.current !== requestSeq) return;
       setLookupPanel({ action, selection: nextSelection, status: "ready", x: panelPoint.x, y: panelPoint.y, queryText, result });
     } catch (error) {
+      if (lookupRequestSeqRef.current !== requestSeq) return;
       setLookupPanel({
         action,
         selection: nextSelection,
@@ -394,6 +400,8 @@ export function ImmersiveSourceView({
     if (panel.action === "define") return;
     const normalized = queryText.replace(/\s+/g, " ").trim();
     if (!normalized) return;
+    const requestSeq = lookupRequestSeqRef.current + 1;
+    lookupRequestSeqRef.current = requestSeq;
     setLookupPanel({ ...panel, status: "loading", queryText: normalized, result: undefined, error: undefined });
     try {
       const result = (await request(annotationMethod(panel.action), {
@@ -401,8 +409,10 @@ export function ImmersiveSourceView({
         chunkId: panel.selection.chunkId,
         selectedText: normalized,
       })) as LookupResult | ImageLookupResult;
+      if (lookupRequestSeqRef.current !== requestSeq) return;
       setLookupPanel({ ...panel, status: "ready", queryText: normalized, result, error: undefined });
     } catch (error) {
+      if (lookupRequestSeqRef.current !== requestSeq) return;
       setLookupPanel({
         ...panel,
         status: "error",
@@ -428,7 +438,7 @@ export function ImmersiveSourceView({
       })) as MaterialAnnotation;
       setAnnotations((current) => [saved, ...current.filter((annotation) => annotation.id !== saved.id)]);
       onAnnotationSaved?.(saved);
-      setLookupPanel({ ...panel, status: "saved" });
+      setLookupPanel(null);
       window.getSelection()?.removeAllRanges();
       setSelection(null);
     } catch (error) {
@@ -758,7 +768,7 @@ function LookupPopover({
             <span>Search keyword</span>
             <input value={queryText} onChange={(event) => setQueryText(event.target.value)} />
           </label>
-          <button type="submit" title="Search" disabled={panel.status === "loading" || panel.status === "saving" || !queryText.trim()}>
+          <button type="submit" title="Search" disabled={panel.status === "saving" || !queryText.trim()}>
             <Search size={15} />
           </button>
         </form>
