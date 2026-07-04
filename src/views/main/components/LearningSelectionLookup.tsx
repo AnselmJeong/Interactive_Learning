@@ -20,6 +20,7 @@ type LookupPanelState = {
   status: "loading" | "ready" | "saving" | "saved" | "error";
   x: number;
   y: number;
+  queryText: string;
   result?: LookupResult | ImageLookupResult;
   error?: string;
 };
@@ -72,6 +73,14 @@ function isIgnoredSelectionElement(element: Element | null) {
 
 function resultSourceMeta(result: LookupResult | ImageLookupResult | undefined) {
   return result?.sourceMeta || [];
+}
+
+function imageLookupKey(image: ImageLookupResult["images"][number], index: number) {
+  return `${image.title}-${image.pageUrl || image.imageUrl || image.thumbnailUrl || index}`;
+}
+
+function annotationMethod(action: LookupAction) {
+  return action === "define" ? "annotations.define" : action === "lookup" ? "annotations.lookup" : "annotations.findImages";
 }
 
 export function LearningSelectionLookup({
@@ -157,16 +166,17 @@ export function LearningSelectionLookup({
     if (!materialId || !sourceSelection?.chunkId || !sourceSelection.text) return;
     const panelPoint = clampPoint(sourceSelection.x - 448, sourceSelection.y);
     const nextSelection = { ...sourceSelection };
+    const queryText = sourceSelection.text;
     setSelection(nextSelection);
-    setLookupPanel({ action, selection: nextSelection, status: "loading", x: panelPoint.x, y: panelPoint.y });
-    const method = action === "define" ? "annotations.define" : action === "lookup" ? "annotations.lookup" : "annotations.findImages";
+    setLookupPanel({ action, selection: nextSelection, status: "loading", x: panelPoint.x, y: panelPoint.y, queryText });
+    const method = annotationMethod(action);
     try {
       const result = (await request(method, {
         materialId,
         chunkId: sourceSelection.chunkId,
-        selectedText: sourceSelection.text,
+        selectedText: queryText,
       })) as LookupResult | ImageLookupResult;
-      setLookupPanel({ action, selection: nextSelection, status: "ready", x: panelPoint.x, y: panelPoint.y, result });
+      setLookupPanel({ action, selection: nextSelection, status: "ready", x: panelPoint.x, y: panelPoint.y, queryText, result });
     } catch (error) {
       setLookupPanel({
         action,
@@ -174,24 +184,48 @@ export function LearningSelectionLookup({
         status: "error",
         x: panelPoint.x,
         y: panelPoint.y,
+        queryText,
         error: (error as Error).message || String(error),
       });
     }
   }
 
-  async function saveLookupResult(panel: LookupPanelState) {
-    if (!materialId || !panel.result || panel.status === "saving" || panel.status === "saved") return;
-    if (panel.result.kind === "image" && panel.result.images.length === 0) return;
+  async function searchLookupResult(panel: LookupPanelState, queryText: string) {
+    if (!materialId || panel.action === "define") return;
+    const normalized = queryText.replace(/\s+/g, " ").trim();
+    if (!normalized) return;
+    setLookupPanel({ ...panel, status: "loading", queryText: normalized, result: undefined, error: undefined });
+    try {
+      const result = (await request(annotationMethod(panel.action), {
+        materialId,
+        chunkId: panel.selection.chunkId,
+        selectedText: normalized,
+      })) as LookupResult | ImageLookupResult;
+      setLookupPanel({ ...panel, status: "ready", queryText: normalized, result, error: undefined });
+    } catch (error) {
+      setLookupPanel({
+        ...panel,
+        status: "error",
+        queryText: normalized,
+        result: undefined,
+        error: (error as Error).message || String(error),
+      });
+    }
+  }
+
+  async function saveLookupResult(panel: LookupPanelState, result = panel.result) {
+    if (!materialId || !result || panel.status === "saving" || panel.status === "saved") return;
+    if (result.kind === "image" && result.images.length === 0) return;
     setLookupPanel({ ...panel, status: "saving" });
     try {
       const saved = (await request("annotations.save", {
         materialId,
         chunkId: panel.selection.chunkId,
         anchorMessageId: panel.selection.anchorMessageId || null,
-        kind: panel.result.kind,
+        kind: result.kind,
         selectedText: panel.selection.text,
-        result: panel.result,
-        sourceMeta: resultSourceMeta(panel.result),
+        result,
+        sourceMeta: resultSourceMeta(result),
       })) as MaterialAnnotation;
       onAnnotationSaved?.(saved);
       setLookupPanel({ ...panel, status: "saved" });
@@ -249,7 +283,8 @@ export function LearningSelectionLookup({
       {lookupPanel ? (
         <LookupPopover
           panel={lookupPanel}
-          onSave={() => void saveLookupResult(lookupPanel)}
+          onSave={(result) => void saveLookupResult(lookupPanel, result)}
+          onSearch={(queryText) => void searchLookupResult(lookupPanel, queryText)}
           onClose={closePanel}
           onMove={(x, y) => setLookupPanel((current) => (current ? { ...current, x, y } : current))}
         />
@@ -261,17 +296,35 @@ export function LearningSelectionLookup({
 function LookupPopover({
   panel,
   onSave,
+  onSearch,
   onClose,
   onMove,
 }: {
   panel: LookupPanelState;
-  onSave: () => void;
+  onSave: (result: LookupResult | ImageLookupResult) => void;
+  onSearch: (queryText: string) => void;
   onClose: () => void;
   onMove: (x: number, y: number) => void;
 }) {
-  const canSave = Boolean(panel.result && panel.status === "ready" && (panel.result.kind !== "image" || panel.result.images.length > 0));
   const dragRef = useRef<{ offsetX: number; offsetY: number } | null>(null);
   const [dragging, setDragging] = useState(false);
+  const [selectedImageKeys, setSelectedImageKeys] = useState<Set<string>>(new Set());
+  const [queryText, setQueryText] = useState(panel.queryText || panel.selection.text);
+  const selectedResult = panel.result?.kind === "image"
+    ? {
+        ...panel.result,
+        images: panel.result.images.filter((image, index) => selectedImageKeys.has(imageLookupKey(image, index))),
+      }
+    : panel.result;
+  const canSave = Boolean(selectedResult && panel.status === "ready" && (selectedResult.kind !== "image" || selectedResult.images.length > 0));
+
+  useEffect(() => {
+    setSelectedImageKeys(new Set());
+  }, [panel.result]);
+
+  useEffect(() => {
+    setQueryText(panel.queryText || panel.selection.text);
+  }, [panel.queryText, panel.selection.text]);
 
   useEffect(() => {
     if (!dragging) return;
@@ -317,6 +370,24 @@ function LookupPopover({
         </button>
       </header>
 
+      {panel.action !== "define" ? (
+        <form
+          className="lookup-query-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            onSearch(queryText);
+          }}
+        >
+          <label>
+            <span>Search keyword</span>
+            <input value={queryText} onChange={(event) => setQueryText(event.target.value)} />
+          </label>
+          <button type="submit" title="Search" disabled={panel.status === "loading" || panel.status === "saving" || !queryText.trim()}>
+            <Search size={15} />
+          </button>
+        </form>
+      ) : null}
+
       {panel.status === "loading" || panel.status === "saving" ? (
         <div className="lookup-state">
           <Loader2 size={18} className="spin" />
@@ -331,7 +402,7 @@ function LookupPopover({
       ) : null}
 
       {panel.result && panel.status !== "loading" && panel.status !== "saving" && panel.status !== "error" ? (
-        <LookupResultBody result={panel.result} />
+        <LookupResultBody result={panel.result} selectedImageKeys={selectedImageKeys} onSelectedImageKeysChange={setSelectedImageKeys} />
       ) : null}
 
       {panel.status === "saved" ? <p className="lookup-saved">저장되었습니다.</p> : null}
@@ -340,31 +411,67 @@ function LookupPopover({
         <button type="button" className="wide-button" onClick={onClose}>
           닫기
         </button>
-        <button type="button" className="wide-button primary" onClick={onSave} disabled={!canSave}>
-          <Save size={15} /> Save
+        <button type="button" className="wide-button primary" onClick={() => selectedResult && onSave(selectedResult)} disabled={!canSave}>
+          <Save size={15} /> {selectedResult?.kind === "image" ? `Save ${selectedResult.images.length}` : "Save"}
         </button>
       </footer>
     </aside>
   );
 }
 
-function LookupResultBody({ result }: { result: LookupResult | ImageLookupResult }) {
+function LookupResultBody({
+  result,
+  selectedImageKeys,
+  onSelectedImageKeysChange,
+}: {
+  result: LookupResult | ImageLookupResult;
+  selectedImageKeys?: Set<string>;
+  onSelectedImageKeysChange?: (keys: Set<string>) => void;
+}) {
   if (result.kind === "image") {
+    const selectable = Boolean(onSelectedImageKeysChange && selectedImageKeys);
+    function toggleImage(key: string) {
+      if (!onSelectedImageKeysChange || !selectedImageKeys) return;
+      const next = new Set(selectedImageKeys);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      onSelectedImageKeysChange(next);
+    }
+
     return (
       <div className="lookup-result-body">
         {result.images.length ? (
           <div className="lookup-image-grid">
-            {result.images.map((image, index) => (
-              <a
-                key={`${image.title}-${image.pageUrl || image.imageUrl || index}`}
-                href={image.pageUrl || image.imageUrl || image.thumbnailUrl}
-                target="_blank"
-                rel="noreferrer"
-                title={image.title}
-              >
-                <img src={image.thumbnailUrl} alt={image.title} loading="lazy" />
-              </a>
-            ))}
+            {result.images.map((image, index) => {
+              const key = imageLookupKey(image, index);
+              if (!selectable) {
+                return (
+                  <a
+                    key={key}
+                    href={image.pageUrl || image.imageUrl || image.thumbnailUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                    title={image.title}
+                  >
+                    <img src={image.thumbnailUrl} alt={image.title} loading="lazy" />
+                  </a>
+                );
+              }
+              const selected = selectedImageKeys?.has(key) || false;
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  className={`lookup-image-choice${selected ? " selected" : ""}`}
+                  onClick={() => toggleImage(key)}
+                  title={image.title}
+                  aria-pressed={selected}
+                >
+                  <img src={image.thumbnailUrl} alt={image.title} loading="lazy" />
+                  <span>{selected ? "Selected" : "Select"}</span>
+                </button>
+              );
+            })}
           </div>
         ) : (
           <p className="lookup-empty">관련 이미지를 찾지 못했습니다.</p>
