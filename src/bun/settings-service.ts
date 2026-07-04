@@ -17,6 +17,10 @@ const DEFAULT_PROVIDERS: AppSettings["providers"] = {
 const AI_PROVIDERS: AiProviderId[] = ["ollama", "openai", "anthropic", "gemini"];
 const CHAT_SUBMIT_SHORTCUTS: ChatSubmitShortcut[] = ["enter", "cmd-enter"];
 
+export type SettingsPatch = Omit<Partial<AppSettings>, "providers"> & {
+  providers?: Partial<AppSettings["providers"]>;
+};
+
 export const defaultSettings: AppSettings = {
   theme: "system",
   aiProvider: "ollama",
@@ -40,9 +44,9 @@ export class SettingsService {
     return normalizeSettings(saved);
   }
 
-  async update(patch: Partial<AppSettings>) {
+  async update(patch: SettingsPatch) {
     const current = await this.get();
-    const next = normalizeSettings({ ...current, ...patch });
+    const next = normalizeSettings(mergeSettingsPatch(current, patch));
     if (!next.ollamaBaseUrl.trim()) next.ollamaBaseUrl = defaultSettings.ollamaBaseUrl;
     for (const provider of AI_PROVIDERS) {
       if (!next.providers[provider].baseUrl.trim()) {
@@ -61,6 +65,22 @@ export class SettingsService {
     await writeJsonFile(SETTINGS_PATH, next);
     return next;
   }
+}
+
+export function mergeSettingsPatch(current: AppSettings, patch: SettingsPatch): Partial<AppSettings> {
+  return {
+    ...current,
+    ...patch,
+    providers: patch.providers
+      ? AI_PROVIDERS.reduce((acc, id) => {
+          acc[id] = {
+            ...current.providers[id],
+            ...patch.providers?.[id],
+          };
+          return acc;
+        }, {} as AppSettings["providers"])
+      : current.providers,
+  };
 }
 
 function normalizeSettings(saved: Partial<AppSettings>): AppSettings {

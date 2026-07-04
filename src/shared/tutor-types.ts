@@ -71,7 +71,7 @@ export type TutorPrefetchStatus = {
   sessionId: string;
   kind: "default_continue";
   status: "disabled" | "idle" | "generating" | "ready" | "consumed" | "stale" | "failed";
-  targetEvent?: "continue_chunk" | "next_chunk" | "start_module" | "finish_prompt";
+  targetEvent?: "continue_chunk" | "next_chunk" | "start_module" | "return_to_progress" | "finish_prompt";
   updatedAt: number | null;
   error?: string | null;
 };

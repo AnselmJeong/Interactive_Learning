@@ -1,5 +1,4 @@
 import { BrowserView, Utils } from "electrobun/bun";
-import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { ProjectService } from "./project-service";
@@ -15,6 +14,7 @@ import { installApplicationMenu } from "./app-menu";
 import type { AiProviderConnectionInput, AppRPC } from "../shared/rpc-types";
 import type { AiProviderKeyState } from "../shared/settings-types";
 import { modelSupportsVision } from "../shared/vision-models";
+import { openFilesystemPath } from "./platform-utils";
 
 const projects = new ProjectService();
 const settings = new SettingsService();
@@ -26,6 +26,11 @@ const tutor = new TutorService((status) => sendToView("tutor.prefetchStatus", st
 
 void settings.get().then((current) => projects.migrateUnsetProjectRoots(current.projectRootFolder)).catch((error) => {
   console.warn("Failed to migrate project roots", error);
+});
+void Promise.resolve(materials.recoverInterruptedGenerations()).then((count) => {
+  if (count) console.warn(`Recovered ${count} interrupted material generation(s).`);
+}).catch((error) => {
+  console.warn("Failed to recover interrupted material generations", error);
 });
 
 function sendToView(message: string, payload: unknown) {
@@ -182,10 +187,8 @@ async function getFigureAsset(materialId: string, figureId: string) {
   };
 }
 
-function openPath(path: string) {
-  const child = spawn("open", [path], { stdio: "ignore", detached: true });
-  child.unref();
-  return true;
+async function openPath(path: string) {
+  return openFilesystemPath(path, "folder");
 }
 
 async function openExternalUrl(value: string) {

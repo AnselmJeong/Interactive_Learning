@@ -3,6 +3,7 @@ import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { getDb } from "./project-db";
 import { dataPath } from "./paths";
+import { projectRootAvailable } from "./platform-utils";
 import { listMaterialAnnotations, replaceMaterialAnnotations } from "./annotation-store";
 import type { MaterialAnnotation, MaterialManifest, QualityStatus, SourceManifest, SourceType } from "../shared/artifact-types";
 import type { ProjectSummary } from "../shared/rpc-types";
@@ -106,7 +107,15 @@ async function validProjectIdsInRoot(rootPath: string) {
   return ids;
 }
 
+export function shouldPurgeProjectsMissingFromRoot(validProjectIds: Set<string>) {
+  return validProjectIds.size > 0;
+}
+
 async function purgeDbProjectsMissingFromRoot(rootPath: string, validProjectIds: Set<string>) {
+  if (!shouldPurgeProjectsMissingFromRoot(validProjectIds)) {
+    console.warn(`[project-sync] No project manifests found in ${rootPath}; keeping cached projects until the root is confirmed intentionally empty.`);
+    return;
+  }
   const rows = getDb()
     .query<{ id: string }, [string]>("SELECT id FROM projects WHERE root_path = ?")
     .all(rootPath);
@@ -309,44 +318,53 @@ async function importSessions(projectDir: string, projectId: string) {
     const material = getDb().query<{ id: string }, [string]>("SELECT id FROM learning_materials WHERE id = ?").get(snapshot.materialId);
     if (!material) continue;
     const existing = getDb().query<{ updated_at: number }, [string]>("SELECT updated_at FROM learning_sessions WHERE id = ?").get(snapshot.id);
-    if (existing && existing.updated_at > snapshot.updatedAt) continue;
+    if (!shouldImportSessionSnapshot(existing?.updated_at, snapshot.updatedAt)) continue;
 
-    getDb()
-      .query(
-        `INSERT INTO learning_sessions
-         (id, project_id, material_id, title, status, current_module_id, completed_module_ids_json,
-          current_chunk_id, covered_chunk_ids_json, model, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(id) DO UPDATE SET
-           project_id = excluded.project_id,
-           material_id = excluded.material_id,
-           title = excluded.title,
-           status = excluded.status,
-           current_module_id = excluded.current_module_id,
-           completed_module_ids_json = excluded.completed_module_ids_json,
-           current_chunk_id = excluded.current_chunk_id,
-           covered_chunk_ids_json = excluded.covered_chunk_ids_json,
-           model = excluded.model,
-           updated_at = max(learning_sessions.updated_at, excluded.updated_at)`
-      )
-      .run(
-        snapshot.id,
-        projectId,
-        snapshot.materialId,
-        snapshot.title,
-        snapshot.status,
-        snapshot.currentModuleId,
-        JSON.stringify(snapshot.completedModuleIds || []),
-        snapshot.currentChunkId,
-        JSON.stringify(snapshot.coveredChunkIds || []),
-        snapshot.model || null,
-        snapshot.createdAt,
-        snapshot.updatedAt
-      );
+    const importSnapshot = getDb().transaction(() => {
+      getDb()
+        .query(
+          `INSERT INTO learning_sessions
+           (id, project_id, material_id, title, status, current_module_id, completed_module_ids_json,
+            current_chunk_id, covered_chunk_ids_json, model, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(id) DO UPDATE SET
+             project_id = excluded.project_id,
+             material_id = excluded.material_id,
+             title = excluded.title,
+             status = excluded.status,
+             current_module_id = excluded.current_module_id,
+             completed_module_ids_json = excluded.completed_module_ids_json,
+             current_chunk_id = excluded.current_chunk_id,
+             covered_chunk_ids_json = excluded.covered_chunk_ids_json,
+             model = excluded.model,
+             updated_at = excluded.updated_at`
+        )
+        .run(
+          snapshot.id,
+          projectId,
+          snapshot.materialId,
+          snapshot.title,
+          snapshot.status,
+          snapshot.currentModuleId,
+          JSON.stringify(snapshot.completedModuleIds || []),
+          snapshot.currentChunkId,
+          JSON.stringify(snapshot.coveredChunkIds || []),
+          snapshot.model || null,
+          snapshot.createdAt,
+          snapshot.updatedAt
+        );
 
-    getDb().query("DELETE FROM learning_messages WHERE session_id = ?").run(snapshot.id);
-    for (const message of snapshot.messages || []) importMessage(snapshot.id, message);
+      getDb().query("DELETE FROM learning_messages WHERE session_id = ?").run(snapshot.id);
+      [...(snapshot.messages || [])]
+        .sort((left, right) => left.ordinal - right.ordinal || left.createdAt - right.createdAt || left.id.localeCompare(right.id))
+        .forEach((message, index) => importMessage(snapshot.id, { ...message, ordinal: index }));
+    });
+    importSnapshot();
   }
+}
+
+export function shouldImportSessionSnapshot(existingUpdatedAt: number | null | undefined, snapshotUpdatedAt: number) {
+  return existingUpdatedAt == null || existingUpdatedAt < snapshotUpdatedAt;
 }
 
 function importMessage(sessionId: string, message: TutorMessage) {
@@ -374,6 +392,10 @@ function importMessage(sessionId: string, message: TutorMessage) {
 }
 
 export async function syncProjectRootToDb(rootPath: string) {
+  if (!(await projectRootAvailable(rootPath))) {
+    console.warn(`[project-sync] Project root is unavailable; skipping sync: ${rootPath}`);
+    return;
+  }
   await mkdir(rootPath, { recursive: true });
   const validProjectIds = await validProjectIdsInRoot(rootPath);
   await purgeDbProjectsMissingFromRoot(rootPath, validProjectIds);

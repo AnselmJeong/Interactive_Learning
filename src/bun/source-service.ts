@@ -244,7 +244,12 @@ function semanticChunksFromBody(body: string): Array<{ text: string; kind: Sourc
   return chunks;
 }
 
-function normalizeMarkdownChunks(sourceId: string, text: string): SourceChunk[] {
+export function sanitizeHeadingPath(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.map((part) => (typeof part === "string" ? part.trim() : "")).filter(Boolean);
+}
+
+export function normalizeMarkdownChunks(sourceId: string, text: string): SourceChunk[] {
   const lines = text.replace(/\r\n/g, "\n").split("\n");
   const headings: string[] = [];
   const chunks: SourceChunk[] = [];
@@ -272,7 +277,8 @@ function normalizeMarkdownChunks(sourceId: string, text: string): SourceChunk[] 
     const heading = /^(#{1,6})\s+(.+)$/.exec(line);
     if (heading) {
       flush(`before ${heading[2]}`);
-      headings.length = heading[1]!.length - 1;
+      const insertAt = Math.min(heading[1]!.length - 1, headings.length);
+      headings.splice(insertAt);
       headings.push(heading[2]!.trim());
     } else {
       buffer.push(line);
@@ -895,6 +901,7 @@ export class SourceService {
     const chunks = JSON.parse(await readFile(row.chunks_path, "utf8")) as SourceChunk[];
     return chunks.map((chunk) => ({
       ...chunk,
+      headingPath: sanitizeHeadingPath(chunk.headingPath),
       text: rewriteLocalMarkdownImageLinks(row.imported_file_path, chunk.text),
     }));
   }

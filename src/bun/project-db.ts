@@ -209,6 +209,27 @@ export function getDb() {
   if (!annotationColumns.includes("anchor_message_id")) {
     db.exec("ALTER TABLE material_annotations ADD COLUMN anchor_message_id TEXT;");
   }
+  normalizeMessageOrdinals(db);
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_learning_messages_session_ordinal_unique
+      ON learning_messages(session_id, ordinal ASC);
+  `);
 
   return db;
+}
+
+function normalizeMessageOrdinals(database: Database) {
+  const sessionIds = database.query<{ session_id: string }, []>("SELECT DISTINCT session_id FROM learning_messages").all();
+  const update = database.query("UPDATE learning_messages SET ordinal = ? WHERE id = ?");
+  const normalize = database.transaction((sessionId: string) => {
+    const rows = database
+      .query<{ id: string; ordinal: number; created_at: number }, [string]>(
+        "SELECT id, ordinal, created_at FROM learning_messages WHERE session_id = ? ORDER BY ordinal ASC, created_at ASC, id ASC"
+      )
+      .all(sessionId);
+    rows.forEach((row, index) => {
+      if (row.ordinal !== index) update.run(index, row.id);
+    });
+  });
+  for (const row of sessionIds) normalize(row.session_id);
 }

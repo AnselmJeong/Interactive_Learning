@@ -1,6 +1,5 @@
 import { cp, mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
 import { existsSync } from "node:fs";
-import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { getDb } from "./project-db";
@@ -11,6 +10,7 @@ import type { ProjectArchiveExport, ProjectSummary } from "../shared/rpc-types";
 import type { TutorContentBlock } from "../shared/tutor-types";
 import { SettingsService } from "./settings-service";
 import { syncProjectRootToDb, writeProjectManifest } from "./project-bundle-sync";
+import { writeZipFromDirectory } from "./archive-writer";
 
 type ProjectRow = {
   id: string;
@@ -329,8 +329,7 @@ export class ProjectService {
       const fileName = `${safeFilePart(project.title, "project")}-learning-archive-${stamp()}.zip`;
       const zipPath = join(outDir, fileName);
       if (existsSync(zipPath)) await rm(zipPath, { force: true });
-      const result = spawnSync("/usr/bin/zip", ["-qr", zipPath, "."], { cwd: staging, encoding: "utf8" });
-      if (result.status !== 0) throw new Error(result.stderr || result.stdout || "zip command failed");
+      await writeZipFromDirectory(staging, zipPath);
       return { zipPath, fileName, sessionCount };
     } finally {
       await rm(staging, { recursive: true, force: true });

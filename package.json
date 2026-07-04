@@ -11,7 +11,8 @@
     "build:dev": "bun install && bun run prepare:python-runtime && electrobun build",
     "build:stable": "bun run prepare:python-runtime && electrobun build --env=stable",
     "typecheck": "tsc --noEmit",
-    "test:python": "cd python && uv run pytest",
+    "test": "bun test",
+    "test:python": "cd python && uv run --extra test pytest",
     "smoke:python": "LEARNIE_PROJECT_ROOT=$PWD bun run scripts/smoke-python.ts"
   },
   "dependencies": {

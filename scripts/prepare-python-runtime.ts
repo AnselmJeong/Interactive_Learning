@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync } from "node:fs";
 import { chmod, cp, mkdir, readdir, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
+import { buildPlatformName, findExistingPythonExecutable, runtimeBundleName, type RuntimePlatform } from "../src/bun/platform-utils";
 
 type PythonRuntimeInfo = {
   basePrefix: string;
@@ -13,8 +14,11 @@ type PythonRuntimeInfo = {
 
 const projectRoot = resolve(import.meta.dir, "..");
 const pythonRoot = join(projectRoot, "python");
-const venvPython = join(pythonRoot, ".venv", "bin", "python");
-const targetName = `${process.platform === "darwin" ? "macos" : process.platform}-${process.arch}`;
+const targetPlatform = (process.env.ELECTROBUN_OS || process.env.LEARNIE_TARGET_OS || process.platform) as RuntimePlatform;
+const targetPlatformName = buildPlatformName(targetPlatform);
+const targetArch = process.env.ELECTROBUN_ARCH || process.env.LEARNIE_TARGET_ARCH || process.arch;
+const venvPython = targetPlatformName === "win32" ? join(pythonRoot, ".venv", "Scripts", "python.exe") : join(pythonRoot, ".venv", "bin", "python");
+const targetName = runtimeBundleName(targetPlatform, targetArch);
 const bundleRoot = join(pythonRoot, ".bundle", targetName);
 const runtimeRoot = join(bundleRoot, "runtime");
 
@@ -80,7 +84,9 @@ async function removePythonCaches(root: string) {
 }
 
 async function copyRuntime(info: PythonRuntimeInfo) {
-  const bundledSitePackages = join(runtimeRoot, "lib", `python${info.major}.${info.minor}`, "site-packages");
+  const bundledSitePackages = targetPlatformName === "win32"
+    ? join(runtimeRoot, "Lib", "site-packages")
+    : join(runtimeRoot, "lib", `python${info.major}.${info.minor}`, "site-packages");
 
   await rm(bundleRoot, { recursive: true, force: true });
   await mkdir(bundleRoot, { recursive: true });
@@ -94,12 +100,14 @@ async function copyRuntime(info: PythonRuntimeInfo) {
     filter: (source) => !source.includes("__pycache__") && !source.endsWith(".pyc"),
   });
 
-  const bundledPython = join(runtimeRoot, "bin", `python${info.major}.${info.minor}`);
-  await chmod(bundledPython, 0o755);
+  const bundledPython = findExistingPythonExecutable({ pythonRoot, platform: targetPlatform, arch: targetArch, major: info.major, minor: info.minor });
+  if (!bundledPython) throw new Error(`Bundled Python executable was not found under ${runtimeRoot}`);
+  if (targetPlatformName !== "win32") await chmod(bundledPython, 0o755);
 }
 
 async function verifyRuntime(info: PythonRuntimeInfo) {
-  const bundledPython = join(runtimeRoot, "bin", `python${info.major}.${info.minor}`);
+  const bundledPython = findExistingPythonExecutable({ pythonRoot, platform: targetPlatform, arch: targetArch, major: info.major, minor: info.minor });
+  if (!bundledPython) throw new Error(`Bundled Python executable was not found under ${runtimeRoot}`);
   const env = {
     PYTHONPATH: join(pythonRoot, "src"),
     PYTHONDONTWRITEBYTECODE: "1",

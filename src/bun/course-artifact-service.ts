@@ -60,6 +60,10 @@ function toMaterial(row: MaterialRow, sourceIds: string[]): MaterialSummary {
   };
 }
 
+export function canReuseMaterialForGeneration(status: MaterialRow["status"]) {
+  return status === "ready";
+}
+
 function sentences(text: string) {
   return text
     .split(/(?<=[.!?。！？다요죠음함됨])\s+/)
@@ -275,7 +279,7 @@ export class CourseArtifactService {
 
   async generate(projectId: string, sourceIds: string[]) {
     if (!sourceIds.length) throw new Error("At least one source is required");
-    const existing = this.findBySourceSet(projectId, sourceIds).find((material) => material.status === "ready" || material.status === "generating");
+    const existing = this.findBySourceSet(projectId, sourceIds).find((material) => canReuseMaterialForGeneration(material.status));
     if (existing) return existing;
 
     const id = crypto.randomUUID();
@@ -402,6 +406,20 @@ export class CourseArtifactService {
       const actual = [...new Set(material.sourceIds)].sort();
       return actual.length === expected.length && actual.every((sourceId, index) => sourceId === expected[index]);
     });
+  }
+
+  recoverInterruptedGenerations() {
+    const now = Date.now();
+    const result = getDb()
+      .query(
+        `UPDATE learning_materials
+         SET status = 'failed',
+             generation_error = COALESCE(generation_error, 'Material generation was interrupted before completion. Regenerate to continue.'),
+             updated_at = ?
+         WHERE status = 'generating'`
+      )
+      .run(now);
+    return result.changes;
   }
 
   getSummary(materialId: string) {

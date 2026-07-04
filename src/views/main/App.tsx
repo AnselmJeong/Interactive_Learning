@@ -18,6 +18,7 @@ import { AboutModal } from "./components/AboutModal";
 import { SourceFigureCard } from "./components/SourceFigureCard";
 import { stripFigureMarkdown } from "./figure-text";
 import { playAnswerReadySound, primeAnswerReadySound } from "./notification-sound";
+import { nextPrefetchStatusForSession } from "./prefetch-status";
 
 type RpcRequest = (method: string, params: unknown) => Promise<unknown>;
 
@@ -578,7 +579,7 @@ export function App({ request }: { request: RpcRequest }) {
     const onTutorError = (event: Event) => setStatus((event as CustomEvent<{ error: string }>).detail.error);
     const onPrefetchStatus = (event: Event) => {
       const detail = (event as CustomEvent<TutorPrefetchStatus>).detail;
-      setPrefetchStatus((current) => (session?.id && detail.sessionId !== session.id ? current : detail));
+      setPrefetchStatus((current) => nextPrefetchStatusForSession(current, detail, session?.id));
     };
     const onOpenAbout = () => setAboutOpen(true);
     window.addEventListener("generation-progress", onGeneration);

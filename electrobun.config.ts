@@ -36,5 +36,10 @@ export default {
       codesign: false,
       notarize: false,
     },
+    win: {
+      bundleCEF: false,
+      defaultRenderer: "native",
+      icon: "assets/app-icon.iconset/icon_256x256.png",
+    },
   },
 } satisfies ElectrobunConfig;

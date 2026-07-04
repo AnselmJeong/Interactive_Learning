@@ -5,7 +5,8 @@ import { SettingsService } from "./settings-service";
 import { AiProviderSettingsService } from "./ai-provider-settings";
 import { createAiProviderClient } from "./ai-provider-client";
 import { dataPath } from "./paths";
-import { syncProjectRootToDb, writeSessionSnapshot } from "./project-bundle-sync";
+import { writeSessionSnapshot } from "./project-bundle-sync";
+import { classifyProgressionCommand } from "../shared/progression-command";
 import type { CourseModule, LectureModulePlan, MaterialArtifacts, PresentationModulePlan, SourceChunk, VisualSpec } from "../shared/artifact-types";
 import type { SessionSnapshot, SessionSummary, SourceRef, TutorContentBlock, TutorContext, TutorIntent, TutorMessage, TutorPrefetchStatus, TutorStateUpdate, TutorTurnOutput } from "../shared/tutor-types";
 
@@ -23,7 +24,6 @@ const PREFETCH_PROMPT_VERSION = "tutor-default-continue-v1";
 const PREFETCH_TTL_MS = 20 * 60 * 1000;
 const PREFETCH_CONSUME_WAIT_MS = 100 * 1000;
 const MAX_ACTIVE_PREFETCH_JOBS = 2;
-const PROGRESSION_CHOICES = new Set(["계속해줘", "계속해줘.", "다음 진도로 넘어가주세요.", "다음 대목으로 넘어가주세요.", "다음 문단으로 넘어가주세요.", "다음 모듈로 넘어가주세요.", "진도로 돌아갈게요."]);
 const TERM_RENDERING_RULE = [
   "TERM RENDERING RULE:",
   "When teaching in Korean, do not replace romanized proper nouns or culturally specific technical terms with Korean-only transliterations.",
@@ -139,7 +139,7 @@ type TutorPrefetchRow = {
 
 type PlannedProgressTurn = {
   kind: "default_continue";
-  targetEvent: "continue_chunk" | "next_chunk" | "start_module" | "finish_prompt";
+  targetEvent: "continue_chunk" | "next_chunk" | "start_module" | "return_to_progress" | "finish_prompt";
   moduleId: string;
   baseCurrentChunkId: string | null;
   baseCoveredChunkIds: string[];
@@ -545,8 +545,6 @@ export class TutorService {
   constructor(private readonly emitPrefetchStatus?: TutorPrefetchEmitter) {}
 
   async listSessions(materialId: string): Promise<SessionSummary[]> {
-    const material = this.artifacts.getRow(materialId);
-    await syncProjectRootToDb(this.projectRoot(material.project_id));
     const rows = getDb()
       .query<SessionRow, [string]>("SELECT * FROM learning_sessions WHERE material_id = ? ORDER BY updated_at DESC")
       .all(materialId);
@@ -604,21 +602,19 @@ export class TutorService {
   async sendTurn(sessionId: string, userText: string) {
     const text = userText.trim();
     if (!text) throw new Error("Answer is empty");
-    const typedProgressionCommand = PROGRESSION_CHOICES.has(text) || (text.length <= 40 && !/[?？]/u.test(text) && classifyIntent(text, "user_message") === "satisfied");
+    const typedProgressionCommand = classifyProgressionCommand(text);
     if (typedProgressionCommand) {
-      if (text.includes("돌아")) return this.returnToProgress(sessionId);
+      if (typedProgressionCommand === "return_to_progress") return this.returnToProgress(sessionId);
       return this.advance(sessionId, "paragraph");
     }
     const session = this.snapshot(sessionId);
-    const ordinal = session.messages.length;
-    this.insertMessage({
+    const inserted = this.insertMessage({
       sessionId,
       role: "user",
       content: text,
       moduleId: session.currentModuleId || undefined,
       sourceRefs: [],
       choices: [],
-      ordinal,
     });
     try {
       const output = await this.createTutorTurn(sessionId, { event: "user_message", userText: text });
@@ -628,7 +624,7 @@ export class TutorService {
     } catch (error) {
       // Kill the failed turn: drop the dangling user message so the learner can resubmit cleanly
       // (instead of a spinner that never resolves), and surface the error to the caller.
-      getDb().query("DELETE FROM learning_messages WHERE session_id = ? AND ordinal = ? AND role = 'user'").run(sessionId, ordinal);
+      getDb().query("DELETE FROM learning_messages WHERE id = ? AND role = 'user'").run(inserted.id);
       await this.persistSessionSnapshot(sessionId).catch(() => undefined);
       throw error;
     }
@@ -638,11 +634,6 @@ export class TutorService {
     const session = this.snapshot(sessionId);
     if (session.status !== "active") throw new Error("This session is not active");
     const artifacts = await this.artifacts.getArtifacts(session.materialId);
-    const curriculum = this.orderedCurriculum(artifacts);
-    const covered = new Set(session.coveredChunkIds);
-    const focusChunk = this.currentChunkOf(artifacts, session);
-    const currentModule = this.ownerModuleOf(artifacts, focusChunk?.id);
-    if (!focusChunk) throw new Error("No current source chunk is available");
 
     if (mode === "paragraph") {
       const consumed = await this.tryConsumeDefaultContinue(sessionId);
@@ -660,31 +651,12 @@ export class TutorService {
       return { session: this.snapshot(sessionId), context: await this.context(sessionId), output };
     }
 
-    let nextChunk: SourceChunk | undefined;
-    if (mode === "module") {
-      for (const id of currentModule.sourceChunkIds) covered.add(id);
-      nextChunk = this.firstChunkOfNextModule(artifacts, currentModule.id);
-      if (!nextChunk) nextChunk = this.firstUncoveredChunkAfter(artifacts, focusChunk.id, covered);
-    } else {
-      covered.add(focusChunk.id);
-      const index = curriculum.findIndex((chunk) => chunk.id === focusChunk.id);
-      nextChunk = curriculum[index + 1];
-    }
-
-    if (!nextChunk) {
-      this.markPrefetchesStale(sessionId);
-      this.persistCursor(sessionId, artifacts, focusChunk.id, [...covered]);
-      const output = this.finishPromptTurn(sessionId, currentModule);
-      await this.persistSessionSnapshot(sessionId);
-      return { session: this.snapshot(sessionId), context: await this.context(sessionId), output };
-    }
-
     this.markPrefetchesStale(sessionId);
-    this.persistCursor(sessionId, artifacts, nextChunk.id, [...covered]);
-    const nextModule = this.ownerModuleOf(artifacts, nextChunk.id);
-    const output = await this.createTutorTurn(sessionId, { event: nextModule.id !== currentModule.id ? "start_module" : "next_chunk" });
+    const plan = this.planExplicitProgress(session, artifacts, mode);
+    const output = await this.generatePlannedProgressTurn(session, artifacts, plan);
+    this.commitPlannedTutorTurn(sessionId, artifacts, plan, output);
     await this.persistSessionSnapshot(sessionId);
-    this.scheduleDefaultContinue(sessionId, "assistant_turn");
+    if (plan.targetEvent !== "finish_prompt") this.scheduleDefaultContinue(sessionId, "assistant_turn");
     return { session: this.snapshot(sessionId), context: await this.context(sessionId), output };
   }
 
@@ -698,28 +670,12 @@ export class TutorService {
       return { session: this.snapshot(sessionId), context: await this.context(sessionId), output: consumed };
     }
     const artifacts = await this.artifacts.getArtifacts(session.materialId);
-    const curriculum = this.orderedCurriculum(artifacts);
-    const covered = new Set(session.coveredChunkIds);
-    const focusChunk = this.currentChunkOf(artifacts, session);
-    const currentModule = this.ownerModuleOf(artifacts, focusChunk?.id);
-    if (!focusChunk) throw new Error("No current source chunk is available");
-    covered.add(focusChunk.id);
-    const index = curriculum.findIndex((chunk) => chunk.id === focusChunk.id);
-    const nextChunk = index >= 0 ? curriculum[index + 1] : undefined;
-
-    if (!nextChunk) {
-      this.markPrefetchesStale(sessionId);
-      this.persistCursor(sessionId, artifacts, focusChunk.id, [...covered]);
-      const output = this.finishPromptTurn(sessionId, currentModule);
-      await this.persistSessionSnapshot(sessionId);
-      return { session: this.snapshot(sessionId), context: await this.context(sessionId), output };
-    }
-
     this.markPrefetchesStale(sessionId);
-    this.persistCursor(sessionId, artifacts, nextChunk.id, [...covered]);
-    const output = await this.createTutorTurn(sessionId, { event: "return_to_progress" });
+    const plan = this.planExplicitProgress(session, artifacts, "return_to_progress");
+    const output = await this.generatePlannedProgressTurn(session, artifacts, plan);
+    this.commitPlannedTutorTurn(sessionId, artifacts, plan, output);
     await this.persistSessionSnapshot(sessionId);
-    this.scheduleDefaultContinue(sessionId, "assistant_turn");
+    if (plan.targetEvent !== "finish_prompt") this.scheduleDefaultContinue(sessionId, "assistant_turn");
     return { session: this.snapshot(sessionId), context: await this.context(sessionId), output };
   }
 
@@ -821,8 +777,12 @@ export class TutorService {
     choices?: string[];
     visualId?: string | null;
     stateUpdate?: TutorTurnOutput["stateUpdate"];
-    ordinal: number;
   }) {
+    const now = Date.now();
+    const id = crypto.randomUUID();
+    const ordinal = getDb()
+      .query<{ ordinal: number }, [string]>("SELECT COALESCE(MAX(ordinal) + 1, 0) AS ordinal FROM learning_messages WHERE session_id = ?")
+      .get(input.sessionId)?.ordinal || 0;
     getDb()
       .query(
         `INSERT INTO learning_messages
@@ -830,7 +790,7 @@ export class TutorService {
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
-        crypto.randomUUID(),
+        id,
         input.sessionId,
         input.role,
         input.content,
@@ -840,9 +800,11 @@ export class TutorService {
         JSON.stringify(input.choices || []),
         input.visualId || null,
         input.stateUpdate ? JSON.stringify(input.stateUpdate) : null,
-        Date.now(),
-        input.ordinal
+        now,
+        ordinal
       );
+    getDb().query("UPDATE learning_sessions SET updated_at = ? WHERE id = ?").run(now, input.sessionId);
+    return { id, ordinal };
   }
 
   private insertAssistantTurn(sessionId: string, output: TutorTurnOutput) {
@@ -856,7 +818,6 @@ export class TutorService {
       choices: output.choices,
       visualId: output.diagram,
       stateUpdate: output.stateUpdate,
-      ordinal: this.snapshot(sessionId).messages.length,
     });
   }
 
@@ -929,34 +890,8 @@ export class TutorService {
         choices: farewell.choices,
         visualId: farewell.diagram,
         stateUpdate: farewell.stateUpdate,
-        ordinal: session.messages.length,
       });
       return farewell;
-    }
-
-    // Progression is PER SOURCE CHUNK when typed as free text. The dedicated UI buttons use
-    // advance("chunk" | "module") above so their behavior is explicit.
-    // A typed "넘어가" request (heuristic intent "satisfied")
-    // marks the current chunk covered and steps to the next one, then teaches it. A small
-    // source is one module of many chunks, so advancing by module would finish the whole
-    // source in a single click — which is exactly the bug this replaces.
-    if (payload.event === "user_message" && !allComplete && focusChunk) {
-      const heuristic = classifyIntent(payload.userText || "", "user_message");
-      if (heuristic === "satisfied") {
-        covered.add(focusChunk.id);
-        const index = curriculum.findIndex((chunk) => chunk.id === focusChunk.id);
-        const nextChunk = curriculum[index + 1];
-        if (!nextChunk) {
-          // The last chunk is now covered. Ask the learner to finish; do not auto-complete.
-          this.persistCursor(sessionId, artifacts, focusChunk.id, [...covered]);
-          return this.finishPromptTurn(sessionId, currentModule);
-        }
-        this.persistCursor(sessionId, artifacts, nextChunk.id, [...covered]);
-        const nextModule = this.ownerModuleOf(artifacts, nextChunk.id);
-        // A chunk that begins a new module opens with a hook; otherwise we simply continue
-        // to the next chunk within the same module.
-        return await this.createTutorTurn(sessionId, { event: nextModule.id === currentModule.id ? "next_chunk" : "start_module" });
-      }
     }
 
     const sanitized = await this.generateTutorTurnDraft(session, artifacts, payload);
@@ -1081,6 +1016,39 @@ export class TutorService {
     }
 
     return this.progressPlan(session, artifacts, "continue_chunk", focusChunk.id, [...covered]);
+  }
+
+  private planExplicitProgress(
+    session: SessionSnapshot,
+    artifacts: MaterialArtifacts,
+    mode: "chunk" | "module" | "return_to_progress"
+  ): PlannedProgressTurn {
+    const curriculum = this.orderedCurriculum(artifacts);
+    const covered = new Set(session.coveredChunkIds);
+    const focusChunk = this.currentChunkOf(artifacts, session);
+    if (!focusChunk) throw new Error("No current source chunk is available");
+    const currentModule = this.ownerModuleOf(artifacts, focusChunk.id);
+    let nextChunk: SourceChunk | undefined;
+
+    if (mode === "module") {
+      for (const id of currentModule.sourceChunkIds) covered.add(id);
+      nextChunk = this.firstChunkOfNextModule(artifacts, currentModule.id) || this.firstUncoveredChunkAfter(artifacts, focusChunk.id, covered);
+    } else {
+      covered.add(focusChunk.id);
+      const index = curriculum.findIndex((chunk) => chunk.id === focusChunk.id);
+      nextChunk = index >= 0 ? curriculum[index + 1] : undefined;
+    }
+
+    if (!nextChunk) {
+      return this.progressPlan(session, artifacts, "finish_prompt", focusChunk.id, [...covered], currentModule.id);
+    }
+
+    if (mode === "return_to_progress") {
+      return this.progressPlan(session, artifacts, "return_to_progress", nextChunk.id, [...covered]);
+    }
+
+    const nextModule = this.ownerModuleOf(artifacts, nextChunk.id);
+    return this.progressPlan(session, artifacts, nextModule.id !== currentModule.id ? "start_module" : "next_chunk", nextChunk.id, [...covered]);
   }
 
   private progressPlan(
@@ -1526,7 +1494,7 @@ export class TutorService {
     const commit = db.transaction(() => {
       const current = this.snapshot(sessionId);
       if (current.status !== "active") throw new Error("This session is not active");
-      if (!this.cursorMatchesPlan(current, plan)) throw new Error("Prefetch candidate no longer matches the session cursor");
+      if (!this.cursorMatchesPlan(current, plan)) throw new Error("Planned tutor turn no longer matches the session cursor");
       db.query(
         `UPDATE learning_sessions
          SET current_module_id = ?, current_chunk_id = ?, covered_chunk_ids_json = ?, completed_module_ids_json = ?, status = 'active', updated_at = ?
@@ -1549,7 +1517,6 @@ export class TutorService {
         choices: output.choices,
         visualId: output.diagram,
         stateUpdate: output.stateUpdate,
-        ordinal: current.messages.length,
       });
       if (prefetchId) {
         db.query("UPDATE tutor_prefetches SET status = 'consumed', updated_at = ? WHERE id = ?").run(Date.now(), prefetchId);
@@ -2193,11 +2160,11 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${chunk.text}`
       ? uniqueStrings(
           choices
             .map((choice) => normalizeChoiceText(String(choice).trim()))
-            .filter((choice) => choice.length > 0 && choice.length <= 140 && !PROGRESSION_CHOICES.has(choice))
+            .filter((choice) => choice.length > 0 && choice.length <= 140 && !classifyProgressionCommand(choice))
         ).slice(0, 3)
       : [];
     const invitationChoices = this.choicesFromFinalInvitation(blocks);
-    const defaults = this.defaultChoices(module, passed, isDigression).filter((choice) => !PROGRESSION_CHOICES.has(choice));
+    const defaults = this.defaultChoices(module, passed, isDigression).filter((choice) => !classifyProgressionCommand(choice));
     return uniqueStrings([...invitationChoices, ...cleaned, ...defaults]).slice(0, 3);
   }
 

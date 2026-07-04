@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
+import { findExistingPythonExecutable, pathListSeparator, pythonRuntimeBinDirs } from "./platform-utils";
 
 type PreppyBuildResult = {
   output: string;
@@ -24,11 +25,6 @@ function pythonRootCandidates() {
   return roots.map((root) => join(root, "python"));
 }
 
-function bundledRuntimeName() {
-  const os = process.platform === "darwin" ? "macos" : process.platform;
-  return `${os}-${process.arch}`;
-}
-
 function resolvePythonRoot() {
   const found = pythonRootCandidates().find((candidate) => existsSync(join(candidate, "pyproject.toml")) && existsSync(join(candidate, "src", "preppy")));
   if (!found) throw new Error("Bundled Preppy backend was not found.");
@@ -36,11 +32,8 @@ function resolvePythonRoot() {
 }
 
 function pythonCommand(pythonRoot: string) {
-  const bundledPython = join(pythonRoot, ".bundle", bundledRuntimeName(), "runtime", "bin", "python3.12");
-  if (existsSync(bundledPython)) return { command: bundledPython, args: ["-m", "preppy.cli"] };
-
-  const venvPython = join(pythonRoot, ".venv", "bin", "python");
-  if (existsSync(venvPython)) return { command: venvPython, args: ["-m", "preppy.cli"] };
+  const python = findExistingPythonExecutable({ pythonRoot });
+  if (python) return { command: python, args: ["-m", "preppy.cli"] };
 
   return { command: "uv", args: ["run", "python", "-m", "preppy.cli"] };
 }
@@ -67,7 +60,7 @@ function spawnPreppy(inputPath: string, outputPath: string) {
   const { command, args } = pythonCommand(pythonRoot);
   const childArgs = [...args, inputPath, "-o", outputPath, "--overwrite", "--json"];
   const pathParts = [
-    join(pythonRoot, ".bundle", bundledRuntimeName(), "runtime", "bin"),
+    ...pythonRuntimeBinDirs(pythonRoot),
     process.env.PATH || "",
     "/opt/homebrew/bin",
     "/usr/local/bin",
@@ -80,7 +73,7 @@ function spawnPreppy(inputPath: string, outputPath: string) {
       cwd: pythonRoot,
       env: {
         ...process.env,
-        PATH: pathParts.join(":"),
+        PATH: pathParts.join(pathListSeparator()),
         PYTHONPATH: join(pythonRoot, "src"),
         PYTHONDONTWRITEBYTECODE: "1",
         PYTHONUNBUFFERED: "1",
