@@ -1,6 +1,7 @@
 import type { AiProviderId, AppSettings, ProviderModel } from "../shared/settings-types";
 import { modelSupportsVision } from "../shared/vision-models";
 import { type AiChatClient, type ChatMessage, type ChatParams, OpenAICompatibleClient, parseJsonFromText } from "./openai-compatible-client";
+import { providerConfigurationError, providerHttpError, providerNetworkError, providerTimeoutError } from "./provider-error";
 
 type ProviderClientSettings = {
   provider: AiProviderId;
@@ -51,9 +52,9 @@ class AnthropicClient implements AiChatClient {
   }
 
   async listModels(): Promise<ProviderModel[]> {
-    if (!this.settings.apiKey) throw new Error("Claude API key is not configured");
+    if (!this.settings.apiKey) throw providerConfigurationError("Claude", undefined, "Claude API key is not configured");
     const response = await fetch(this.url("/v1/models"), { headers: this.headers() });
-    if (!response.ok) throw new Error(`Model list failed: ${response.status} ${(await response.text()).replace(/\s+/g, " ").slice(0, 700)}`);
+    if (!response.ok) throw await providerHttpError(response, "Claude", undefined, "Model list failed");
     const data = (await response.json()) as { data?: Array<{ id: string; created_at?: string }> };
     return (data.data || []).map((model) => ({ id: model.id, supportsVision: modelSupportsVision("anthropic", model.id) }));
   }
@@ -74,8 +75,8 @@ class AnthropicClient implements AiChatClient {
     timeoutMs?: number;
   }) {
     const model = params.model || this.settings.model;
-    if (!this.settings.apiKey) throw new Error("Claude API key is not configured");
-    if (!model) throw new Error("Model is not selected");
+    if (!this.settings.apiKey) throw providerConfigurationError("Claude", model, "Claude API key is not configured");
+    if (!model) throw providerConfigurationError("Claude", model, "Model is not selected");
 
     let response: Response;
     try {
@@ -109,7 +110,7 @@ class AnthropicClient implements AiChatClient {
     } catch (error) {
       throw normalizeProviderError(error, "Claude", model, params.timeoutMs);
     }
-    if (!response.ok) throw new Error(`AI provider HTTP ${response.status}: ${(await response.text()).replace(/\s+/g, " ").slice(0, 700)}`);
+    if (!response.ok) throw await providerHttpError(response, "Claude", model);
     const data = (await response.json()) as { content?: Array<{ type?: string; text?: string }> };
     const content = (data.content || []).filter((part) => part.type === "text" && part.text).map((part) => part.text).join("\n").trim();
     if (!content) throw new Error(`AI provider returned an empty image explanation for model ${model}`);
@@ -118,8 +119,8 @@ class AnthropicClient implements AiChatClient {
 
   private async chat(params: ChatParams) {
     const model = params.model || this.settings.model;
-    if (!this.settings.apiKey) throw new Error("Claude API key is not configured");
-    if (!model) throw new Error("Model is not selected");
+    if (!this.settings.apiKey) throw providerConfigurationError("Claude", model, "Claude API key is not configured");
+    if (!model) throw providerConfigurationError("Claude", model, "Model is not selected");
 
     const system = params.messages.filter((message) => message.role === "system").map((message) => message.content).join("\n\n");
     const messages = coalesceAnthropicMessages(params.messages.filter((message) => message.role !== "system"));
@@ -140,7 +141,7 @@ class AnthropicClient implements AiChatClient {
     } catch (error) {
       throw normalizeProviderError(error, "Claude", model, params.timeoutMs);
     }
-    if (!response.ok) throw new Error(`AI provider HTTP ${response.status}: ${(await response.text()).replace(/\s+/g, " ").slice(0, 700)}`);
+    if (!response.ok) throw await providerHttpError(response, "Claude", model);
     const data = (await response.json()) as { content?: Array<{ type?: string; text?: string }> };
     const content = (data.content || []).filter((part) => part.type === "text" && part.text).map((part) => part.text).join("\n").trim();
     if (!content) throw new Error(`AI provider returned an empty message for model ${model}`);
@@ -163,9 +164,9 @@ class GeminiClient implements AiChatClient {
   }
 
   async listModels(): Promise<ProviderModel[]> {
-    if (!this.settings.apiKey) throw new Error("Gemini API key is not configured");
+    if (!this.settings.apiKey) throw providerConfigurationError("Gemini", undefined, "Gemini API key is not configured");
     const response = await fetch(this.url("/models"), { headers: this.headers() });
-    if (!response.ok) throw new Error(`Model list failed: ${response.status} ${(await response.text()).replace(/\s+/g, " ").slice(0, 700)}`);
+    if (!response.ok) throw await providerHttpError(response, "Gemini", undefined, "Model list failed");
     const data = (await response.json()) as { models?: Array<{ name?: string; displayName?: string; supportedGenerationMethods?: string[] }> };
     return (data.models || [])
       .filter((model) => !model.supportedGenerationMethods || model.supportedGenerationMethods.includes("generateContent"))
@@ -192,8 +193,8 @@ class GeminiClient implements AiChatClient {
     timeoutMs?: number;
   }) {
     const model = params.model || this.settings.model;
-    if (!this.settings.apiKey) throw new Error("Gemini API key is not configured");
-    if (!model) throw new Error("Model is not selected");
+    if (!this.settings.apiKey) throw providerConfigurationError("Gemini", model, "Gemini API key is not configured");
+    if (!model) throw providerConfigurationError("Gemini", model, "Model is not selected");
 
     let response: Response;
     try {
@@ -222,7 +223,7 @@ class GeminiClient implements AiChatClient {
     } catch (error) {
       throw normalizeProviderError(error, "Gemini", model, params.timeoutMs);
     }
-    if (!response.ok) throw new Error(`AI provider HTTP ${response.status}: ${(await response.text()).replace(/\s+/g, " ").slice(0, 700)}`);
+    if (!response.ok) throw await providerHttpError(response, "Gemini", model);
     const data = (await response.json()) as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
     const content = data.candidates?.[0]?.content?.parts?.map((part) => part.text || "").join("\n").trim() || "";
     if (!content) throw new Error(`AI provider returned an empty image explanation for model ${model}`);
@@ -231,8 +232,8 @@ class GeminiClient implements AiChatClient {
 
   private async chat(params: ChatParams, jsonMode: boolean) {
     const model = params.model || this.settings.model;
-    if (!this.settings.apiKey) throw new Error("Gemini API key is not configured");
-    if (!model) throw new Error("Model is not selected");
+    if (!this.settings.apiKey) throw providerConfigurationError("Gemini", model, "Gemini API key is not configured");
+    if (!model) throw providerConfigurationError("Gemini", model, "Model is not selected");
     const system = params.messages.filter((message) => message.role === "system").map((message) => message.content).join("\n\n");
     const contents = params.messages.filter((message) => message.role !== "system").map((message) => ({
       role: message.role === "assistant" ? "model" : "user",
@@ -259,7 +260,7 @@ class GeminiClient implements AiChatClient {
     } catch (error) {
       throw normalizeProviderError(error, "Gemini", model, params.timeoutMs);
     }
-    if (!response.ok) throw new Error(`AI provider HTTP ${response.status}: ${(await response.text()).replace(/\s+/g, " ").slice(0, 700)}`);
+    if (!response.ok) throw await providerHttpError(response, "Gemini", model);
     const data = (await response.json()) as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
     const content = data.candidates?.[0]?.content?.parts?.map((part) => part.text || "").join("\n").trim() || "";
     if (!content) throw new Error(`AI provider returned an empty message for model ${model}`);
@@ -285,7 +286,7 @@ function coalesceAnthropicMessages(messages: ChatMessage[]) {
 function normalizeProviderError(error: unknown, provider: string, model: string, timeoutMs?: number) {
   const name = (error as { name?: string })?.name;
   if (name === "TimeoutError" || name === "AbortError") {
-    return new Error(`AI provider request timed out after ${Math.round((timeoutMs ?? 120000) / 1000)}s for ${provider} model ${model}`);
+    return providerTimeoutError(provider, model, timeoutMs ?? 120000);
   }
-  return new Error(`AI provider request failed: ${(error as Error)?.message || String(error)}`);
+  return providerNetworkError(error, provider, model);
 }

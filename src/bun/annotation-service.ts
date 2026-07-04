@@ -1,6 +1,6 @@
 import type { AiChatClient } from "./openai-compatible-client";
 import type { CourseArtifactService } from "./course-artifact-service";
-import { deleteMaterialAnnotation, getMaterialAnnotation, saveMaterialAnnotation } from "./annotation-store";
+import { deleteMaterialAnnotation, getMaterialAnnotation, saveMaterialAnnotation, updateMaterialAnnotationResult } from "./annotation-store";
 import { writeMaterialAnnotationsSnapshot } from "./project-bundle-sync";
 import type {
   ImageLookupItem,
@@ -9,6 +9,8 @@ import type {
   LookupSourceMeta,
   MaterialAnnotationKind,
   MaterialArtifacts,
+  NoteResult,
+  HighlightResult,
   SourceChunk,
 } from "../shared/artifact-types";
 import type { AppSettings } from "../shared/settings-types";
@@ -33,8 +35,13 @@ type SaveLookupInput = {
   anchorMessageId?: string | null;
   kind: MaterialAnnotationKind;
   selectedText: string;
-  result: LookupResult | ImageLookupResult;
+  result: LookupResult | ImageLookupResult | NoteResult | HighlightResult;
   sourceMeta: LookupSourceMeta[];
+};
+
+type UpdateNoteInput = {
+  annotationId: string;
+  note: string;
 };
 
 type WikipediaSummary = {
@@ -45,13 +52,44 @@ type WikipediaSummary = {
   originalimage?: { source?: string; width?: number; height?: number };
 };
 
+type WikipediaLang = "en" | "ko";
+
 type WikipediaLookup = {
-  lang: "en";
+  lang: WikipediaLang;
   title: string;
   extract: string;
   pageUrl: string;
   thumbnail?: WikipediaSummary["thumbnail"];
   originalimage?: WikipediaSummary["originalimage"];
+};
+
+type WikipediaSearchPage = {
+  pageid?: number;
+  title?: string;
+};
+
+type WikipediaPageInfo = {
+  pageid?: number;
+  title?: string;
+  missing?: unknown;
+  langlinks?: Array<{ lang?: string; title?: string }>;
+  pageprops?: { wikibase_item?: string };
+};
+
+type WikipediaQueryPagesResponse = {
+  query?: { pages?: Record<string, WikipediaPageInfo> };
+};
+
+type WikidataEntitiesResponse = {
+  entities?: Record<string, {
+    sitelinks?: {
+      enwiki?: { title?: string };
+    };
+  }>;
+};
+
+type WikidataSearchResponse = {
+  search?: Array<{ id?: string; label?: string; description?: string }>;
 };
 
 type WikipediaMediaItem = {
@@ -63,7 +101,6 @@ type WikipediaMediaItem = {
   original?: { source?: string; width?: number; height?: number };
 };
 
-const WIKIPEDIA_LANG = "en";
 const MAX_LOOKUP_IMAGE_BYTES = 1_500_000;
 const MAX_LOOKUP_IMAGE_RESULTS = 3;
 const TERM_RENDERING_RULE = [
@@ -178,7 +215,7 @@ async function fetchJson<T>(url: string, timeoutMs = 10000): Promise<T> {
   const response = await fetch(url, {
     headers: {
       accept: "application/json",
-      "user-agent": "Learnie/0.4.2 desktop learning app",
+      "user-agent": "Learnie/0.4.9 desktop learning app",
     },
     signal: AbortSignal.timeout(timeoutMs),
   });
@@ -198,7 +235,7 @@ async function fetchImageDataUrl(value: string, timeoutMs = 10000): Promise<stri
   const response = await fetch(url.toString(), {
     headers: {
       accept: "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
-      "user-agent": "Learnie/0.4.2 desktop learning app",
+      "user-agent": "Learnie/0.4.9 desktop learning app",
     },
     signal: AbortSignal.timeout(timeoutMs),
   });
@@ -233,7 +270,7 @@ function canonicalLookupText(value: string) {
     .trim();
 }
 
-function wikipediaSearchUrl(lang: "en", query: string) {
+function wikipediaSearchUrl(lang: WikipediaLang, query: string) {
   const url = new URL(`https://${lang}.wikipedia.org/w/api.php`);
   url.searchParams.set("action", "query");
   url.searchParams.set("list", "search");
@@ -244,11 +281,46 @@ function wikipediaSearchUrl(lang: "en", query: string) {
   return url.toString();
 }
 
-function wikipediaSummaryUrl(lang: "en", title: string) {
+function wikipediaTitleInfoUrl(lang: WikipediaLang, title: string) {
+  const url = new URL(`https://${lang}.wikipedia.org/w/api.php`);
+  url.searchParams.set("action", "query");
+  url.searchParams.set("titles", title);
+  url.searchParams.set("prop", "langlinks|pageprops");
+  url.searchParams.set("lllang", "en");
+  url.searchParams.set("redirects", "1");
+  url.searchParams.set("format", "json");
+  url.searchParams.set("origin", "*");
+  return url.toString();
+}
+
+function wikidataEntityUrl(entityId: string) {
+  const url = new URL("https://www.wikidata.org/w/api.php");
+  url.searchParams.set("action", "wbgetentities");
+  url.searchParams.set("ids", entityId);
+  url.searchParams.set("props", "sitelinks");
+  url.searchParams.set("sitefilter", "enwiki");
+  url.searchParams.set("format", "json");
+  url.searchParams.set("origin", "*");
+  return url.toString();
+}
+
+function wikidataEntitySearchUrl(query: string, language: "ko" | "en" = "ko") {
+  const url = new URL("https://www.wikidata.org/w/api.php");
+  url.searchParams.set("action", "wbsearchentities");
+  url.searchParams.set("search", query);
+  url.searchParams.set("language", language);
+  url.searchParams.set("uselang", language);
+  url.searchParams.set("limit", "5");
+  url.searchParams.set("format", "json");
+  url.searchParams.set("origin", "*");
+  return url.toString();
+}
+
+function wikipediaSummaryUrl(lang: WikipediaLang, title: string) {
   return `https://${lang}.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title.replace(/\s+/g, "_"))}`;
 }
 
-function wikipediaMediaListUrl(lang: "en", title: string) {
+function wikipediaMediaListUrl(lang: WikipediaLang, title: string) {
   return `https://${lang}.wikipedia.org/api/rest_v1/page/media-list/${encodeURIComponent(title.replace(/\s+/g, "_"))}`;
 }
 
@@ -279,13 +351,13 @@ function isLikelyDecorativeImage(title: string) {
   return /(?:symbol|icon|logo|question|wikimedia|commons|red\s*rectangle|crystal\s*clear|edit-clear|OOjs|ambox)/i.test(title);
 }
 
-function wikipediaLookupFromSummary(summary: WikipediaSummary, fallbackTitle: string): WikipediaLookup | null {
+function wikipediaLookupFromSummary(lang: WikipediaLang, summary: WikipediaSummary, fallbackTitle: string): WikipediaLookup | null {
   const title = summary.title || fallbackTitle;
   const extract = compactText(summary.extract || "", 1800);
-  const pageUrl = summary.content_urls?.desktop?.page || `https://${WIKIPEDIA_LANG}.wikipedia.org/wiki/${encodeURIComponent(title.replace(/\s+/g, "_"))}`;
+  const pageUrl = summary.content_urls?.desktop?.page || `https://${lang}.wikipedia.org/wiki/${encodeURIComponent(title.replace(/\s+/g, "_"))}`;
   if (!extract && !summary.thumbnail?.source) return null;
   return {
-    lang: WIKIPEDIA_LANG,
+    lang,
     title,
     extract,
     pageUrl,
@@ -306,26 +378,119 @@ function isRelevantWikipediaLookup(query: string, page: WikipediaLookup) {
   );
 }
 
-async function lookupEnglishWikipedia(query: string): Promise<WikipediaLookup | null> {
+function selectedTextLooksKorean(value: string) {
+  return /[가-힣]/u.test(value);
+}
+
+function isPlausibleKoreanSearchHit(query: string, title: string) {
+  const normalizedQuery = canonicalLookupText(query);
+  const normalizedTitle = canonicalLookupText(title);
+  if (!normalizedQuery || !normalizedTitle) return false;
+  if (normalizedTitle === normalizedQuery || normalizedTitle.includes(normalizedQuery)) return true;
+  return normalizedQuery.includes(normalizedTitle) && normalizedTitle.length / normalizedQuery.length >= 0.6;
+}
+
+function firstPage(response: WikipediaQueryPagesResponse) {
+  return Object.values(response.query?.pages || {}).find((page) => !page.missing) || null;
+}
+
+function englishTitleFromPageInfo(page: WikipediaPageInfo | null) {
+  return page?.langlinks?.find((link) => link.lang === "en" && link.title)?.title || null;
+}
+
+async function englishTitleFromWikidata(entityId: string | undefined) {
+  if (!entityId) return null;
+  try {
+    const data = await fetchJson<WikidataEntitiesResponse>(wikidataEntityUrl(entityId));
+    return data.entities?.[entityId]?.sitelinks?.enwiki?.title || null;
+  } catch {
+    return null;
+  }
+}
+
+async function englishTitleFromWikidataSearch(query: string) {
+  try {
+    const data = await fetchJson<WikidataSearchResponse>(wikidataEntitySearchUrl(query, selectedTextLooksKorean(query) ? "ko" : "en"));
+    const ids = data.search?.map((result) => result.id).filter((id): id is string => Boolean(id)) || [];
+    for (const id of ids) {
+      const title = await englishTitleFromWikidata(id);
+      if (title) return title;
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+async function resolveEnglishTitleFromKoreanPage(title: string) {
+  try {
+    const data = await fetchJson<WikipediaQueryPagesResponse>(wikipediaTitleInfoUrl("ko", title));
+    const page = firstPage(data);
+    return englishTitleFromPageInfo(page) || await englishTitleFromWikidata(page?.pageprops?.wikibase_item);
+  } catch {
+    return null;
+  }
+}
+
+async function resolveEnglishWikipediaTitleFromKorean(query: string) {
+  const direct = await resolveEnglishTitleFromKoreanPage(query);
+  if (direct) return direct;
+
+  const wikidata = await englishTitleFromWikidataSearch(query);
+  if (wikidata) return wikidata;
+
+  try {
+    const search = await fetchJson<{ query?: { search?: WikipediaSearchPage[] } }>(wikipediaSearchUrl("ko", query));
+    const titles = search.query?.search
+      ?.map((result) => result.title)
+      .filter((title): title is string => Boolean(title))
+      .filter((title) => isPlausibleKoreanSearchHit(query, title)) || [];
+    for (const title of titles) {
+      const resolved = await resolveEnglishTitleFromKoreanPage(title);
+      if (resolved) return resolved;
+    }
+  } catch {
+    // Fall back to direct English lookup/search.
+  }
+
+  return null;
+}
+
+async function fetchEnglishWikipediaSummary(title: string, query: string, trustedTitle = false) {
+  try {
+    const summary = await fetchJson<WikipediaSummary>(wikipediaSummaryUrl("en", title));
+    const page = wikipediaLookupFromSummary("en", summary, title);
+    if (page && (trustedTitle || isRelevantWikipediaLookup(query, page))) return page;
+  } catch {
+    // Try search below.
+  }
+  return null;
+}
+
+async function lookupWikipedia(query: string): Promise<WikipediaLookup | null> {
   const cleanedQuery = cleanupLookupQuery(query);
   if (!cleanedQuery) return null;
 
-  try {
-    const directSummary = await fetchJson<WikipediaSummary>(wikipediaSummaryUrl(WIKIPEDIA_LANG, cleanedQuery));
-    const directPage = wikipediaLookupFromSummary(directSummary, cleanedQuery);
-    if (directPage && isRelevantWikipediaLookup(cleanedQuery, directPage)) return directPage;
-  } catch {
-    // Fall through to search.
+  const resolvedEnglishTitle = selectedTextLooksKorean(cleanedQuery)
+    ? await resolveEnglishWikipediaTitleFromKorean(cleanedQuery)
+    : null;
+  if (resolvedEnglishTitle) {
+    const resolvedPage = await fetchEnglishWikipediaSummary(resolvedEnglishTitle, cleanedQuery, true);
+    if (resolvedPage) return resolvedPage;
   }
 
+  const directPage = await fetchEnglishWikipediaSummary(cleanedQuery, cleanedQuery);
+  if (directPage) return directPage;
+
   try {
-    const search = await fetchJson<{ query?: { search?: Array<{ title?: string }> } }>(wikipediaSearchUrl(WIKIPEDIA_LANG, cleanedQuery));
+    const searchQuery = resolvedEnglishTitle || cleanedQuery;
+    const search = await fetchJson<{ query?: { search?: WikipediaSearchPage[] } }>(wikipediaSearchUrl("en", searchQuery));
     const titles = search.query?.search?.map((result) => result.title).filter((title): title is string => Boolean(title)) || [];
     for (const title of titles) {
       try {
-        const summary = await fetchJson<WikipediaSummary>(wikipediaSummaryUrl(WIKIPEDIA_LANG, title));
-        const page = wikipediaLookupFromSummary(summary, title);
-        if (page && isRelevantWikipediaLookup(cleanedQuery, page)) return page;
+        const summary = await fetchJson<WikipediaSummary>(wikipediaSummaryUrl("en", title));
+        const page = wikipediaLookupFromSummary("en", summary, title);
+        if (page && (resolvedEnglishTitle || isRelevantWikipediaLookup(cleanedQuery, page))) return page;
       } catch {
         // Try the next English search result.
       }
@@ -429,7 +594,7 @@ function wikipediaFallbackResult(term: string, wiki: WikipediaLookup, reason?: s
     : reason
       ? "요약 모델이 응답하지 못했습니다."
       : "한국어 AI 요약을 사용할 수 없습니다.";
-  const note = `${reasonNote} 아래에는 영어 Wikipedia 요약을 그대로 보여줍니다.`;
+  const note = `${reasonNote} 아래에는 Wikipedia (${wiki.lang}) 요약을 그대로 보여줍니다.`;
   return {
     kind: "lookup",
     title: wiki.title,
@@ -469,7 +634,7 @@ export class AnnotationService {
     const term = normalizeSelectedText(input.selectedText);
     if (!term) throw new Error("Selected text is empty");
 
-    const wiki = await lookupEnglishWikipedia(term);
+    const wiki = await lookupWikipedia(term);
     if (wiki?.extract) {
       try {
         return await this.aiSummarizeWikipediaLookup(term, wiki);
@@ -487,12 +652,12 @@ export class AnnotationService {
     const term = normalizeSelectedText(input.selectedText);
     if (!term) throw new Error("Selected text is empty");
 
-    const wiki = await lookupEnglishWikipedia(term);
+    const wiki = await lookupWikipedia(term);
     const images = wiki ? await wikipediaImageItems(wiki) : [];
 
     return {
       kind: "image",
-      title: images.length ? `Image result for ${term}` : "No image result",
+      title: images.length && wiki ? `Image result for ${wiki.title}` : "No image result",
       query: term,
       provider: "wikipedia",
       images,
@@ -517,6 +682,16 @@ export class AnnotationService {
     });
     await writeMaterialAnnotationsSnapshot(saved.materialId);
     return saved;
+  }
+
+  async updateNote(input: UpdateNoteInput) {
+    const existing = getMaterialAnnotation(input.annotationId);
+    if (!existing) throw new Error("Annotation not found");
+    if (existing.kind !== "note") throw new Error("Only note annotations can be edited");
+    const updated = updateMaterialAnnotationResult(input.annotationId, { kind: "note", note: input.note.slice(0, 5000) });
+    if (!updated) throw new Error("Annotation update failed");
+    await writeMaterialAnnotationsSnapshot(updated.materialId);
+    return updated;
   }
 
   async delete(annotationId: string) {
@@ -586,9 +761,10 @@ export class AnnotationService {
 
     const prompt = [
       `Selected term: ${term}`,
-      `English Wikipedia title: ${wiki.title}`,
-      `English Wikipedia URL: ${wiki.pageUrl}`,
-      `English Wikipedia extract:\n${wiki.extract}`,
+      `Wikipedia language: ${wiki.lang}`,
+      `Wikipedia title: ${wiki.title}`,
+      `Wikipedia URL: ${wiki.pageUrl}`,
+      `Wikipedia extract:\n${wiki.extract}`,
     ].filter(Boolean).join("\n\n");
 
     const body = await client.chatText({
@@ -603,7 +779,7 @@ export class AnnotationService {
           content: [
             "You are Learnie, a Korean learning assistant.",
             "Write a deeper lookup note, not a one-line definition.",
-            "Use the English Wikipedia extract as the factual basis and explain the selected term in Korean.",
+            "Use the Wikipedia extract as the factual basis and explain the selected term in Korean.",
             TERM_RENDERING_RULE,
             "Structure the answer as separated short paragraphs.",
             "The first paragraph must be the most important takeaway: one compact paragraph explaining the core meaning and why it matters.",

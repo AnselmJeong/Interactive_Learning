@@ -90,15 +90,16 @@ def build(
     json_output: bool = typer.Option(False, "--json", help="Print a machine-readable JSON summary instead of a Rich report."),
 ) -> None:
     """Convert a PDF or EPUB book into an Interactive_Learning-ready source pack."""
+    output_console = Console(stderr=json_output)
     input_type = _detect_input_type(input_path)
     if output is None:
         output = Path("output")
 
     if output.exists() and not overwrite:
-        console.print(f"[bold red]Output already exists: {output}. Use --overwrite to replace it.[/bold red]")
+        output_console.print(f"[bold red]Output already exists: {output}. Use --overwrite to replace it.[/bold red]")
         raise typer.Exit(code=1)
 
-    with console.status(f"[bold green]Converting {input_path.name}...[/bold green]", spinner="dots12"):
+    with output_console.status(f"[bold green]Converting {input_path.name}...[/bold green]", spinner="dots12"):
         document = _run_build(
             input_path,
             input_type,
@@ -119,9 +120,9 @@ def build(
     if json_output:
         console.print_json(data=_json_summary(document, output, report))
     else:
-        console.print(f"[bold green]Wrote source pack to {output}[/bold green]")
+        output_console.print(f"[bold green]Wrote source pack to {output}[/bold green]")
         if document.diagnostics is not None:
-            render_diagnostics(document.diagnostics, console)
+            render_diagnostics(document.diagnostics, output_console)
         _print_inspect_issues(report)
 
     has_fatal = document.diagnostics is not None and document.diagnostics.has_fatal_errors

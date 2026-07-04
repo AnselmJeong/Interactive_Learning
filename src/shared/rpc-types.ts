@@ -1,12 +1,14 @@
 import type { RPCSchema } from "electrobun/bun";
 import type {
   ImageLookupResult,
+  HighlightResult,
   LookupResult,
   LookupSourceMeta,
   MaterialAnnotation,
   MaterialAnnotationKind,
   MaterialArtifacts,
   MaterialStatus,
+  NoteResult,
   QualityStatus,
   SourceType,
 } from "./artifact-types";
@@ -128,11 +130,12 @@ export type AppRPC = {
           anchorMessageId?: string | null;
           kind: MaterialAnnotationKind;
           selectedText: string;
-          result: LookupResult | ImageLookupResult;
+          result: LookupResult | ImageLookupResult | NoteResult | HighlightResult;
           sourceMeta: LookupSourceMeta[];
         };
         response: MaterialAnnotation;
       };
+      "annotations.updateNote": { params: { annotationId: string; note: string }; response: MaterialAnnotation };
       "annotations.delete": { params: { annotationId: string }; response: boolean };
       "sessions.list": { params: { materialId: string }; response: SessionSummary[] };
       "sessions.start": { params: { materialId: string; mode: "new" | "continue"; sessionId?: string }; response: { session: SessionSnapshot; context: TutorContext; firstTurn?: TutorTurnOutput } };

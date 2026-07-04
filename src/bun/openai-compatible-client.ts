@@ -1,5 +1,6 @@
 import type { ProviderModel } from "../shared/settings-types";
 import { modelSupportsVision } from "../shared/vision-models";
+import { providerConfigurationError, providerHttpError, providerNetworkError, providerTimeoutError } from "./provider-error";
 
 export type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
 
@@ -49,10 +50,10 @@ export class OpenAICompatibleClient implements AiChatClient {
   }
 
   async listModels(): Promise<ProviderModel[]> {
-    if (!this.settings.apiKey) throw new Error(`${this.providerName()} API key is not configured`);
+    if (!this.settings.apiKey) throw providerConfigurationError(this.providerName(), undefined, `${this.providerName()} API key is not configured`);
     const response = await fetch(this.url("/models"), { headers: this.headers() });
     if (!response.ok) {
-      throw new Error(`Model list failed: ${response.status} ${await response.text()}`);
+      throw await providerHttpError(response, this.providerName(), undefined, "Model list failed");
     }
     const data = (await response.json()) as { data?: Array<{ id: string; created?: number }> };
     return (data.data || []).map((model) => ({
@@ -98,8 +99,8 @@ export class OpenAICompatibleClient implements AiChatClient {
     timeoutMs?: number;
   }) {
     const model = params.model || this.settings.model;
-    if (!this.settings.apiKey) throw new Error(`${this.providerName()} API key is not configured`);
-    if (!model) throw new Error("Model is not selected");
+    if (!this.settings.apiKey) throw providerConfigurationError(this.providerName(), model, `${this.providerName()} API key is not configured`);
+    if (!model) throw providerConfigurationError(this.providerName(), model, "Model is not selected");
 
     const messages: Array<Record<string, unknown>> = [];
     if (params.system) messages.push({ role: "system", content: params.system });
@@ -133,13 +134,13 @@ export class OpenAICompatibleClient implements AiChatClient {
     } catch (error) {
       const name = (error as { name?: string })?.name;
       if (name === "TimeoutError" || name === "AbortError") {
-        throw new Error(`AI provider request timed out after ${Math.round((params.timeoutMs ?? 120000) / 1000)}s for model ${model}`);
+        throw providerTimeoutError(this.providerName(), model, params.timeoutMs ?? 120000);
       }
-      throw new Error(`AI provider request failed: ${(error as Error)?.message || String(error)}`);
+      throw providerNetworkError(error, this.providerName(), model);
     }
 
     if (!response.ok) {
-      throw new Error(`AI provider HTTP ${response.status}: ${(await response.text()).replace(/\s+/g, " ").slice(0, 700)}`);
+      throw await providerHttpError(response, this.providerName(), model);
     }
 
     const data = (await response.json()) as { choices?: Array<{ message?: { content?: string | Array<{ text?: string }> } }> };
@@ -154,8 +155,8 @@ export class OpenAICompatibleClient implements AiChatClient {
     responseFormat?: { type: "json_object" }
   ) {
     const model = params.model || this.settings.model;
-    if (!this.settings.apiKey) throw new Error(`${this.providerName()} API key is not configured`);
-    if (!model) throw new Error("Model is not selected");
+    if (!this.settings.apiKey) throw providerConfigurationError(this.providerName(), model, `${this.providerName()} API key is not configured`);
+    if (!model) throw providerConfigurationError(this.providerName(), model, "Model is not selected");
 
     const body: Record<string, unknown> = {
       model,
@@ -184,13 +185,13 @@ export class OpenAICompatibleClient implements AiChatClient {
     } catch (error) {
       const name = (error as { name?: string })?.name;
       if (name === "TimeoutError" || name === "AbortError") {
-        throw new Error(`AI provider request timed out after ${Math.round((params.timeoutMs ?? 120000) / 1000)}s for model ${model}`);
+        throw providerTimeoutError(this.providerName(), model, params.timeoutMs ?? 120000);
       }
-      throw new Error(`AI provider request failed: ${(error as Error)?.message || String(error)}`);
+      throw providerNetworkError(error, this.providerName(), model);
     }
 
     if (!response.ok) {
-      throw new Error(`AI provider HTTP ${response.status}: ${(await response.text()).replace(/\s+/g, " ").slice(0, 700)}`);
+      throw await providerHttpError(response, this.providerName(), model);
     }
 
     const data = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };

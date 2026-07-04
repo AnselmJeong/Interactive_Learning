@@ -4,6 +4,7 @@ import { CourseArtifactService } from "./course-artifact-service";
 import { SettingsService } from "./settings-service";
 import { AiProviderSettingsService } from "./ai-provider-settings";
 import { createAiProviderClient } from "./ai-provider-client";
+import { isProviderError } from "./provider-error";
 import { dataPath } from "./paths";
 import { writeSessionSnapshot } from "./project-bundle-sync";
 import { classifyProgressionCommand } from "../shared/progression-command";
@@ -22,7 +23,8 @@ const MAX_HISTORY_TURNS = 8;
 const MAX_HISTORY_CHARS = 1200;
 const PREFETCH_PROMPT_VERSION = "tutor-default-continue-v1";
 const PREFETCH_TTL_MS = 20 * 60 * 1000;
-const PREFETCH_CONSUME_WAIT_MS = 100 * 1000;
+const PREFETCH_PROVIDER_TIMEOUT_MS = 120 * 1000;
+const PREFETCH_CONSUME_MAX_WAIT_MS = 100 * 1000;
 const MAX_ACTIVE_PREFETCH_JOBS = 2;
 const TERM_RENDERING_RULE = [
   "TERM RENDERING RULE:",
@@ -93,6 +95,10 @@ type SessionRow = {
   model: string | null;
   created_at: number;
   updated_at: number;
+};
+
+type SessionListRow = SessionRow & {
+  message_count: number;
 };
 
 type MessageRow = {
@@ -499,6 +505,9 @@ function compactError(error: unknown) {
 // A provider connection/timeout failure (as opposed to a recoverable JSON-format problem). These
 // should NOT be retried — we surface them so the learner can resubmit instead of waiting.
 function isProviderConnectionError(error: unknown) {
+  if (isProviderError(error)) {
+    return ["auth", "model", "rate_limit", "server", "timeout", "network", "configuration"].includes(error.kind);
+  }
   const name = (error as { name?: string })?.name || "";
   if (name === "TimeoutError" || name === "AbortError") return true;
   const message = compactError(error).toLowerCase();
@@ -516,6 +525,7 @@ function isProviderConnectionError(error: unknown) {
 function aiFailureSummary(error: unknown) {
   const message = compactError(error);
   if (!message) return "unknown AI failure";
+  if (isProviderError(error)) return `provider ${error.kind} failure: ${message}`;
   if (message.includes("AI provider HTTP")) return `provider request failed: ${message}`;
   if (message.includes("invalid JSON") || message.includes("valid JSON")) return `structured response parse failed: ${message}`;
   if (message.includes("empty message")) return `provider returned empty response: ${message}`;
@@ -525,6 +535,17 @@ function aiFailureSummary(error: unknown) {
 
 function stableHash(value: unknown) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+export function prefetchConsumeWaitMs(
+  prefetchCreatedAt: number,
+  now = Date.now(),
+  maxWaitMs = PREFETCH_CONSUME_MAX_WAIT_MS,
+  providerTimeoutMs = PREFETCH_PROVIDER_TIMEOUT_MS
+) {
+  const elapsedMs = Math.max(0, now - prefetchCreatedAt);
+  const providerRemainingMs = Math.max(0, providerTimeoutMs - elapsedMs + 1000);
+  return Math.min(maxWaitMs, providerRemainingMs);
 }
 
 function sameStringSet(a: string[], b: string[]) {
@@ -540,13 +561,21 @@ export class TutorService {
   private readonly artifacts = new CourseArtifactService();
   private readonly settings = new SettingsService();
   private readonly secrets = new AiProviderSettingsService();
-  private readonly activePrefetches = new Set<string>();
+  private readonly activePrefetches = new Map<string, string>();
+  private readonly chunkModuleMaps = new WeakMap<MaterialArtifacts["coursePlan"], Map<string, CourseModule>>();
 
   constructor(private readonly emitPrefetchStatus?: TutorPrefetchEmitter) {}
 
   async listSessions(materialId: string): Promise<SessionSummary[]> {
     const rows = getDb()
-      .query<SessionRow, [string]>("SELECT * FROM learning_sessions WHERE material_id = ? ORDER BY updated_at DESC")
+      .query<SessionListRow, [string]>(
+        `SELECT s.*, COUNT(m.id) AS message_count
+         FROM learning_sessions s
+         LEFT JOIN learning_messages m ON m.session_id = s.id
+         WHERE s.material_id = ?
+         GROUP BY s.id
+         ORDER BY s.updated_at DESC`
+      )
       .all(materialId);
     let moduleTitles = new Map<string, string>();
     let totalModuleCount = 0;
@@ -607,7 +636,7 @@ export class TutorService {
       if (typedProgressionCommand === "return_to_progress") return this.returnToProgress(sessionId);
       return this.advance(sessionId, "paragraph");
     }
-    const session = this.snapshot(sessionId);
+    const session = this.snapshotHeader(sessionId);
     const inserted = this.insertMessage({
       sessionId,
       role: "user",
@@ -631,7 +660,7 @@ export class TutorService {
   }
 
   async advance(sessionId: string, mode: "chunk" | "paragraph" | "module") {
-    const session = this.snapshot(sessionId);
+    const session = this.snapshotForPlanning(sessionId);
     if (session.status !== "active") throw new Error("This session is not active");
     const artifacts = await this.artifacts.getArtifacts(session.materialId);
 
@@ -661,7 +690,7 @@ export class TutorService {
   }
 
   async returnToProgress(sessionId: string) {
-    const session = this.snapshot(sessionId);
+    const session = this.snapshotForPlanning(sessionId);
     if (session.status !== "active") throw new Error("This session is not active");
     const consumed = await this.tryConsumeDefaultContinue(sessionId, { returning: true });
     if (consumed) {
@@ -680,7 +709,7 @@ export class TutorService {
   }
 
   async selectModule(sessionId: string, moduleId: string) {
-    const session = this.snapshot(sessionId);
+    const session = this.snapshotHeader(sessionId);
     if (session.status !== "active") throw new Error("This session is not active");
     const artifacts = await this.artifacts.getArtifacts(session.materialId);
     const module = this.moduleById(artifacts, moduleId);
@@ -718,10 +747,7 @@ export class TutorService {
 
   private snapshot(sessionId: string): SessionSnapshot {
     const row = this.getSessionRow(sessionId);
-    const messages = getDb()
-      .query<MessageRow, [string]>("SELECT * FROM learning_messages WHERE session_id = ? ORDER BY ordinal ASC")
-      .all(sessionId)
-      .map(toMessage);
+    const messages = this.messagesForSession(sessionId);
     return {
       id: row.id,
       projectId: row.project_id,
@@ -739,11 +765,66 @@ export class TutorService {
     };
   }
 
-  private summary(row: SessionRow, moduleTitles: Map<string, string>, totalModuleCount: number): SessionSummary {
+  private snapshotHeader(sessionId: string): SessionSnapshot {
+    const row = this.getSessionRow(sessionId);
+    return {
+      id: row.id,
+      projectId: row.project_id,
+      materialId: row.material_id,
+      title: row.title,
+      status: row.status,
+      currentModuleId: row.current_module_id,
+      completedModuleIds: jsonArray(row.completed_module_ids_json),
+      currentChunkId: row.current_chunk_id,
+      coveredChunkIds: jsonArray(row.covered_chunk_ids_json),
+      model: row.model || "",
+      messages: [],
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  }
+
+  private snapshotForPlanning(sessionId: string): SessionSnapshot {
+    return {
+      ...this.snapshotHeader(sessionId),
+      messages: this.recentMessages(sessionId, Math.max(MAX_HISTORY_TURNS, 12)),
+    };
+  }
+
+  private messagesForSession(sessionId: string) {
+    return getDb()
+      .query<MessageRow, [string]>("SELECT * FROM learning_messages WHERE session_id = ? ORDER BY ordinal ASC")
+      .all(sessionId)
+      .map(toMessage);
+  }
+
+  private recentMessages(sessionId: string, limit = MAX_HISTORY_TURNS) {
+    return getDb()
+      .query<MessageRow, [string, number]>(
+        `SELECT * FROM learning_messages
+         WHERE session_id = ?
+         ORDER BY ordinal DESC
+         LIMIT ?`
+      )
+      .all(sessionId, limit)
+      .reverse()
+      .map(toMessage);
+  }
+
+  private messageStats(sessionId: string) {
+    const row = getDb()
+      .query<{ count: number; last_message_id: string | null }, [string, string]>(
+        `SELECT COUNT(*) AS count,
+                (SELECT id FROM learning_messages WHERE session_id = ? ORDER BY ordinal DESC LIMIT 1) AS last_message_id
+         FROM learning_messages
+         WHERE session_id = ?`
+      )
+      .get(sessionId, sessionId);
+    return { count: row?.count || 0, lastMessageId: row?.last_message_id || null };
+  }
+
+  private summary(row: SessionListRow, moduleTitles: Map<string, string>, totalModuleCount: number): SessionSummary {
     const completedModuleIds = jsonArray(row.completed_module_ids_json);
-    const messageCount = getDb()
-      .query<{ count: number }, [string]>("SELECT COUNT(*) AS count FROM learning_messages WHERE session_id = ?")
-      .get(row.id)?.count || 0;
     return {
       id: row.id,
       projectId: row.project_id,
@@ -754,7 +835,7 @@ export class TutorService {
       currentModuleTitle: row.current_module_id ? moduleTitles.get(row.current_module_id) || null : null,
       completedModuleCount: completedModuleIds.length,
       totalModuleCount,
-      messageCount,
+      messageCount: row.message_count || 0,
       model: row.model || "",
       createdAt: row.created_at,
       updatedAt: row.updated_at,
@@ -846,7 +927,7 @@ export class TutorService {
   }
 
   private async createTutorTurn(sessionId: string, payload: TurnPayload): Promise<TutorTurnOutput> {
-    const session = this.snapshot(sessionId);
+    const session = this.snapshotForPlanning(sessionId);
     const artifacts = await this.artifacts.getArtifacts(session.materialId);
     const curriculum = this.orderedCurriculum(artifacts);
     const totalChunks = curriculum.length;
@@ -1100,6 +1181,8 @@ export class TutorService {
   // module is owned by it; an unlisted chunk inherits the most recent owning module so the
   // teaching context stays continuous.
   private chunkModuleMap(artifacts: MaterialArtifacts): Map<string, CourseModule> {
+    const cached = this.chunkModuleMaps.get(artifacts.coursePlan);
+    if (cached) return cached;
     const modules = artifacts.coursePlan.modules;
     const map = new Map<string, CourseModule>();
     let last = modules[0];
@@ -1108,6 +1191,7 @@ export class TutorService {
       if (owner) last = owner;
       if (last) map.set(chunk.id, last);
     }
+    this.chunkModuleMaps.set(artifacts.coursePlan, map);
     return map;
   }
 
@@ -1297,7 +1381,7 @@ export class TutorService {
   private async scheduleDefaultContinueAsync(sessionId: string, _reason: "assistant_turn" | "session_loaded") {
     if (this.activePrefetches.has(sessionId) || this.activePrefetches.size >= MAX_ACTIVE_PREFETCH_JOBS) return;
     this.cleanupExpiredPrefetches();
-    const session = this.snapshot(sessionId);
+    const session = this.snapshotForPlanning(sessionId);
     if (session.status !== "active") return;
     const artifacts = await this.artifacts.getArtifacts(session.materialId);
     if (artifacts.sourceChunks.length > 0 && session.coveredChunkIds.length >= artifacts.sourceChunks.length) return;
@@ -1317,7 +1401,7 @@ export class TutorService {
 
     const id = crypto.randomUUID();
     const now = Date.now();
-    const baseLastMessageId = session.messages.at(-1)?.id || null;
+    const stats = this.messageStats(sessionId);
     try {
       getDb()
         .query(
@@ -1332,8 +1416,8 @@ export class TutorService {
           id,
           sessionId,
           session.materialId,
-          session.messages.length,
-          baseLastMessageId,
+          stats.count,
+          stats.lastMessageId,
           plan.baseCurrentChunkId,
           JSON.stringify(plan.baseCoveredChunkIds),
           baseSessionFingerprint,
@@ -1362,7 +1446,7 @@ export class TutorService {
       return;
     }
 
-    this.activePrefetches.add(sessionId);
+    this.activePrefetches.set(sessionId, id);
     try {
       const output = await this.generatePlannedProgressTurn(session, artifacts, plan);
       getDb()
@@ -1375,7 +1459,7 @@ export class TutorService {
         .run(compactError(error), Date.now(), id);
       this.emitPrefetch(this.currentPrefetchStatus(sessionId));
     } finally {
-      this.activePrefetches.delete(sessionId);
+      if (this.activePrefetches.get(sessionId) === id) this.activePrefetches.delete(sessionId);
     }
   }
 
@@ -1386,7 +1470,6 @@ export class TutorService {
   }
 
   private markPrefetchesStale(sessionId: string) {
-    this.activePrefetches.delete(sessionId);
     getDb()
       .query("UPDATE tutor_prefetches SET status = 'stale', updated_at = ? WHERE session_id = ? AND status IN ('queued', 'generating', 'ready')")
       .run(Date.now(), sessionId);
@@ -1395,7 +1478,7 @@ export class TutorService {
 
   private async tryConsumeDefaultContinue(sessionId: string, options: { returning?: boolean } = {}): Promise<TutorTurnOutput | null> {
     this.cleanupExpiredPrefetches();
-    const session = this.snapshot(sessionId);
+    const session = this.snapshotForPlanning(sessionId);
     if (session.status !== "active") return null;
     const artifacts = await this.artifacts.getArtifacts(session.materialId);
     const runtime = await this.prefetchRuntimeFingerprint(artifacts);
@@ -1408,7 +1491,7 @@ export class TutorService {
       )
       .get(sessionId);
     if (row && (row.status === "generating" || row.status === "queued")) {
-      row = await this.waitForPrefetchCompletion(row.id, PREFETCH_CONSUME_WAIT_MS);
+      row = await this.waitForPrefetchCompletion(row.id, prefetchConsumeWaitMs(row.created_at));
     }
     if (!row || !row.output_json) return null;
     const plan = this.planFromPrefetchRow(row);
@@ -1492,7 +1575,7 @@ export class TutorService {
   private commitPlannedTutorTurn(sessionId: string, _artifacts: MaterialArtifacts, plan: PlannedProgressTurn, output: TutorTurnOutput, prefetchId?: string) {
     const db = getDb();
     const commit = db.transaction(() => {
-      const current = this.snapshot(sessionId);
+      const current = this.snapshotHeader(sessionId);
       if (current.status !== "active") throw new Error("This session is not active");
       if (!this.cursorMatchesPlan(current, plan)) throw new Error("Planned tutor turn no longer matches the session cursor");
       db.query(

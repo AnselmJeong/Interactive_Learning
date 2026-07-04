@@ -38,7 +38,6 @@ const PROGRESSION_CHOICES = new Set(["계속해줘", "계속해줘.", "다음 �
 const FINISH_CONFIRMATION_CHOICE = "네, 마칠게요.";
 const FALLBACK_CHOICES = ["힌트를 하나만 더 주세요.", "예시 답변을 하나 보여주세요.", "이 질문을 더 쉽게 다시 물어봐 주세요."];
 const EMPTY_MESSAGES: TutorMessage[] = [];
-const THEME_STORAGE_KEY = "learnie.theme";
 
 function shouldSubmitChatDraft(event: KeyboardEvent<HTMLTextAreaElement>, submitShortcut: ChatSubmitShortcut) {
   if (event.key !== "Enter" || event.nativeEvent.isComposing) return false;
@@ -46,10 +45,9 @@ function shouldSubmitChatDraft(event: KeyboardEvent<HTMLTextAreaElement>, submit
   return (event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey;
 }
 
-function initialTheme(): AppTheme {
-  if (typeof window === "undefined") return "light";
-  const saved = window.localStorage.getItem(THEME_STORAGE_KEY);
-  return saved === "dark" || saved === "light" ? saved : "light";
+function resolveTheme(mode: AppSettings["theme"] | undefined, systemDark: boolean): AppTheme {
+  if (mode === "dark" || mode === "light") return mode;
+  return systemDark ? "dark" : "light";
 }
 
 function normalizeChoiceText(choice: string) {
@@ -468,7 +466,7 @@ export function App({ request }: { request: RpcRequest }) {
   const [models, setModels] = useState<ProviderModel[]>([]);
   const [viewMode, setViewMode] = useState<"chat" | "source">("chat");
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>("sessions");
-  const [theme, setTheme] = useState<AppTheme>(() => initialTheme());
+  const [systemThemeDark, setSystemThemeDark] = useState(false);
   const [selectedModuleId, setSelectedModuleId] = useState<string | null>(null);
   const [composerFocusToken, setComposerFocusToken] = useState(0);
   const tutorSurfaceRef = useRef<HTMLElement | null>(null);
@@ -485,10 +483,29 @@ export function App({ request }: { request: RpcRequest }) {
     answerReadyNotificationPendingRef.current = false;
   }
 
+  const theme = resolveTheme(settings?.theme, systemThemeDark);
+
+  useEffect(() => {
+    const media = window.matchMedia("(prefers-color-scheme: dark)");
+    setSystemThemeDark(media.matches);
+    const onChange = (event: MediaQueryListEvent) => setSystemThemeDark(event.matches);
+    media.addEventListener("change", onChange);
+    return () => media.removeEventListener("change", onChange);
+  }, []);
+
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
-    window.localStorage.setItem(THEME_STORAGE_KEY, theme);
   }, [theme]);
+
+  async function toggleTheme() {
+    const nextTheme: AppSettings["theme"] = theme === "dark" ? "light" : "dark";
+    try {
+      const saved = (await request("settings.updatePublic", { theme: nextTheme })) as AppSettings;
+      setSettings(saved);
+    } catch (error) {
+      setStatus(`Theme update failed: ${(error as Error).message}`);
+    }
+  }
 
   async function refreshProjects() {
     const projects = (await request("projects.list", {})) as ProjectSummary[];
@@ -1215,7 +1232,7 @@ export function App({ request }: { request: RpcRequest }) {
             <button
               type="button"
               className="icon-button theme-toggle"
-              onClick={() => setTheme((current) => (current === "dark" ? "light" : "dark"))}
+              onClick={() => void toggleTheme()}
               title={theme === "dark" ? "Light theme" : "Dark theme"}
               aria-label={theme === "dark" ? "Light theme" : "Dark theme"}
             >

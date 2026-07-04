@@ -40,11 +40,48 @@ function pythonCommand(pythonRoot: string) {
 
 function parsePreppyResult(text: string) {
   if (!text.trim()) return null;
+  const trimmed = text.trim();
   try {
-    return JSON.parse(text.trim()) as PreppyBuildResult;
+    return JSON.parse(trimmed) as PreppyBuildResult;
   } catch {
-    return null;
+    const extracted = extractFirstJsonObject(trimmed);
+    if (!extracted) return null;
+    try {
+      return JSON.parse(extracted) as PreppyBuildResult;
+    } catch {
+      return null;
+    }
   }
+}
+
+function extractFirstJsonObject(text: string) {
+  const start = text.indexOf("{");
+  if (start < 0) return null;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < text.length; index += 1) {
+    const char = text[index]!;
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (char === "\"") {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (char === "{") depth += 1;
+    if (char === "}") {
+      depth -= 1;
+      if (depth === 0) return text.slice(start, index + 1);
+    }
+  }
+  return null;
 }
 
 function preppyFailureMessage(result: PreppyBuildResult, fallback = "Preppy conversion failed.") {

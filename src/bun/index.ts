@@ -23,6 +23,7 @@ const sources = new SourceService();
 const materials = new CourseArtifactService();
 const annotations = new AnnotationService(materials, providerClient);
 const tutor = new TutorService((status) => sendToView("tutor.prefetchStatus", status));
+const MAX_FIGURE_VISION_IMAGE_BYTES = 6_000_000;
 
 void settings.get().then((current) => projects.migrateUnsetProjectRoots(current.projectRootFolder)).catch((error) => {
   console.warn("Failed to migrate project roots", error);
@@ -162,6 +163,9 @@ async function explainFigure(materialId: string, figureId: string, userPrompt?: 
     userPrompt?.trim() ? `Learner request: ${userPrompt.trim()}` : "",
   ].filter(Boolean).join("\n\n");
   const bytes = await readFile(figure.assetPath);
+  if (bytes.length > MAX_FIGURE_VISION_IMAGE_BYTES) {
+    throw new Error("FIGURE_ASSET_TOO_LARGE: 이 그림은 vision 요청으로 보내기에는 너무 큽니다.");
+  }
   const explanation = await client.describeImage({
     image: { mimeType: figure.mimeType, dataBase64: bytes.toString("base64") },
     prompt,
@@ -259,6 +263,7 @@ const rpc = BrowserView.defineRPC<AppRPC>({
       "annotations.lookup": (params) => annotations.lookup(params),
       "annotations.findImages": (params) => annotations.findImages(params),
       "annotations.save": (params) => annotations.save(params),
+      "annotations.updateNote": (params) => annotations.updateNote(params),
       "annotations.delete": ({ annotationId }) => annotations.delete(annotationId),
       "sessions.list": ({ materialId }) => tutor.listSessions(materialId),
       "sessions.start": ({ materialId, mode, sessionId }) => tutor.start(materialId, { mode, sessionId }),

@@ -99,24 +99,16 @@ function resultSourceMeta(result: LookupResult | ImageLookupResult | undefined) 
   return result?.sourceMeta || [];
 }
 
-function useSourceMarks(materialId: string) {
-  const [marks, setMarks] = useState<SourceMark[]>([]);
+function annotationNote(annotation: MaterialAnnotation) {
+  return annotation.result.kind === "note" ? annotation.result.note : "";
+}
 
-  useEffect(() => {
-    try {
-      const parsed = JSON.parse(localStorage.getItem(storageKey(materialId)) || "[]") as SourceMark[];
-      setMarks(Array.isArray(parsed) ? parsed : []);
-    } catch {
-      setMarks([]);
-    }
-  }, [materialId]);
+function legacyMarkKey(mark: SourceMark) {
+  return `${mark.chunkId}:${mark.kind}:${mark.text.replace(/\s+/g, " ").trim().toLowerCase()}:${mark.kind === "note" ? mark.note : ""}`;
+}
 
-  function commit(next: SourceMark[]) {
-    setMarks(next);
-    localStorage.setItem(storageKey(materialId), JSON.stringify(next));
-  }
-
-  return { marks, commit };
+function annotationMarkKey(annotation: MaterialAnnotation) {
+  return `${annotation.chunkId}:${annotation.kind}:${annotation.selectedText.replace(/\s+/g, " ").trim().toLowerCase()}:${annotation.kind === "note" ? annotationNote(annotation) : ""}`;
 }
 
 export function ImmersiveSourceView({
@@ -134,10 +126,10 @@ export function ImmersiveSourceView({
   const [lookupPanel, setLookupPanel] = useState<LookupPanelState | null>(null);
   const [annotations, setAnnotations] = useState<MaterialAnnotation[]>(artifacts.annotations || []);
   const [editingMarkId, setEditingMarkId] = useState<string | null>(null);
-  const { marks, commit } = useSourceMarks(artifacts.manifest.id);
   const chunkRefs = useRef(new Map<string, HTMLElement>());
   const sourceDocRef = useRef<HTMLDivElement | null>(null);
   const selectionTimerRef = useRef<number | null>(null);
+  const markMigrationStartedRef = useRef(new Set<string>());
   const q = normalizeQuery(query);
 
   const enrichedChunks = useMemo(() => {
@@ -153,14 +145,15 @@ export function ImmersiveSourceView({
 
   const searchMatches = useMemo(() => enrichedChunks.filter((item) => item.matchesQuery).slice(0, 20), [enrichedChunks]);
   const marksByChunk = useMemo(() => {
-    const groups = new Map<string, SourceMark[]>();
-    for (const mark of marks) {
-      const group = groups.get(mark.chunkId) || [];
-      group.push(mark);
-      groups.set(mark.chunkId, group);
+    const groups = new Map<string, MaterialAnnotation[]>();
+    for (const annotation of annotations) {
+      if (annotation.kind !== "highlight" && annotation.kind !== "note") continue;
+      const group = groups.get(annotation.chunkId) || [];
+      group.push(annotation);
+      groups.set(annotation.chunkId, group);
     }
     return groups;
-  }, [marks]);
+  }, [annotations]);
   const figuresByChunk = useMemo(() => {
     const groups = new Map<string, typeof artifacts.figures>();
     for (const figure of artifacts.figures || []) {
@@ -176,6 +169,7 @@ export function ImmersiveSourceView({
   const annotationsByChunk = useMemo(() => {
     const groups = new Map<string, MaterialAnnotation[]>();
     for (const annotation of annotations) {
+      if (annotation.kind === "highlight" || annotation.kind === "note") continue;
       const group = groups.get(annotation.chunkId) || [];
       group.push(annotation);
       groups.set(annotation.chunkId, group);
@@ -194,12 +188,55 @@ export function ImmersiveSourceView({
     }
     return groups;
   }, [artifacts.figures, artifacts.sourceChunks]);
-  const noteCount = marks.filter((mark) => mark.kind === "note").length;
-  const highlightCount = marks.filter((mark) => mark.kind === "highlight").length;
+  const noteCount = annotations.filter((annotation) => annotation.kind === "note").length;
+  const highlightCount = annotations.filter((annotation) => annotation.kind === "highlight").length;
 
   useEffect(() => {
     setAnnotations(artifacts.annotations || []);
   }, [artifacts.annotations, artifacts.manifest.id]);
+
+  useEffect(() => {
+    const materialId = artifacts.manifest.id;
+    if (markMigrationStartedRef.current.has(materialId)) return;
+    markMigrationStartedRef.current.add(materialId);
+    let parsed: SourceMark[] = [];
+    try {
+      parsed = JSON.parse(localStorage.getItem(storageKey(materialId)) || "[]") as SourceMark[];
+    } catch {
+      localStorage.removeItem(storageKey(materialId));
+      return;
+    }
+    if (!Array.isArray(parsed) || !parsed.length) return;
+
+    const existing = new Set((artifacts.annotations || []).filter((annotation) => annotation.kind === "highlight" || annotation.kind === "note").map(annotationMarkKey));
+    const pending = parsed.filter((mark) => mark?.chunkId && mark?.text && (mark.kind === "highlight" || mark.kind === "note") && !existing.has(legacyMarkKey(mark)));
+    if (!pending.length) {
+      localStorage.removeItem(storageKey(materialId));
+      return;
+    }
+
+    void (async () => {
+      const failed: SourceMark[] = [];
+      for (const mark of pending) {
+        try {
+          const saved = (await request("annotations.save", {
+            materialId,
+            chunkId: mark.chunkId,
+            kind: mark.kind,
+            selectedText: mark.text,
+            result: mark.kind === "note" ? { kind: "note", note: mark.note || "" } : { kind: "highlight" },
+            sourceMeta: [],
+          })) as MaterialAnnotation;
+          setAnnotations((current) => [saved, ...current.filter((annotation) => annotation.id !== saved.id)]);
+          onAnnotationSaved?.(saved);
+        } catch {
+          failed.push(mark);
+        }
+      }
+      if (failed.length) localStorage.setItem(storageKey(materialId), JSON.stringify(failed));
+      else localStorage.removeItem(storageKey(materialId));
+    })();
+  }, [artifacts.annotations, artifacts.manifest.id, onAnnotationSaved, request]);
 
   useEffect(() => {
     if (sourceProgress?.firstCurrentIndex == null || sourceProgress.firstCurrentIndex < 0) return;
@@ -277,28 +314,42 @@ export function ImmersiveSourceView({
     setSelection(next);
   }
 
-  function addMark(kind: SourceMark["kind"]) {
+  async function addMark(kind: SourceMark["kind"]) {
     if (!selection?.chunkId || !selection.text) return;
-    const mark: SourceMark = {
-      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      chunkId: selection.chunkId,
+    const selected = selection;
+    const saved = (await request("annotations.save", {
+      materialId: artifacts.manifest.id,
+      chunkId: selected.chunkId,
       kind,
-      text: selection.text,
-      note: "",
-      createdAt: Date.now(),
-    };
-    commit([mark, ...marks]);
+      selectedText: selected.text,
+      result: kind === "note" ? { kind: "note", note: "" } : { kind: "highlight" },
+      sourceMeta: [],
+    })) as MaterialAnnotation;
+    setAnnotations((current) => [saved, ...current.filter((annotation) => annotation.id !== saved.id)]);
+    onAnnotationSaved?.(saved);
     setSelection(null);
     window.getSelection()?.removeAllRanges();
-    if (kind === "note") setEditingMarkId(mark.id);
+    if (kind === "note") setEditingMarkId(saved.id);
   }
 
   function updateNote(markId: string, note: string) {
-    commit(marks.map((mark) => (mark.id === markId ? { ...mark, note } : mark)));
+    setAnnotations((current) =>
+      current.map((annotation) =>
+        annotation.id === markId && annotation.kind === "note"
+          ? { ...annotation, result: { kind: "note", note }, updatedAt: Date.now() }
+          : annotation
+      )
+    );
   }
 
-  function removeMark(markId: string) {
-    commit(marks.filter((mark) => mark.id !== markId));
+  async function saveNote(markId: string, note: string) {
+    const saved = (await request("annotations.updateNote", { annotationId: markId, note })) as MaterialAnnotation;
+    setAnnotations((current) => [saved, ...current.filter((annotation) => annotation.id !== saved.id)]);
+    onAnnotationSaved?.(saved);
+  }
+
+  async function removeMark(markId: string) {
+    await removeAnnotation(markId);
     if (editingMarkId === markId) setEditingMarkId(null);
   }
 
@@ -452,7 +503,7 @@ export function ImmersiveSourceView({
                 type="button"
                 className="mark-action"
                 onMouseDown={(event) => event.preventDefault()}
-                onClick={() => addMark("highlight")}
+                onClick={() => void addMark("highlight")}
                 aria-label="표시"
                 title="표시"
               >
@@ -462,7 +513,7 @@ export function ImmersiveSourceView({
                 type="button"
                 className="note-action"
                 onMouseDown={(event) => event.preventDefault()}
-                onClick={() => addMark("note")}
+                onClick={() => void addMark("note")}
                 aria-label="노트"
                 title="노트"
               >
@@ -555,16 +606,17 @@ export function ImmersiveSourceView({
                       <article key={mark.id} className={`source-mark ${mark.kind}`}>
                         <div>
                           {mark.kind === "note" ? <StickyNote size={14} /> : <Highlighter size={14} />}
-                          <p>{mark.text}</p>
-                          <button type="button" onClick={() => removeMark(mark.id)} title="삭제">
+                          <p>{mark.selectedText}</p>
+                          <button type="button" onClick={() => void removeMark(mark.id)} title="삭제">
                             <Trash2 size={14} />
                           </button>
                         </div>
                         {mark.kind === "note" ? (
                           <textarea
-                            value={mark.note}
+                            value={annotationNote(mark)}
                             onFocus={() => setEditingMarkId(mark.id)}
                             onChange={(event) => updateNote(mark.id, event.target.value)}
+                            onBlur={(event) => void saveNote(mark.id, event.target.value)}
                             placeholder="이 대목에 대한 생각을 남기세요"
                             rows={editingMarkId === mark.id ? 3 : 1}
                           />

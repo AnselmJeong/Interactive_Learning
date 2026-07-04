@@ -16,6 +16,7 @@ const DEFAULT_PROVIDERS: AppSettings["providers"] = {
 
 const AI_PROVIDERS: AiProviderId[] = ["ollama", "openai", "anthropic", "gemini"];
 const CHAT_SUBMIT_SHORTCUTS: ChatSubmitShortcut[] = ["enter", "cmd-enter"];
+const THEME_MODES: AppSettings["theme"][] = ["light", "dark", "system"];
 
 export type SettingsPatch = Omit<Partial<AppSettings>, "providers"> & {
   providers?: Partial<AppSettings["providers"]>;
@@ -86,6 +87,7 @@ export function mergeSettingsPatch(current: AppSettings, patch: SettingsPatch): 
 function normalizeSettings(saved: Partial<AppSettings>): AppSettings {
   const provider = AI_PROVIDERS.includes(saved.aiProvider as AiProviderId) ? (saved.aiProvider as AiProviderId) : "ollama";
   const visionProvider = AI_PROVIDERS.includes(saved.visionProvider as AiProviderId) ? (saved.visionProvider as AiProviderId) : provider;
+  const theme = THEME_MODES.includes(saved.theme as AppSettings["theme"]) ? (saved.theme as AppSettings["theme"]) : defaultSettings.theme;
   const chatSubmitShortcut = CHAT_SUBMIT_SHORTCUTS.includes(saved.chatSubmitShortcut as ChatSubmitShortcut)
     ? (saved.chatSubmitShortcut as ChatSubmitShortcut)
     : defaultSettings.chatSubmitShortcut;
@@ -108,6 +110,7 @@ function normalizeSettings(saved: Partial<AppSettings>): AppSettings {
   return {
     ...defaultSettings,
     ...saved,
+    theme,
     aiProvider: provider,
     visionProvider,
     providers,

@@ -167,6 +167,15 @@ export function replaceMaterialAnnotations(materialId: string, annotations: Mate
   replace(annotations);
 }
 
+export function updateMaterialAnnotationResult(annotationId: string, result: AnnotationResult) {
+  const now = Date.now();
+  getDb()
+    .query("UPDATE material_annotations SET result_json = ?, updated_at = ? WHERE id = ?")
+    .run(JSON.stringify(result), now, annotationId);
+  const row = getDb().query<MaterialAnnotationRow, [string]>("SELECT * FROM material_annotations WHERE id = ?").get(annotationId);
+  return row ? rowToAnnotation(row) : null;
+}
+
 export function deleteMaterialAnnotation(annotationId: string) {
   return getDb().query("DELETE FROM material_annotations WHERE id = ?").run(annotationId).changes > 0;
 }

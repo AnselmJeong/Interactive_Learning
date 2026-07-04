@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Image as ImageIcon, Loader2, Sparkles } from "lucide-react";
 import type { SourceFigure } from "../../../shared/artifact-types";
 import { MarkdownContent } from "./MarkdownContent";
@@ -13,6 +13,10 @@ type SourceFigureCardProps = {
   contextChunkIds?: string[];
 };
 
+function userFacingFigureError(message: string) {
+  return message.replace(/^FIGURE_ASSET_MISSING:\s*/, "").replace(/^FIGURE_ASSET_TOO_LARGE:\s*/, "");
+}
+
 function cleanLocator(locator: string) {
   return locator.replace(/^before\s+/i, "").replace(/^document$/i, "").trim();
 }
@@ -21,34 +25,55 @@ function captionFor(figure: SourceFigure) {
   return figure.caption?.trim() || "Figure from source";
 }
 
+const figureDataUrlCache = new Map<string, string>();
+
 export function SourceFigureCard({ figure, materialId, request, compact = false, contextChunkIds = [] }: SourceFigureCardProps) {
   const [busy, setBusy] = useState(false);
   const [imageSrc, setImageSrc] = useState(figure.assetUrl);
   const [imageError, setImageError] = useState("");
   const [explanation, setExplanation] = useState("");
   const [error, setError] = useState("");
+  const fallbackAttemptedRef = useRef(false);
+  const mountedRef = useRef(false);
+  const fallbackCacheKey = `${materialId}:${figure.id}`;
 
   useEffect(() => {
-    let mounted = true;
+    mountedRef.current = true;
+    fallbackAttemptedRef.current = false;
     setImageSrc(figure.assetUrl);
     setImageError("");
-
-    void request("figures.getAsset", { materialId, figureId: figure.id })
-      .then((result) => {
-        if (!mounted) return;
-        const asset = result as { dataUrl?: string };
-        if (asset.dataUrl) setImageSrc(asset.dataUrl);
-      })
-      .catch((err) => {
-        if (!mounted) return;
-        const message = (err as Error).message || String(err);
-        setImageError(message.replace(/^FIGURE_ASSET_MISSING:\s*/, "") || "그림 파일을 불러오지 못했습니다.");
-      });
-
     return () => {
-      mounted = false;
+      mountedRef.current = false;
     };
-  }, [figure.assetUrl, figure.id, materialId, request]);
+  }, [fallbackCacheKey, figure.assetUrl]);
+
+  async function loadFallbackAsset() {
+    if (fallbackAttemptedRef.current) {
+      setImageError("그림 파일을 불러오지 못했습니다.");
+      return;
+    }
+    fallbackAttemptedRef.current = true;
+    const cached = figureDataUrlCache.get(fallbackCacheKey);
+    if (cached) {
+      setImageSrc(cached);
+      return;
+    }
+
+    try {
+      const result = (await request("figures.getAsset", { materialId, figureId: figure.id })) as { dataUrl?: string };
+      if (!mountedRef.current) return;
+      if (!result.dataUrl) {
+        setImageError("그림 파일을 불러오지 못했습니다.");
+        return;
+      }
+      figureDataUrlCache.set(fallbackCacheKey, result.dataUrl);
+      setImageSrc(result.dataUrl);
+    } catch (err) {
+      if (!mountedRef.current) return;
+      const message = (err as Error).message || String(err);
+      setImageError(userFacingFigureError(message) || "그림 파일을 불러오지 못했습니다.");
+    }
+  }
 
   async function explain() {
     if (busy) return;
@@ -62,7 +87,7 @@ export function SourceFigureCard({ figure, materialId, request, compact = false,
       setError(
         message.includes("VISION_MODEL_REQUIRED")
           ? "이 그림 설명에는 vision-capable model이 필요합니다. Settings에서 Figure vision model을 선택하세요."
-          : message.replace(/^FIGURE_ASSET_MISSING:\s*/, "")
+          : userFacingFigureError(message)
       );
     } finally {
       setBusy(false);
@@ -82,7 +107,7 @@ export function SourceFigureCard({ figure, materialId, request, compact = false,
             src={imageSrc}
             alt={captionFor(figure)}
             loading="lazy"
-            onError={() => setImageError("그림 파일을 불러오지 못했습니다.")}
+            onError={() => void loadFallbackAsset()}
           />
         )}
       </div>

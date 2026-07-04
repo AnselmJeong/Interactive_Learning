@@ -46,6 +46,13 @@ type LearningSection = {
 
 type SourceTitleForChunk = (chunk: SourceChunk) => string | undefined;
 
+type HeavyMaterialArtifacts = Omit<MaterialArtifacts, "annotations">;
+
+type ArtifactCacheEntry = {
+  updatedAt: number;
+  artifacts: HeavyMaterialArtifacts;
+};
+
 function toMaterial(row: MaterialRow, sourceIds: string[]): MaterialSummary {
   return {
     id: row.id,
@@ -267,6 +274,7 @@ function buildCriticReport(materialId: string, lecturePlan: LecturePlan, visuals
 
 export class CourseArtifactService {
   private readonly sources = new SourceService();
+  private readonly artifactCache = new Map<string, ArtifactCacheEntry>();
 
   private projectRoot(projectId: string) {
     const row = getDb().query<{ root_path: string | null }, [string]>("SELECT root_path FROM projects WHERE id = ?").get(projectId);
@@ -384,6 +392,7 @@ export class CourseArtifactService {
           Date.now(),
           id
         );
+      this.artifactCache.delete(id);
       return this.getSummary(id);
     } catch (error) {
       getDb()
@@ -442,6 +451,16 @@ export class CourseArtifactService {
 
   async getArtifacts(materialId: string): Promise<MaterialArtifacts> {
     const row = this.getRow(materialId);
+    const cached = this.artifactCache.get(materialId);
+    if (cached?.updatedAt === row.updated_at) {
+      return { ...cached.artifacts, annotations: listMaterialAnnotations(materialId) };
+    }
+    const artifacts = await this.loadHeavyArtifacts(row);
+    this.artifactCache.set(materialId, { updatedAt: row.updated_at, artifacts });
+    return { ...artifacts, annotations: listMaterialAnnotations(materialId) };
+  }
+
+  private async loadHeavyArtifacts(row: MaterialRow): Promise<HeavyMaterialArtifacts> {
     if (!row.manifest_path || !row.concept_map_path || !row.course_plan_path || !row.visual_specs_path || !row.source_index_path) {
       throw new Error("Material artifacts are incomplete");
     }
@@ -457,11 +476,27 @@ export class CourseArtifactService {
       readFile(row.visual_specs_path, "utf8").then((raw) => JSON.parse(raw) as VisualSpec[]),
       readFile(row.source_index_path, "utf8").then((raw) => JSON.parse(raw) as Record<string, { sourceId: string; title: string; locator: string }>),
     ]);
-    const sourceChunks = (await Promise.all(this.sourceIds(materialId).map((sourceId) => this.sources.loadChunks(sourceId)))).flat();
+    const sourceChunks = await this.loadMaterialSourceChunks(row);
     const figures = await this.loadMaterialFigures(row);
     const figureIndex = await this.loadMaterialFigureIndex(row, figures);
-    const annotations = listMaterialAnnotations(materialId);
-    return { manifest, conceptMap, coursePlan, lecturePlan, presentationPlan, criticReport, visuals, sourceChunks, sourceIndex, figures, figureIndex, annotations };
+    return { manifest, conceptMap, coursePlan, lecturePlan, presentationPlan, criticReport, visuals, sourceChunks, sourceIndex, figures, figureIndex };
+  }
+
+  private async loadMaterialSourceChunks(row: MaterialRow) {
+    if (row.manifest_path) {
+      const chunksPath = join(dirname(row.manifest_path), "source_chunks.json");
+      try {
+        const chunks = JSON.parse(await readFile(chunksPath, "utf8")) as SourceChunk[];
+        if (Array.isArray(chunks) && chunks.length) return chunks;
+      } catch {
+        // Older materials did not persist source chunks; fall back to current source artifacts.
+      }
+    }
+    const sourceChunks = (await Promise.all(this.sourceIds(row.id).map((sourceId) => this.sources.loadChunks(sourceId)))).flat();
+    if (sourceChunks.length && row.manifest_path) {
+      await writeFile(join(dirname(row.manifest_path), "source_chunks.json"), `${JSON.stringify(sourceChunks, null, 2)}\n`, "utf8").catch(() => undefined);
+    }
+    return sourceChunks;
   }
 
   private async loadMaterialFigures(row: MaterialRow) {
