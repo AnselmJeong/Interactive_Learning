@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { getDb } from "./project-db";
 import { CourseArtifactService } from "./course-artifact-service";
 import { SettingsService } from "./settings-service";
@@ -6,7 +7,7 @@ import { createAiProviderClient } from "./ai-provider-client";
 import { dataPath } from "./paths";
 import { syncProjectRootToDb, writeSessionSnapshot } from "./project-bundle-sync";
 import type { CourseModule, LectureModulePlan, MaterialArtifacts, PresentationModulePlan, SourceChunk, VisualSpec } from "../shared/artifact-types";
-import type { SessionSnapshot, SessionSummary, SourceRef, TutorContentBlock, TutorContext, TutorIntent, TutorMessage, TutorStateUpdate, TutorTurnOutput } from "../shared/tutor-types";
+import type { SessionSnapshot, SessionSummary, SourceRef, TutorContentBlock, TutorContext, TutorIntent, TutorMessage, TutorPrefetchStatus, TutorStateUpdate, TutorTurnOutput } from "../shared/tutor-types";
 
 // "start_module": open the first source chunk of a (new) module with a content summary.
 // "continue_chunk": keep the cursor on the current source chunk and continue teaching it.
@@ -18,6 +19,10 @@ const VALID_INTENTS: TutorIntent[] = ["start", "answer", "question", "off_topic"
 const DIGRESSION_INTENTS = new Set<TutorIntent>(["question", "off_topic", "deeper", "meta_complaint"]);
 const MAX_HISTORY_TURNS = 8;
 const MAX_HISTORY_CHARS = 1200;
+const PREFETCH_PROMPT_VERSION = "tutor-default-continue-v1";
+const PREFETCH_TTL_MS = 20 * 60 * 1000;
+const PREFETCH_CONSUME_WAIT_MS = 100 * 1000;
+const MAX_ACTIVE_PREFETCH_JOBS = 2;
 const PROGRESSION_CHOICES = new Set(["계속해줘", "계속해줘.", "다음 진도로 넘어가주세요.", "다음 대목으로 넘어가주세요.", "다음 문단으로 넘어가주세요.", "다음 모듈로 넘어가주세요.", "진도로 돌아갈게요."]);
 const TERM_RENDERING_RULE = [
   "TERM RENDERING RULE:",
@@ -103,6 +108,50 @@ type MessageRow = {
   state_update_json: string | null;
   created_at: number;
   ordinal: number;
+};
+
+type TutorPrefetchRow = {
+  id: string;
+  session_id: string;
+  material_id: string;
+  kind: "default_continue";
+  status: "queued" | "generating" | "ready" | "consumed" | "stale" | "failed" | "cancelled";
+  base_message_count: number;
+  base_last_message_id: string | null;
+  base_current_chunk_id: string | null;
+  base_covered_chunk_ids_json: string;
+  base_session_fingerprint: string;
+  target_event: PlannedProgressTurn["targetEvent"];
+  target_module_id: string | null;
+  target_chunk_id: string | null;
+  cursor_after_json: string;
+  provider: string;
+  model: string;
+  settings_fingerprint: string;
+  material_fingerprint: string;
+  prompt_version: string;
+  output_json: string | null;
+  error: string | null;
+  created_at: number;
+  updated_at: number;
+  expires_at: number;
+};
+
+type PlannedProgressTurn = {
+  kind: "default_continue";
+  targetEvent: "continue_chunk" | "next_chunk" | "start_module" | "finish_prompt";
+  moduleId: string;
+  baseCurrentChunkId: string | null;
+  baseCoveredChunkIds: string[];
+  targetChunkId: string | null;
+  coveredChunkIdsAfter: string[];
+  completedModuleIdsAfter: string[];
+  cursorAfter: {
+    currentModuleId: string | null;
+    currentChunkId: string | null;
+    coveredChunkIds: string[];
+    completedModuleIds: string[];
+  };
 };
 
 function jsonArray(raw: string | null): string[] {
@@ -437,10 +486,26 @@ function aiFailureSummary(error: unknown) {
   return message;
 }
 
+function stableHash(value: unknown) {
+  return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+function sameStringSet(a: string[], b: string[]) {
+  if (a.length !== b.length) return false;
+  const left = [...a].sort();
+  const right = [...b].sort();
+  return left.every((value, index) => value === right[index]);
+}
+
+type TutorPrefetchEmitter = (status: TutorPrefetchStatus) => void;
+
 export class TutorService {
   private readonly artifacts = new CourseArtifactService();
   private readonly settings = new SettingsService();
   private readonly secrets = new AiProviderSettingsService();
+  private readonly activePrefetches = new Set<string>();
+
+  constructor(private readonly emitPrefetchStatus?: TutorPrefetchEmitter) {}
 
   async listSessions(materialId: string): Promise<SessionSummary[]> {
     const material = this.artifacts.getRow(materialId);
@@ -486,16 +551,27 @@ export class TutorService {
 
     const firstTurn = await this.createTutorTurn(id, { event: "start_module" });
     await this.persistSessionSnapshot(id);
+    this.scheduleDefaultContinue(id, "assistant_turn");
     return { session: this.snapshot(id), context: await this.context(id), firstTurn };
   }
 
   async load(sessionId: string) {
+    this.scheduleDefaultContinue(sessionId, "session_loaded");
     return { session: this.snapshot(sessionId), context: await this.context(sessionId) };
+  }
+
+  async prefetchStatus(sessionId: string): Promise<TutorPrefetchStatus> {
+    return this.currentPrefetchStatus(sessionId);
   }
 
   async sendTurn(sessionId: string, userText: string) {
     const text = userText.trim();
     if (!text) throw new Error("Answer is empty");
+    const typedProgressionCommand = PROGRESSION_CHOICES.has(text) || (text.length <= 40 && !/[?？]/u.test(text) && classifyIntent(text, "user_message") === "satisfied");
+    if (typedProgressionCommand) {
+      if (text.includes("돌아")) return this.returnToProgress(sessionId);
+      return this.advance(sessionId, "paragraph");
+    }
     const session = this.snapshot(sessionId);
     const ordinal = session.messages.length;
     this.insertMessage({
@@ -510,6 +586,7 @@ export class TutorService {
     try {
       const output = await this.createTutorTurn(sessionId, { event: "user_message", userText: text });
       await this.persistSessionSnapshot(sessionId);
+      if (output.stateUpdate.turnMode !== "digress") this.scheduleDefaultContinue(sessionId, "assistant_turn");
       return { session: this.snapshot(sessionId), context: await this.context(sessionId), output };
     } catch (error) {
       // Kill the failed turn: drop the dangling user message so the learner can resubmit cleanly
@@ -531,29 +608,18 @@ export class TutorService {
     if (!focusChunk) throw new Error("No current source chunk is available");
 
     if (mode === "paragraph") {
-      if (curriculum.length > 0 && covered.size >= curriculum.length) {
-        const output = await this.createTutorTurn(sessionId, { event: "continue_chunk" });
+      const consumed = await this.tryConsumeDefaultContinue(sessionId);
+      if (consumed) {
         await this.persistSessionSnapshot(sessionId);
-        return { session: this.snapshot(sessionId), context: await this.context(sessionId), output };
+        this.scheduleDefaultContinue(sessionId, "assistant_turn");
+        return { session: this.snapshot(sessionId), context: await this.context(sessionId), output: consumed };
       }
-      if (this.shouldContinueAdvanceToNextChunk(session, focusChunk, curriculum)) {
-        covered.add(focusChunk.id);
-        const index = curriculum.findIndex((chunk) => chunk.id === focusChunk.id);
-        const nextChunk = curriculum[index + 1];
-        if (!nextChunk) {
-          this.persistCursor(sessionId, artifacts, focusChunk.id, [...covered]);
-          const output = this.finishPromptTurn(sessionId, currentModule);
-          await this.persistSessionSnapshot(sessionId);
-          return { session: this.snapshot(sessionId), context: await this.context(sessionId), output };
-        }
-        this.persistCursor(sessionId, artifacts, nextChunk.id, [...covered]);
-        const nextModule = this.ownerModuleOf(artifacts, nextChunk.id);
-        const output = await this.createTutorTurn(sessionId, { event: nextModule.id !== currentModule.id ? "start_module" : "next_chunk" });
-        await this.persistSessionSnapshot(sessionId);
-        return { session: this.snapshot(sessionId), context: await this.context(sessionId), output };
-      }
-      const output = await this.createTutorTurn(sessionId, { event: "continue_chunk" });
+      this.markPrefetchesStale(sessionId);
+      const plan = this.planDefaultContinue(session, artifacts);
+      const output = await this.generatePlannedProgressTurn(session, artifacts, plan);
+      this.commitPlannedTutorTurn(sessionId, artifacts, plan, output);
       await this.persistSessionSnapshot(sessionId);
+      this.scheduleDefaultContinue(sessionId, "assistant_turn");
       return { session: this.snapshot(sessionId), context: await this.context(sessionId), output };
     }
 
@@ -569,22 +635,31 @@ export class TutorService {
     }
 
     if (!nextChunk) {
+      this.markPrefetchesStale(sessionId);
       this.persistCursor(sessionId, artifacts, focusChunk.id, [...covered]);
       const output = this.finishPromptTurn(sessionId, currentModule);
       await this.persistSessionSnapshot(sessionId);
       return { session: this.snapshot(sessionId), context: await this.context(sessionId), output };
     }
 
+    this.markPrefetchesStale(sessionId);
     this.persistCursor(sessionId, artifacts, nextChunk.id, [...covered]);
     const nextModule = this.ownerModuleOf(artifacts, nextChunk.id);
     const output = await this.createTutorTurn(sessionId, { event: nextModule.id !== currentModule.id ? "start_module" : "next_chunk" });
     await this.persistSessionSnapshot(sessionId);
+    this.scheduleDefaultContinue(sessionId, "assistant_turn");
     return { session: this.snapshot(sessionId), context: await this.context(sessionId), output };
   }
 
   async returnToProgress(sessionId: string) {
     const session = this.snapshot(sessionId);
     if (session.status !== "active") throw new Error("This session is not active");
+    const consumed = await this.tryConsumeDefaultContinue(sessionId, { returning: true });
+    if (consumed) {
+      await this.persistSessionSnapshot(sessionId);
+      this.scheduleDefaultContinue(sessionId, "assistant_turn");
+      return { session: this.snapshot(sessionId), context: await this.context(sessionId), output: consumed };
+    }
     const artifacts = await this.artifacts.getArtifacts(session.materialId);
     const curriculum = this.orderedCurriculum(artifacts);
     const covered = new Set(session.coveredChunkIds);
@@ -596,15 +671,18 @@ export class TutorService {
     const nextChunk = index >= 0 ? curriculum[index + 1] : undefined;
 
     if (!nextChunk) {
+      this.markPrefetchesStale(sessionId);
       this.persistCursor(sessionId, artifacts, focusChunk.id, [...covered]);
       const output = this.finishPromptTurn(sessionId, currentModule);
       await this.persistSessionSnapshot(sessionId);
       return { session: this.snapshot(sessionId), context: await this.context(sessionId), output };
     }
 
+    this.markPrefetchesStale(sessionId);
     this.persistCursor(sessionId, artifacts, nextChunk.id, [...covered]);
     const output = await this.createTutorTurn(sessionId, { event: "return_to_progress" });
     await this.persistSessionSnapshot(sessionId);
+    this.scheduleDefaultContinue(sessionId, "assistant_turn");
     return { session: this.snapshot(sessionId), context: await this.context(sessionId), output };
   }
 
@@ -615,6 +693,7 @@ export class TutorService {
     const module = this.moduleById(artifacts, moduleId);
     const firstChunk = this.firstChunkOfModule(artifacts, module);
     if (!firstChunk) throw new Error("This module has no source chunk");
+    this.markPrefetchesStale(sessionId);
     this.persistCursor(sessionId, artifacts, firstChunk.id, session.coveredChunkIds);
     await this.persistSessionSnapshot(sessionId);
     return { session: this.snapshot(sessionId), context: await this.context(sessionId) };
@@ -624,6 +703,7 @@ export class TutorService {
     await this.selectModule(sessionId, moduleId);
     const output = await this.createTutorTurn(sessionId, { event: "start_module" });
     await this.persistSessionSnapshot(sessionId);
+    this.scheduleDefaultContinue(sessionId, "assistant_turn");
     return { session: this.snapshot(sessionId), context: await this.context(sessionId), output };
   }
 
@@ -728,6 +808,21 @@ export class TutorService {
       );
   }
 
+  private insertAssistantTurn(sessionId: string, output: TutorTurnOutput) {
+    this.insertMessage({
+      sessionId,
+      role: "assistant",
+      content: output.message,
+      blocks: output.blocks,
+      moduleId: output.moduleId,
+      sourceRefs: output.sourceRefs,
+      choices: output.choices,
+      visualId: output.diagram,
+      stateUpdate: output.stateUpdate,
+      ordinal: this.snapshot(sessionId).messages.length,
+    });
+  }
+
   private async context(sessionId: string): Promise<TutorContext> {
     const session = this.snapshot(sessionId);
     const artifacts = await this.artifacts.getArtifacts(session.materialId);
@@ -827,11 +922,22 @@ export class TutorService {
       }
     }
 
+    const sanitized = await this.generateTutorTurnDraft(session, artifacts, payload);
+    this.insertAssistantTurn(sessionId, sanitized);
+    return sanitized;
+  }
+
+  private async generateTutorTurnDraft(session: SessionSnapshot, artifacts: MaterialArtifacts, payload: TurnPayload): Promise<TutorTurnOutput> {
+    const curriculum = this.orderedCurriculum(artifacts);
+    const totalChunks = curriculum.length;
+    const covered = new Set(session.coveredChunkIds);
+    const focusChunk = this.currentChunkOf(artifacts, session);
+    const currentModule = this.ownerModuleOf(artifacts, focusChunk?.id);
+    const allComplete = totalChunks > 0 && covered.size >= totalChunks;
+
     // The AI turn is the real product. Retry a couple of times for transient JSON-format issues
     // (the second attempt asks harder for clean JSON). But a provider connection/timeout failure
-    // is NOT retried — retrying just makes the learner wait through several long timeouts. On any
-    // total failure we THROW so sendTurn can kill the turn and let the learner resubmit, rather
-    // than fabricating a canned answer.
+    // is NOT retried — retrying just makes the learner wait through several long timeouts.
     let output: Partial<TutorTurnOutput> | null = null;
     let lastAiError: unknown = null;
     let connectionFailed = false;
@@ -874,26 +980,20 @@ export class TutorService {
       sanitized.choices = ["네, 마칠게요.", "아니요, 더 질문이 있어요."];
     }
 
-    this.insertMessage({
-      sessionId,
-      role: "assistant",
-      content: sanitized.message,
-      blocks: sanitized.blocks,
-      moduleId: sanitized.moduleId,
-      sourceRefs: sanitized.sourceRefs,
-      choices: sanitized.choices,
-      visualId: sanitized.diagram,
-      stateUpdate: sanitized.stateUpdate,
-      ordinal: this.snapshot(sessionId).messages.length,
-    });
     return sanitized;
   }
 
   // The closing turn shown once every source chunk is covered: synthesize lightly and ask whether to
   // finish. It keeps the session active — only an explicit "네, 마칠게요" confirmation ends it.
   private finishPromptTurn(sessionId: string, module: CourseModule): TutorTurnOutput {
+    const turn = this.buildFinishPromptTurn(module);
+    this.insertAssistantTurn(sessionId, turn);
+    return turn;
+  }
+
+  private buildFinishPromptTurn(module: CourseModule): TutorTurnOutput {
     const body = "여기까지 원문의 모든 대목을 함께 살펴봤습니다. 학습을 마칠까요, 아니면 더 짚어 보고 싶은 부분이 있으신가요?";
-    const turn: TutorTurnOutput = {
+    return {
       message: body,
       blocks: [{ type: "bridge", body }],
       diagram: null,
@@ -914,24 +1014,81 @@ export class TutorService {
         turnMode: "synthesize",
       },
     };
-    this.insertMessage({
-      sessionId,
-      role: "assistant",
-      content: turn.message,
-      blocks: turn.blocks,
-      moduleId: turn.moduleId,
-      sourceRefs: turn.sourceRefs,
-      choices: turn.choices,
-      visualId: turn.diagram,
-      stateUpdate: turn.stateUpdate,
-      ordinal: this.snapshot(sessionId).messages.length,
-    });
-    return turn;
   }
 
   // The learner's progression walks semantic source chunks in document order.
   private orderedCurriculum(artifacts: MaterialArtifacts): SourceChunk[] {
     return artifacts.sourceChunks;
+  }
+
+  private planDefaultContinue(session: SessionSnapshot, artifacts: MaterialArtifacts): PlannedProgressTurn {
+    const curriculum = this.orderedCurriculum(artifacts);
+    const covered = new Set(session.coveredChunkIds);
+    const focusChunk = this.currentChunkOf(artifacts, session);
+    if (!focusChunk) throw new Error("No current source chunk is available");
+    const currentModule = this.ownerModuleOf(artifacts, focusChunk.id);
+
+    if (curriculum.length > 0 && covered.size >= curriculum.length) {
+      return this.progressPlan(session, artifacts, "continue_chunk", focusChunk.id, [...covered]);
+    }
+
+    if (this.shouldContinueAdvanceToNextChunk(session, focusChunk, curriculum)) {
+      covered.add(focusChunk.id);
+      const index = curriculum.findIndex((chunk) => chunk.id === focusChunk.id);
+      const nextChunk = curriculum[index + 1];
+      if (!nextChunk) {
+        return this.progressPlan(session, artifacts, "finish_prompt", focusChunk.id, [...covered], currentModule.id);
+      }
+      const nextModule = this.ownerModuleOf(artifacts, nextChunk.id);
+      return this.progressPlan(session, artifacts, nextModule.id !== currentModule.id ? "start_module" : "next_chunk", nextChunk.id, [...covered]);
+    }
+
+    return this.progressPlan(session, artifacts, "continue_chunk", focusChunk.id, [...covered]);
+  }
+
+  private progressPlan(
+    session: SessionSnapshot,
+    artifacts: MaterialArtifacts,
+    targetEvent: PlannedProgressTurn["targetEvent"],
+    targetChunkId: string,
+    coveredChunkIdsAfter: string[],
+    moduleIdOverride?: string
+  ): PlannedProgressTurn {
+    const covered = new Set(coveredChunkIdsAfter);
+    const moduleId = moduleIdOverride || this.ownerModuleOf(artifacts, targetChunkId).id;
+    const completedModuleIds = this.completedModuleIdsFromChunks(artifacts, covered);
+    return {
+      kind: "default_continue",
+      targetEvent,
+      moduleId,
+      baseCurrentChunkId: session.currentChunkId,
+      baseCoveredChunkIds: session.coveredChunkIds,
+      targetChunkId,
+      coveredChunkIdsAfter: [...covered],
+      completedModuleIdsAfter: completedModuleIds,
+      cursorAfter: {
+        currentModuleId: moduleId,
+        currentChunkId: targetChunkId,
+        coveredChunkIds: [...covered],
+        completedModuleIds,
+      },
+    };
+  }
+
+  private plannedSession(session: SessionSnapshot, plan: PlannedProgressTurn): SessionSnapshot {
+    return {
+      ...session,
+      currentModuleId: plan.cursorAfter.currentModuleId,
+      currentChunkId: plan.cursorAfter.currentChunkId,
+      coveredChunkIds: plan.cursorAfter.coveredChunkIds,
+      completedModuleIds: plan.cursorAfter.completedModuleIds,
+    };
+  }
+
+  private async generatePlannedProgressTurn(session: SessionSnapshot, artifacts: MaterialArtifacts, plan: PlannedProgressTurn): Promise<TutorTurnOutput> {
+    const plannedSession = this.plannedSession(session, plan);
+    if (plan.targetEvent === "finish_prompt") return this.buildFinishPromptTurn(this.ownerModuleOf(artifacts, plan.targetChunkId));
+    return this.generateTutorTurnDraft(plannedSession, artifacts, { event: plan.targetEvent });
   }
 
   // Maps every source chunk to the module that should frame it. A chunk explicitly listed by a
@@ -1039,6 +1196,329 @@ export class TutorService {
          WHERE id = ?`
       )
       .run(moduleId, currentChunkId, JSON.stringify([...covered]), JSON.stringify(completedModuleIds), Date.now(), sessionId);
+  }
+
+  private async prefetchRuntimeFingerprint(artifacts: MaterialArtifacts) {
+    const settings = await this.settings.get();
+    if (!settings.tutorPrefetchEnabled) return null;
+    const provider = settings.aiProvider;
+    const model = settings.providers[provider].selectedModel;
+    const key = await this.secrets.getApiKey(provider);
+    if (!model || !key.value) return null;
+    const settingsFingerprint = stableHash({
+      provider,
+      model,
+      baseUrl: settings.providers[provider].baseUrl,
+      tutorLanguage: settings.tutorLanguage,
+    });
+    return {
+      provider,
+      model,
+      settingsFingerprint,
+      materialFingerprint: this.materialFingerprint(artifacts),
+    };
+  }
+
+  private materialFingerprint(artifacts: MaterialArtifacts) {
+    return stableHash({
+      courseId: artifacts.coursePlan.id,
+      title: artifacts.coursePlan.title,
+      modules: artifacts.coursePlan.modules.map((module) => ({
+        id: module.id,
+        title: module.title,
+        sourceChunkIds: module.sourceChunkIds,
+      })),
+      chunks: artifacts.sourceChunks.map((chunk) => ({
+        id: chunk.id,
+        locator: chunk.locator,
+        headingPath: chunk.headingPath,
+        length: chunk.text.length,
+        sample: chunk.text.slice(0, 160),
+      })),
+    });
+  }
+
+  private emitPrefetch(status: TutorPrefetchStatus) {
+    this.emitPrefetchStatus?.(status);
+  }
+
+  private currentPrefetchStatus(sessionId: string): TutorPrefetchStatus {
+    const row = getDb()
+      .query<TutorPrefetchRow, [string]>(
+        `SELECT * FROM tutor_prefetches
+         WHERE session_id = ? AND kind = 'default_continue'
+         ORDER BY updated_at DESC LIMIT 1`
+      )
+      .get(sessionId);
+    if (!row) {
+      return { sessionId, kind: "default_continue", status: "idle", updatedAt: null };
+    }
+    const now = Date.now();
+    const status: TutorPrefetchStatus["status"] = row.expires_at <= now && (row.status === "queued" || row.status === "generating" || row.status === "ready")
+      ? "stale"
+      : row.status === "queued"
+        ? "generating"
+        : row.status === "cancelled"
+          ? "stale"
+          : row.status;
+    return {
+      sessionId,
+      kind: "default_continue",
+      status,
+      targetEvent: row.target_event,
+      updatedAt: row.updated_at,
+      error: row.error,
+    };
+  }
+
+  private sessionFingerprint(session: SessionSnapshot, plan: PlannedProgressTurn, runtime: { settingsFingerprint: string; materialFingerprint: string }) {
+    return stableHash({
+      sessionId: session.id,
+      kind: plan.kind,
+      currentChunkId: plan.baseCurrentChunkId,
+      coveredChunkIds: [...plan.baseCoveredChunkIds].sort(),
+      settingsFingerprint: runtime.settingsFingerprint,
+      materialFingerprint: runtime.materialFingerprint,
+      promptVersion: PREFETCH_PROMPT_VERSION,
+    });
+  }
+
+  private scheduleDefaultContinue(sessionId: string, reason: "assistant_turn" | "session_loaded") {
+    void this.scheduleDefaultContinueAsync(sessionId, reason).catch((error) => {
+      console.warn(`[tutor-prefetch] schedule failed for ${sessionId}: ${compactError(error)}`);
+    });
+  }
+
+  private async scheduleDefaultContinueAsync(sessionId: string, _reason: "assistant_turn" | "session_loaded") {
+    if (this.activePrefetches.has(sessionId) || this.activePrefetches.size >= MAX_ACTIVE_PREFETCH_JOBS) return;
+    this.cleanupExpiredPrefetches();
+    const session = this.snapshot(sessionId);
+    if (session.status !== "active") return;
+    const artifacts = await this.artifacts.getArtifacts(session.materialId);
+    if (artifacts.sourceChunks.length > 0 && session.coveredChunkIds.length >= artifacts.sourceChunks.length) return;
+    const runtime = await this.prefetchRuntimeFingerprint(artifacts);
+    if (!runtime) return;
+    const plan = this.planDefaultContinue(session, artifacts);
+    const baseSessionFingerprint = this.sessionFingerprint(session, plan, runtime);
+    const existing = getDb()
+      .query<TutorPrefetchRow, [string]>(
+        `SELECT * FROM tutor_prefetches
+         WHERE session_id = ? AND kind = 'default_continue' AND status IN ('queued', 'generating', 'ready')
+         ORDER BY updated_at DESC LIMIT 1`
+      )
+      .get(sessionId);
+    if (existing?.base_session_fingerprint === baseSessionFingerprint) return;
+    if (existing) this.markPrefetchesStale(sessionId);
+
+    const id = crypto.randomUUID();
+    const now = Date.now();
+    const baseLastMessageId = session.messages.at(-1)?.id || null;
+    try {
+      getDb()
+        .query(
+          `INSERT INTO tutor_prefetches
+           (id, session_id, material_id, kind, status, base_message_count, base_last_message_id, base_current_chunk_id,
+            base_covered_chunk_ids_json, base_session_fingerprint, target_event, target_module_id, target_chunk_id,
+            cursor_after_json, provider, model, settings_fingerprint, material_fingerprint, prompt_version,
+            created_at, updated_at, expires_at)
+           VALUES (?, ?, ?, 'default_continue', 'generating', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        )
+        .run(
+          id,
+          sessionId,
+          session.materialId,
+          session.messages.length,
+          baseLastMessageId,
+          plan.baseCurrentChunkId,
+          JSON.stringify(plan.baseCoveredChunkIds),
+          baseSessionFingerprint,
+          plan.targetEvent,
+          plan.moduleId,
+          plan.targetChunkId,
+          JSON.stringify(plan.cursorAfter),
+          runtime.provider,
+          runtime.model,
+          runtime.settingsFingerprint,
+          runtime.materialFingerprint,
+          PREFETCH_PROMPT_VERSION,
+          now,
+          now,
+          now + PREFETCH_TTL_MS
+        );
+      this.emitPrefetch({
+        sessionId,
+        kind: "default_continue",
+        status: "generating",
+        targetEvent: plan.targetEvent,
+        updatedAt: now,
+      });
+    } catch (error) {
+      if (!String(error).includes("UNIQUE")) throw error;
+      return;
+    }
+
+    this.activePrefetches.add(sessionId);
+    try {
+      const output = await this.generatePlannedProgressTurn(session, artifacts, plan);
+      getDb()
+        .query("UPDATE tutor_prefetches SET status = 'ready', output_json = ?, updated_at = ? WHERE id = ? AND status = 'generating'")
+        .run(JSON.stringify(output), Date.now(), id);
+      this.emitPrefetch(this.currentPrefetchStatus(sessionId));
+    } catch (error) {
+      getDb()
+        .query("UPDATE tutor_prefetches SET status = 'failed', error = ?, updated_at = ? WHERE id = ? AND status = 'generating'")
+        .run(compactError(error), Date.now(), id);
+      this.emitPrefetch(this.currentPrefetchStatus(sessionId));
+    } finally {
+      this.activePrefetches.delete(sessionId);
+    }
+  }
+
+  private cleanupExpiredPrefetches() {
+    getDb()
+      .query("UPDATE tutor_prefetches SET status = 'stale', updated_at = ? WHERE status IN ('queued', 'generating', 'ready') AND expires_at <= ?")
+      .run(Date.now(), Date.now());
+  }
+
+  private markPrefetchesStale(sessionId: string) {
+    this.activePrefetches.delete(sessionId);
+    getDb()
+      .query("UPDATE tutor_prefetches SET status = 'stale', updated_at = ? WHERE session_id = ? AND status IN ('queued', 'generating', 'ready')")
+      .run(Date.now(), sessionId);
+    this.emitPrefetch(this.currentPrefetchStatus(sessionId));
+  }
+
+  private async tryConsumeDefaultContinue(sessionId: string, options: { returning?: boolean } = {}): Promise<TutorTurnOutput | null> {
+    this.cleanupExpiredPrefetches();
+    const session = this.snapshot(sessionId);
+    if (session.status !== "active") return null;
+    const artifacts = await this.artifacts.getArtifacts(session.materialId);
+    const runtime = await this.prefetchRuntimeFingerprint(artifacts);
+    if (!runtime) return null;
+    let row = getDb()
+      .query<TutorPrefetchRow, [string]>(
+        `SELECT * FROM tutor_prefetches
+         WHERE session_id = ? AND kind = 'default_continue' AND status IN ('ready', 'generating', 'queued')
+         ORDER BY updated_at DESC LIMIT 1`
+      )
+      .get(sessionId);
+    if (row && (row.status === "generating" || row.status === "queued")) {
+      row = await this.waitForPrefetchCompletion(row.id, PREFETCH_CONSUME_WAIT_MS);
+    }
+    if (!row || !row.output_json) return null;
+    const plan = this.planFromPrefetchRow(row);
+    const valid =
+      row.prompt_version === PREFETCH_PROMPT_VERSION &&
+      row.settings_fingerprint === runtime.settingsFingerprint &&
+      row.material_fingerprint === runtime.materialFingerprint &&
+      row.base_session_fingerprint === this.sessionFingerprint(session, plan, runtime) &&
+      this.cursorMatchesPlan(session, plan);
+    if (!valid) {
+      this.markPrefetchRowStale(row.id);
+      return null;
+    }
+
+    try {
+      const output = JSON.parse(row.output_json) as TutorTurnOutput;
+      const finalOutput = options.returning ? this.withReturningBridge(output) : output;
+      this.commitPlannedTutorTurn(sessionId, artifacts, plan, finalOutput, row.id);
+      this.emitPrefetch(this.currentPrefetchStatus(sessionId));
+      return finalOutput;
+    } catch (error) {
+      this.markPrefetchRowStale(row.id);
+      console.warn(`[tutor-prefetch] consume failed for ${sessionId}: ${compactError(error)}`);
+      return null;
+    }
+  }
+
+  private planFromPrefetchRow(row: TutorPrefetchRow): PlannedProgressTurn {
+    const cursorAfter = JSON.parse(row.cursor_after_json) as PlannedProgressTurn["cursorAfter"];
+    return {
+      kind: "default_continue",
+      targetEvent: row.target_event,
+      moduleId: row.target_module_id || cursorAfter.currentModuleId || "",
+      baseCurrentChunkId: row.base_current_chunk_id,
+      baseCoveredChunkIds: jsonArray(row.base_covered_chunk_ids_json),
+      targetChunkId: row.target_chunk_id,
+      coveredChunkIdsAfter: cursorAfter.coveredChunkIds,
+      completedModuleIdsAfter: cursorAfter.completedModuleIds,
+      cursorAfter,
+    };
+  }
+
+  private markPrefetchRowStale(prefetchId: string) {
+    const row = getDb().query<TutorPrefetchRow, [string]>("SELECT * FROM tutor_prefetches WHERE id = ?").get(prefetchId);
+    getDb().query("UPDATE tutor_prefetches SET status = 'stale', updated_at = ? WHERE id = ? AND status IN ('queued', 'generating', 'ready')").run(Date.now(), prefetchId);
+    if (row) this.emitPrefetch(this.currentPrefetchStatus(row.session_id));
+  }
+
+  private async waitForPrefetchCompletion(prefetchId: string, timeoutMs: number): Promise<TutorPrefetchRow | null> {
+    const startedAt = Date.now();
+    while (Date.now() - startedAt < timeoutMs) {
+      const row = getDb().query<TutorPrefetchRow, [string]>("SELECT * FROM tutor_prefetches WHERE id = ?").get(prefetchId);
+      if (!row) return null;
+      if (row.status === "ready" || row.status === "failed" || row.status === "stale" || row.status === "cancelled") return row;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    return getDb().query<TutorPrefetchRow, [string]>("SELECT * FROM tutor_prefetches WHERE id = ?").get(prefetchId) || null;
+  }
+
+  private cursorMatchesPlan(session: SessionSnapshot, plan: PlannedProgressTurn) {
+    return session.currentChunkId === plan.baseCurrentChunkId && sameStringSet(session.coveredChunkIds, plan.baseCoveredChunkIds);
+  }
+
+  private withReturningBridge(output: TutorTurnOutput): TutorTurnOutput {
+    const bridge: TutorContentBlock = {
+      type: "bridge",
+      body: "좋아요. 방금 곁가지는 여기서 잠시 접고, 원래 흐름의 다음 대목으로 돌아가겠습니다.",
+    };
+    const blocks = [bridge, ...(output.blocks || [])];
+    return {
+      ...output,
+      blocks,
+      message: blocksToPlainText(blocks),
+      stateUpdate: {
+        ...output.stateUpdate,
+        conversationMode: "returning",
+      },
+    };
+  }
+
+  private commitPlannedTutorTurn(sessionId: string, _artifacts: MaterialArtifacts, plan: PlannedProgressTurn, output: TutorTurnOutput, prefetchId?: string) {
+    const db = getDb();
+    const commit = db.transaction(() => {
+      const current = this.snapshot(sessionId);
+      if (current.status !== "active") throw new Error("This session is not active");
+      if (!this.cursorMatchesPlan(current, plan)) throw new Error("Prefetch candidate no longer matches the session cursor");
+      db.query(
+        `UPDATE learning_sessions
+         SET current_module_id = ?, current_chunk_id = ?, covered_chunk_ids_json = ?, completed_module_ids_json = ?, status = 'active', updated_at = ?
+         WHERE id = ?`
+      ).run(
+        plan.cursorAfter.currentModuleId,
+        plan.cursorAfter.currentChunkId,
+        JSON.stringify(plan.cursorAfter.coveredChunkIds),
+        JSON.stringify(plan.cursorAfter.completedModuleIds),
+        Date.now(),
+        sessionId
+      );
+      this.insertMessage({
+        sessionId,
+        role: "assistant",
+        content: output.message,
+        blocks: output.blocks,
+        moduleId: output.moduleId,
+        sourceRefs: output.sourceRefs,
+        choices: output.choices,
+        visualId: output.diagram,
+        stateUpdate: output.stateUpdate,
+        ordinal: current.messages.length,
+      });
+      if (prefetchId) {
+        db.query("UPDATE tutor_prefetches SET status = 'consumed', updated_at = ? WHERE id = ?").run(Date.now(), prefetchId);
+      }
+    });
+    commit();
   }
 
   private async aiTutorOutput(

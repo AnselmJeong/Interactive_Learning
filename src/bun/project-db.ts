@@ -103,6 +103,40 @@ export function getDb() {
     CREATE INDEX IF NOT EXISTS idx_learning_messages_session_ordinal
       ON learning_messages(session_id, ordinal ASC);
 
+    CREATE TABLE IF NOT EXISTS tutor_prefetches (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL REFERENCES learning_sessions(id) ON DELETE CASCADE,
+      material_id TEXT NOT NULL REFERENCES learning_materials(id) ON DELETE CASCADE,
+      kind TEXT NOT NULL CHECK (kind IN ('default_continue')),
+      status TEXT NOT NULL CHECK (status IN ('queued', 'generating', 'ready', 'consumed', 'stale', 'failed', 'cancelled')),
+      base_message_count INTEGER NOT NULL,
+      base_last_message_id TEXT,
+      base_current_chunk_id TEXT,
+      base_covered_chunk_ids_json TEXT NOT NULL,
+      base_session_fingerprint TEXT NOT NULL,
+      target_event TEXT NOT NULL,
+      target_module_id TEXT,
+      target_chunk_id TEXT,
+      cursor_after_json TEXT NOT NULL,
+      provider TEXT NOT NULL,
+      model TEXT NOT NULL,
+      settings_fingerprint TEXT NOT NULL,
+      material_fingerprint TEXT NOT NULL,
+      prompt_version TEXT NOT NULL,
+      output_json TEXT,
+      error TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_tutor_prefetches_session_kind_status
+      ON tutor_prefetches(session_id, kind, status, updated_at DESC);
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_tutor_prefetches_unique_ready_base
+      ON tutor_prefetches(session_id, kind, base_session_fingerprint)
+      WHERE status IN ('queued', 'generating', 'ready');
+
     CREATE TABLE IF NOT EXISTS learner_signals (
       id TEXT PRIMARY KEY,
       session_id TEXT NOT NULL REFERENCES learning_sessions(id) ON DELETE CASCADE,

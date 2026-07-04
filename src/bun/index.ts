@@ -22,7 +22,7 @@ const secrets = new AiProviderSettingsService();
 const sources = new SourceService();
 const materials = new CourseArtifactService();
 const annotations = new AnnotationService(materials, providerClient);
-const tutor = new TutorService();
+const tutor = new TutorService((status) => sendToView("tutor.prefetchStatus", status));
 
 void settings.get().then((current) => projects.migrateUnsetProjectRoots(current.projectRootFolder)).catch((error) => {
   console.warn("Failed to migrate project roots", error);
@@ -227,6 +227,7 @@ const rpc = BrowserView.defineRPC<AppRPC>({
       "sessions.load": ({ sessionId }) => tutor.load(sessionId),
       "sessions.advance": ({ sessionId, mode }) => tutor.advance(sessionId, mode),
       "sessions.returnToProgress": ({ sessionId }) => tutor.returnToProgress(sessionId),
+      "sessions.prefetchStatus": ({ sessionId }) => tutor.prefetchStatus(sessionId),
       "sessions.selectModule": ({ sessionId, moduleId }) => tutor.selectModule(sessionId, moduleId),
       "sessions.openModule": ({ sessionId, moduleId }) => tutor.openModule(sessionId, moduleId),
       "tutor.sendTurn": async ({ sessionId, userText }) => {

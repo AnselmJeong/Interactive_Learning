@@ -11,7 +11,7 @@ import type {
   SourceType,
 } from "./artifact-types";
 import type { AiProviderId, AiProviderStatus, AppSettings, ProviderModel, PublicAiProviderUpdate } from "./settings-types";
-import type { SessionSnapshot, SessionSummary, TutorContext, TutorTurnOutput } from "./tutor-types";
+import type { SessionSnapshot, SessionSummary, TutorContext, TutorPrefetchStatus, TutorTurnOutput } from "./tutor-types";
 
 export type ProjectSummary = {
   id: string;
@@ -139,6 +139,7 @@ export type AppRPC = {
       "sessions.load": { params: { sessionId: string }; response: { session: SessionSnapshot; context: TutorContext } };
       "sessions.advance": { params: { sessionId: string; mode: "chunk" | "paragraph" | "module" }; response: { session: SessionSnapshot; context: TutorContext; output: TutorTurnOutput } };
       "sessions.returnToProgress": { params: { sessionId: string }; response: { session: SessionSnapshot; context: TutorContext; output: TutorTurnOutput } };
+      "sessions.prefetchStatus": { params: { sessionId: string }; response: TutorPrefetchStatus };
       "sessions.selectModule": { params: { sessionId: string; moduleId: string }; response: { session: SessionSnapshot; context: TutorContext } };
       "sessions.openModule": { params: { sessionId: string; moduleId: string }; response: { session: SessionSnapshot; context: TutorContext; output: TutorTurnOutput } };
       "tutor.sendTurn": { params: { sessionId: string; userText: string }; response: { session: SessionSnapshot; context: TutorContext; output: TutorTurnOutput } };
@@ -163,6 +164,7 @@ export type AppRPC = {
       "tutor.turnStarted": { sessionId: string };
       "tutor.turnCompleted": { sessionId: string; output: TutorTurnOutput };
       "tutor.turnError": { sessionId: string; error: string };
+      "tutor.prefetchStatus": TutorPrefetchStatus;
       "app.openAbout": {};
     };
   }>;

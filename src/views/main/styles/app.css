@@ -866,6 +866,26 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   font-weight: 780;
   cursor: pointer;
 }
+.progress-actions .continue-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+.progress-actions .continue-button.prefetch-generating {
+  border-color: rgba(167, 125, 18, 0.34);
+  background: rgba(167, 125, 18, 0.08);
+}
+.progress-actions .continue-button.prefetch-ready {
+  border-color: rgba(47, 125, 83, 0.34);
+  background: rgba(47, 125, 83, 0.11);
+  color: #3d7a58;
+}
+.progress-actions .continue-button.prefetch-failed {
+  border-color: rgba(166, 73, 57, 0.28);
+  background: rgba(166, 73, 57, 0.08);
+  color: #a64939;
+}
 .progress-actions button:hover:not(:disabled),
 .completion-actions button:hover:not(:disabled) {
   border-color: rgba(167, 125, 18, 0.38);
@@ -1138,10 +1158,11 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   border: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.72);
   border-radius: 7px;
-  padding: 10px;
+  padding: 10px 11px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 5px 9px;
+  gap: 8px 10px;
+  align-items: start;
   text-align: left;
   cursor: pointer;
 }
@@ -1153,28 +1174,54 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
 .session-row small {
   display: block;
 }
+.session-row-main {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
 .session-row strong {
-  overflow-wrap: anywhere;
   font-size: 14px;
   line-height: 1.35;
+  overflow-wrap: break-word;
 }
 .session-row small {
   color: var(--muted);
   font-size: 12px;
   line-height: 1.35;
 }
-.session-row em {
-  align-self: start;
-  border: 1px solid var(--line);
+.session-status {
+  justify-self: end;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   border-radius: 999px;
-  padding: 3px 8px;
+  padding: 2px 0;
   font-size: 11px;
+  font-weight: 720;
   font-style: normal;
   text-transform: capitalize;
+  white-space: nowrap;
 }
-.session-row em.active { color: var(--accent); border-color: rgba(167, 125, 18, 0.3); background: rgba(167, 125, 18, 0.07); }
-.session-row em.completed { color: var(--accent-2); border-color: rgba(154, 90, 52, 0.28); background: rgba(198, 147, 75, 0.1); }
-.session-row em.archived { color: var(--quiet); }
+.session-status::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: currentColor;
+}
+.session-row-meta {
+  grid-column: 1 / -1;
+  min-width: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+}
+.session-row-meta small {
+  display: inline;
+}
+.session-status.active { color: var(--accent); }
+.session-status.completed { color: var(--accent-2); }
+.session-status.archived { color: var(--quiet); }
 .source-ref-list, .outline-list { display: grid; gap: 10px; }
 .source-ref { border-top: 1px solid var(--line); padding-top: 12px; }
 .source-ref strong, .source-ref small { display: block; }
@@ -2806,6 +2853,20 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   background: #211b14;
   border-color: var(--line-strong);
   color: var(--accent);
+}
+:root[data-theme="dark"] .progress-actions .continue-button.prefetch-generating {
+  background: rgba(214, 172, 79, 0.12);
+  border-color: rgba(214, 172, 79, 0.3);
+}
+:root[data-theme="dark"] .progress-actions .continue-button.prefetch-ready {
+  background: rgba(86, 151, 112, 0.12);
+  border-color: rgba(86, 151, 112, 0.3);
+  color: #86d19f;
+}
+:root[data-theme="dark"] .progress-actions .continue-button.prefetch-failed {
+  background: rgba(201, 94, 76, 0.12);
+  border-color: rgba(201, 94, 76, 0.32);
+  color: #e19a8e;
 }
 :root[data-theme="dark"] .ai-view-panel,
 :root[data-theme="dark"] .source-figure-explanation,

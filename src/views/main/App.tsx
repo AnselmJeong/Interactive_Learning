@@ -4,7 +4,7 @@ import { Archive, BookOpen, Check, Info, Loader2, MessageSquare, Moon, Play, Sen
 import type { MaterialSummary, PreparedSourceImport, ProjectArchiveExport, ProjectSummary, SourceSummary } from "../../shared/rpc-types";
 import type { AppSettings, AiProviderStatus, ChatSubmitShortcut, ProviderModel } from "../../shared/settings-types";
 import type { MaterialAnnotation, MaterialArtifacts } from "../../shared/artifact-types";
-import type { SessionSnapshot, SessionSummary, SourceRef, TutorContext, TutorMessage } from "../../shared/tutor-types";
+import type { SessionSnapshot, SessionSummary, SourceRef, TutorContext, TutorMessage, TutorPrefetchStatus } from "../../shared/tutor-types";
 import { SettingsModal } from "./components/SettingsModal";
 import { VisualRenderer } from "./components/VisualRenderer";
 import { MarkdownContent } from "./components/MarkdownContent";
@@ -68,6 +68,23 @@ function learnerChoices(choices: string[]) {
     })
     .slice(0, 3);
   return exploratory.length ? exploratory : FALLBACK_CHOICES;
+}
+
+function prefetchTargetLabel(status: TutorPrefetchStatus | null) {
+  if (!status?.targetEvent) return "";
+  if (status.targetEvent === "continue_chunk") return "현재 대목의 나머지 설명";
+  if (status.targetEvent === "next_chunk") return "다음 대목";
+  if (status.targetEvent === "start_module") return "다음 모듈";
+  if (status.targetEvent === "finish_prompt") return "마무리";
+  return "";
+}
+
+function continueButtonTitle(status: TutorPrefetchStatus | null) {
+  const target = prefetchTargetLabel(status);
+  if (status?.status === "generating") return target ? `${target}을 미리 준비하고 있습니다.` : "이어질 설명을 미리 준비하고 있습니다.";
+  if (status?.status === "ready") return target ? `${target}이 준비되었습니다.` : "이어질 설명이 준비되었습니다.";
+  if (status?.status === "failed") return "미리 준비하지 못했습니다. 누르면 바로 새로 요청합니다.";
+  return "계속 진행";
 }
 
 function displayableLearningGoal(module: CoursePlanModule) {
@@ -302,6 +319,8 @@ const ChatLog = memo(function ChatLog({
             className={`bubble ${message.role}`}
             data-lookup-chunk-id={lookupChunkId}
             data-lookup-message-id={message.id}
+            data-chat-message-id={message.id}
+            data-chat-role={message.role}
           >
             {message.role === "assistant" && message.blocks?.length ? (
               <TutorBlockRenderer
@@ -417,6 +436,7 @@ export function App({ request }: { request: RpcRequest }) {
   const [expandedSourceMessages, setExpandedSourceMessages] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [tutorThinking, setTutorThinking] = useState(false);
+  const [prefetchStatus, setPrefetchStatus] = useState<TutorPrefetchStatus | null>(null);
   const [status, setStatus] = useState("Ready");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
@@ -431,6 +451,7 @@ export function App({ request }: { request: RpcRequest }) {
   const tutorSurfaceRef = useRef<HTMLElement | null>(null);
   const answerReadyNotificationPendingRef = useRef(false);
   const latestNotifiedAssistantIdRef = useRef<string | null>(null);
+  const latestAlignedAssistantKeyRef = useRef<string | null>(null);
 
   function queueAnswerReadySound() {
     answerReadyNotificationPendingRef.current = true;
@@ -460,6 +481,7 @@ export function App({ request }: { request: RpcRequest }) {
       setArtifacts(null);
       setSession(null);
       setContext(null);
+      setPrefetchStatus(null);
       setSelectedModuleId(null);
       setState((current) => ({ ...current, projects, sources: [], materials: [], sessions: [] }));
     }
@@ -477,6 +499,7 @@ export function App({ request }: { request: RpcRequest }) {
     setArtifacts(null);
     setSession(null);
     setContext(null);
+    setPrefetchStatus(null);
     setSelectedModuleId(null);
   }
 
@@ -485,6 +508,15 @@ export function App({ request }: { request: RpcRequest }) {
     setSettings(nextSettings as AppSettings);
     setProviderStatus(nextStatus as AiProviderStatus);
   }
+
+  const refreshPrefetchStatus = useCallback(async (sessionId: string) => {
+    try {
+      const next = (await request("sessions.prefetchStatus", { sessionId })) as TutorPrefetchStatus;
+      setPrefetchStatus(next);
+    } catch {
+      setPrefetchStatus(null);
+    }
+  }, [request]);
 
   useEffect(() => {
     void refreshProjects();
@@ -522,12 +554,17 @@ export function App({ request }: { request: RpcRequest }) {
     const onTutor = () => setStatus("Tutor is thinking");
     const onTutorDone = () => setStatus("Ready");
     const onTutorError = (event: Event) => setStatus((event as CustomEvent<{ error: string }>).detail.error);
+    const onPrefetchStatus = (event: Event) => {
+      const detail = (event as CustomEvent<TutorPrefetchStatus>).detail;
+      setPrefetchStatus((current) => (session?.id && detail.sessionId !== session.id ? current : detail));
+    };
     const onOpenAbout = () => setAboutOpen(true);
     window.addEventListener("generation-progress", onGeneration);
     window.addEventListener("ingestion-progress", onIngestion);
     window.addEventListener("tutor-started", onTutor);
     window.addEventListener("tutor-completed", onTutorDone);
     window.addEventListener("tutor-error", onTutorError);
+    window.addEventListener("tutor-prefetch-status", onPrefetchStatus);
     window.addEventListener("app-open-about", onOpenAbout);
     return () => {
       window.removeEventListener("generation-progress", onGeneration);
@@ -535,9 +572,18 @@ export function App({ request }: { request: RpcRequest }) {
       window.removeEventListener("tutor-started", onTutor);
       window.removeEventListener("tutor-completed", onTutorDone);
       window.removeEventListener("tutor-error", onTutorError);
+      window.removeEventListener("tutor-prefetch-status", onPrefetchStatus);
       window.removeEventListener("app-open-about", onOpenAbout);
     };
-  }, []);
+  }, [session?.id]);
+
+  useEffect(() => {
+    if (!session?.id) {
+      setPrefetchStatus(null);
+      return;
+    }
+    void refreshPrefetchStatus(session.id);
+  }, [refreshPrefetchStatus, session?.id, session?.updatedAt]);
 
   async function chooseAndImportSources() {
     if (!activeProject) return;
@@ -640,6 +686,7 @@ export function App({ request }: { request: RpcRequest }) {
       setInspectorTab("modules");
       setExpandedSourceMessages(new Set());
       await refreshSessions(materialId);
+      void refreshPrefetchStatus(result.session.id);
       return result;
     } catch (error) {
       cancelAnswerReadySound();
@@ -668,6 +715,7 @@ export function App({ request }: { request: RpcRequest }) {
       setSelectedModuleId(result.session.currentModuleId);
       setInspectorTab("modules");
       setExpandedSourceMessages(new Set());
+      void refreshPrefetchStatus(result.session.id);
     } catch (error) {
       setStatus((error as Error).message);
     } finally {
@@ -678,14 +726,21 @@ export function App({ request }: { request: RpcRequest }) {
   async function sendAnswer(text: string) {
     if (!session || !text.trim()) return false;
     queueAnswerReadySound();
+    const typedProgressionCommand = PROGRESSION_CHOICES.has(text.trim());
+    let thinkingDelay: number | null = null;
     setBusy(true);
-    setTutorThinking(true);
+    if (typedProgressionCommand && prefetchStatus?.status === "ready") {
+      thinkingDelay = window.setTimeout(() => setTutorThinking(true), 300);
+    } else {
+      setTutorThinking(true);
+    }
     try {
       const result = (await request("tutor.sendTurn", { sessionId: session.id, userText: text.trim() })) as { session: SessionSnapshot; context: TutorContext };
       setSession(result.session);
       setContext(result.context);
       setSelectedModuleId(result.session.currentModuleId);
       await refreshSessions(result.session.materialId);
+      void refreshPrefetchStatus(result.session.id);
       return true;
     } catch (error) {
       cancelAnswerReadySound();
@@ -703,6 +758,7 @@ export function App({ request }: { request: RpcRequest }) {
       }
       return false;
     } finally {
+      if (thinkingDelay) window.clearTimeout(thinkingDelay);
       setBusy(false);
       setTutorThinking(false);
     }
@@ -711,18 +767,25 @@ export function App({ request }: { request: RpcRequest }) {
   async function advanceLearning(mode: "paragraph" | "chunk" | "module") {
     if (!session || sessionReadOnly) return;
     queueAnswerReadySound();
+    let thinkingDelay: number | null = null;
     setBusy(true);
-    setTutorThinking(true);
+    if (mode === "paragraph" && prefetchStatus?.status === "ready") {
+      thinkingDelay = window.setTimeout(() => setTutorThinking(true), 300);
+    } else {
+      setTutorThinking(true);
+    }
     try {
       const result = (await request("sessions.advance", { sessionId: session.id, mode })) as { session: SessionSnapshot; context: TutorContext };
       setSession(result.session);
       setContext(result.context);
       setSelectedModuleId(result.session.currentModuleId);
       await refreshSessions(result.session.materialId);
+      void refreshPrefetchStatus(result.session.id);
     } catch (error) {
       cancelAnswerReadySound();
       setStatus(`진행 실패: ${(error as Error).message}`);
     } finally {
+      if (thinkingDelay) window.clearTimeout(thinkingDelay);
       setBusy(false);
       setTutorThinking(false);
     }
@@ -731,18 +794,25 @@ export function App({ request }: { request: RpcRequest }) {
   async function returnToProgress() {
     if (!session || sessionReadOnly) return;
     queueAnswerReadySound();
+    let thinkingDelay: number | null = null;
     setBusy(true);
-    setTutorThinking(true);
+    if (prefetchStatus?.status === "ready") {
+      thinkingDelay = window.setTimeout(() => setTutorThinking(true), 300);
+    } else {
+      setTutorThinking(true);
+    }
     try {
       const result = (await request("sessions.returnToProgress", { sessionId: session.id })) as { session: SessionSnapshot; context: TutorContext };
       setSession(result.session);
       setContext(result.context);
       setSelectedModuleId(result.session.currentModuleId);
       await refreshSessions(result.session.materialId);
+      void refreshPrefetchStatus(result.session.id);
     } catch (error) {
       cancelAnswerReadySound();
       setStatus(`진도 복귀 실패: ${(error as Error).message}`);
     } finally {
+      if (thinkingDelay) window.clearTimeout(thinkingDelay);
       setBusy(false);
       setTutorThinking(false);
     }
@@ -818,6 +888,9 @@ export function App({ request }: { request: RpcRequest }) {
     () => (selectedModuleId ? allSessionMessages.filter((message) => message.moduleId === selectedModuleId) : allSessionMessages),
     [allSessionMessages, selectedModuleId]
   );
+  const latestAssistantForScrollId = useMemo(() => {
+    return [...currentMessages].reverse().find((message) => message.role === "assistant")?.id || null;
+  }, [currentMessages]);
   const sessionReadOnly = session?.status === "completed" || session?.status === "archived";
   const selectedModule = selectedModuleId
     ? context?.moduleOutline.find((item) => item.id === selectedModuleId) || artifacts?.coursePlan.modules.find((module) => module.id === selectedModuleId)
@@ -835,22 +908,33 @@ export function App({ request }: { request: RpcRequest }) {
   const selectedModuleTitle = selectedModule ? displayableOutlineTitle(selectedModule.title) || selectedModule.title : "";
 
   useEffect(() => {
-    if (viewMode !== "chat") return;
+    if (viewMode !== "chat" || !latestAssistantForScrollId) return;
+    const alignmentKey = `${selectedModuleId || "all"}:${latestAssistantForScrollId}`;
+    if (latestAlignedAssistantKeyRef.current === alignmentKey) return;
+    latestAlignedAssistantKeyRef.current = alignmentKey;
     let secondFrame = 0;
-    const scrollToBottom = () => {
+    const alignLatestAssistant = () => {
       const surface = tutorSurfaceRef.current;
       if (!surface) return;
-      surface.scrollTo({ top: surface.scrollHeight, behavior: "auto" });
+      const target = Array.from(surface.querySelectorAll<HTMLElement>("[data-chat-message-id]"))
+        .find((element) => element.dataset.chatMessageId === latestAssistantForScrollId);
+      if (!target) return;
+      const surfaceRect = surface.getBoundingClientRect();
+      const targetRect = target.getBoundingClientRect();
+      const topInset = 42;
+      const nextTop = surface.scrollTop + targetRect.top - surfaceRect.top - topInset;
+      const maxTop = Math.max(0, surface.scrollHeight - surface.clientHeight);
+      surface.scrollTo({ top: Math.max(0, Math.min(nextTop, maxTop)), behavior: "auto" });
     };
     const firstFrame = requestAnimationFrame(() => {
-      scrollToBottom();
-      secondFrame = requestAnimationFrame(scrollToBottom);
+      alignLatestAssistant();
+      secondFrame = requestAnimationFrame(alignLatestAssistant);
     });
     return () => {
       cancelAnimationFrame(firstFrame);
       if (secondFrame) cancelAnimationFrame(secondFrame);
     };
-  }, [currentMessages.length, selectedModuleId, tutorThinking, viewMode]);
+  }, [latestAssistantForScrollId, selectedModuleId, viewMode]);
 
   // Progress is measured in semantic source chunks, not modules: a small source can be a single
   // module of many chunks, so module-based progress would read 0/1 the entire session.
@@ -866,6 +950,19 @@ export function App({ request }: { request: RpcRequest }) {
   const latestAssistant = [...currentMessages].reverse().find((message) => message.role === "assistant");
   const latestAssistantId = latestAssistant?.id || null;
   const canReturnToProgress = !selectedModuleWaiting && (latestAssistant?.stateUpdate?.conversationMode === "detour" || latestAssistant?.stateUpdate?.turnMode === "digress");
+  const continuePrefetchState =
+    prefetchStatus?.status === "generating" || prefetchStatus?.status === "ready" || prefetchStatus?.status === "failed"
+      ? prefetchStatus.status
+      : "idle";
+  const continueButtonClass = `continue-button prefetch-${continuePrefetchState}`;
+  const useReadyReturnButton = canReturnToProgress && continuePrefetchState === "ready";
+  const continueButtonAria = continuePrefetchState === "generating"
+    ? "계속해줘, 이어질 설명 준비 중"
+    : useReadyReturnButton
+      ? "진도로 돌아가기, 이어질 설명 준비됨"
+      : continuePrefetchState === "ready"
+      ? "계속해줘, 이어질 설명 준비됨"
+      : "계속해줘";
 
   useEffect(() => {
     if (!answerReadyNotificationPendingRef.current) return;
@@ -1176,13 +1273,22 @@ export function App({ request }: { request: RpcRequest }) {
                   ) : null}
                   {showProgressActions ? (
                     <div className="progress-actions" aria-label="학습 진행">
-                      {canReturnToProgress ? (
+                      {canReturnToProgress && !useReadyReturnButton ? (
                         <button type="button" onClick={returnToProgress} disabled={busy || selectedModuleWaiting}>
                           진도로 돌아가기
                         </button>
                       ) : null}
-                      <button type="button" onClick={() => advanceLearning("paragraph")} disabled={busy || selectedModuleWaiting}>
-                        계속해줘
+                      <button
+                        type="button"
+                        className={continueButtonClass}
+                        onClick={() => (useReadyReturnButton ? returnToProgress() : advanceLearning("paragraph"))}
+                        disabled={busy || selectedModuleWaiting}
+                        title={useReadyReturnButton ? "원래 진도로 돌아갈 설명이 준비되었습니다." : continueButtonTitle(prefetchStatus)}
+                        aria-label={continueButtonAria}
+                      >
+                        {continuePrefetchState === "generating" ? <Loader2 size={14} className="spin" aria-hidden="true" /> : null}
+                        {continuePrefetchState === "ready" ? <Check size={14} aria-hidden="true" /> : null}
+                        {useReadyReturnButton ? "진도로 돌아가기" : "계속해줘"}
                       </button>
                       <button type="button" onClick={() => advanceLearning("chunk")} disabled={busy || selectedModuleWaiting}>
                         다음 대목으로
@@ -1329,15 +1435,17 @@ export function App({ request }: { request: RpcRequest }) {
                   {state.sessions.length ? (
                     state.sessions.map((item) => (
                       <button key={item.id} className={`session-row ${session?.id === item.id ? "active" : ""}`} onClick={() => loadSession(item.id)} disabled={busy}>
-                        <span>
+                        <span className="session-row-main">
                           <strong>{item.title}</strong>
                           <small>{item.currentModuleTitle || "No current module"}</small>
                         </span>
-                        <em className={item.status}>{item.status}</em>
-                        <small>{new Date(item.updatedAt).toLocaleString()}</small>
-                        <small>
-                          {item.completedModuleCount}/{item.totalModuleCount || "?"} modules · {item.messageCount} messages
-                        </small>
+                        <em className={`session-status ${item.status}`}>{item.status}</em>
+                        <span className="session-row-meta">
+                          <small>{new Date(item.updatedAt).toLocaleString()}</small>
+                          <small>
+                            {item.completedModuleCount}/{item.totalModuleCount || "?"} modules · {item.messageCount} messages
+                          </small>
+                        </span>
                       </button>
                     ))
                   ) : (

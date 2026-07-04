@@ -29,6 +29,7 @@ export const defaultSettings: AppSettings = {
   tutorLanguage: "ko",
   chatSubmitShortcut: "cmd-enter",
   autoAdvanceOnMastery: true,
+  tutorPrefetchEnabled: true,
   showSourceInspector: true,
   answerReadySound: true,
 };

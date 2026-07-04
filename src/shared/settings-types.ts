@@ -26,6 +26,7 @@ export type AppSettings = {
   tutorLanguage: TutorLanguage;
   chatSubmitShortcut: ChatSubmitShortcut;
   autoAdvanceOnMastery: boolean;
+  tutorPrefetchEnabled: boolean;
   showSourceInspector: boolean;
   answerReadySound: boolean;
 };

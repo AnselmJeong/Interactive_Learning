@@ -406,6 +406,10 @@ export function SettingsModal({
             <span>Auto advance on mastery</span>
           </label>
           <label className="toggle-row">
+            <input type="checkbox" checked={draft.tutorPrefetchEnabled} onChange={(event) => updateDraft({ tutorPrefetchEnabled: event.target.checked })} />
+            <span>Prepare next response</span>
+          </label>
+          <label className="toggle-row">
             <input type="checkbox" checked={draft.answerReadySound} onChange={(event) => updateDraft({ answerReadySound: event.target.checked })} />
             <span>Answer ready sound</span>
           </label>
