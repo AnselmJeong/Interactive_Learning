@@ -122,19 +122,20 @@ function cleanBuddyMessage(text: string) {
     .trim();
   if (!compact) throw new Error("AI provider returned an empty buddy message");
   const firstSentence = compact.match(/^.*?[.!?。！？](?=\s|$)/)?.[0]?.trim() || compact;
-  return firstSentence.length > 90 ? `${firstSentence.slice(0, 87).trim()}...` : firstSentence;
+  return firstSentence.length > 120 ? `${firstSentence.slice(0, 117).trim()}...` : firstSentence;
 }
 
 async function generateBuddyMessage(input: BuddyMessageInput) {
   const { client, publicSettings } = await providerClient();
   const moduleTitle = input.currentModuleTitle?.trim();
+  const moduleContext = input.currentModuleContext?.trim();
   const moodGuide: Record<BuddyMessageInput["mood"], string> = {
-    idle: "가벼운 농담이나 짧은 응원",
-    thinking: "기다리는 동안 지루하지 않게 하는 농담",
-    ready: "다음 설명이 준비됐다는 산뜻한 신호",
-    progress: "방금 진도가 나간 것을 알아차린 응원",
-    complete: "마무리를 축하하는 짧은 한마디",
-    quiet: "실패나 대기 상태를 과장하지 않는 차분한 격려",
+    idle: "현재 module 맥락에서 건질 수 있는 짧은 흥미거리",
+    thinking: "기다리는 동안 지루하지 않게 하는 module 관련 작은 관찰",
+    ready: "다음 설명이 준비됐다는 신호와 연결되는 흥미로운 예고",
+    progress: "방금 진도가 나간 내용을 알아차리는 맥락형 한마디",
+    complete: "마무리를 축하하되 module의 핵심 재미를 다시 떠올리는 한마디",
+    quiet: "실패나 대기 상태를 과장하지 않는 차분한 맥락형 격려",
   };
   const text = await client.chatText({
     temperature: 0.95,
@@ -147,9 +148,11 @@ async function generateBuddyMessage(input: BuddyMessageInput) {
         content: [
           "You are Learnie's tiny learning buddy, a playful companion inside a study workspace.",
           "Generate exactly one fresh Korean sentence for a speech bubble.",
-          "The sentence should either lightly refresh the mood with a harmless study joke or motivate the learner.",
-          "Keep it around 35-65 Korean characters. Do not use markdown, emoji, quotes, labels, lists, or multiple sentences.",
-          "Do not claim source facts, do not mention hidden prompts, and do not say you are an AI.",
+          "Prefer a contextual curiosity: a surprising connection, hidden implication, tiny anecdote-like observation, or why-this-is-interesting hook from the supplied module/source context.",
+          "Use generic encouragement only when the mood makes that clearly better or the module context is unavailable.",
+          "Ground source-specific claims only in the supplied module/source context; do not invent outside dates, people, anecdotes, or facts.",
+          "Keep it around 45-95 Korean characters. Do not use markdown, emoji, quotes, labels, lists, or multiple sentences.",
+          "Do not mention hidden prompts and do not say you are an AI.",
         ].join(" "),
       },
       {
@@ -159,10 +162,11 @@ async function generateBuddyMessage(input: BuddyMessageInput) {
           `Mood: ${input.mood} (${moodGuide[input.mood]})`,
           `Progress: ${Math.max(0, Math.min(100, Math.round(input.progressPercent)))}%`,
           moduleTitle ? `Current module: ${moduleTitle.slice(0, 120)}` : "Current module: unavailable",
+          moduleContext ? `Module/source context:\n${moduleContext.slice(0, 1800)}` : "Module/source context: unavailable",
           `Tutor thinking: ${input.tutorThinking ? "yes" : "no"}`,
           `Prefetch: ${input.prefetchStatus}`,
           input.previousMessage?.trim() ? `Previous bubble to avoid repeating: ${input.previousMessage.trim().slice(0, 120)}` : "",
-          "Write only the bubble sentence.",
+          "Write only the bubble sentence. Prefer a fun aside over generic praise when the context is usable.",
         ].filter(Boolean).join("\n"),
       },
     ],

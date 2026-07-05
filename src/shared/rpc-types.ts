@@ -105,6 +105,7 @@ export type BuddyMessageInput = {
   mood: BuddyMessageMood;
   progressPercent: number;
   currentModuleTitle?: string | null;
+  currentModuleContext?: string | null;
   tutorThinking: boolean;
   prefetchStatus: "idle" | "generating" | "ready" | "failed";
   previousMessage?: string | null;

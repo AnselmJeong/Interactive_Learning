@@ -39,6 +39,8 @@ const PROGRESSION_CHOICES = new Set(["계속해줘", "계속해줘.", "다음 �
 const FINISH_CONFIRMATION_CHOICE = "네, 마칠게요.";
 const FALLBACK_CHOICES = ["힌트를 하나만 더 주세요.", "예시 답변을 하나 보여주세요.", "이 질문을 더 쉽게 다시 물어봐 주세요."];
 const EMPTY_MESSAGES: TutorMessage[] = [];
+const BUDDY_CONTEXT_EXCERPT_CHARS = 520;
+const BUDDY_CONTEXT_MAX_CHARS = 1800;
 
 function shouldSubmitChatDraft(event: KeyboardEvent<HTMLTextAreaElement>, submitShortcut: ChatSubmitShortcut) {
   if (event.key !== "Enter" || event.nativeEvent.isComposing) return false;
@@ -159,6 +161,21 @@ function stripRepeatedSourceHeading(content: string, heading: string) {
   const nextLines = lines.slice(0, firstContentIndex).concat(lines.slice(firstContentIndex + 1));
   while (nextLines[0]?.trim() === "") nextLines.shift();
   return nextLines.join("\n").trim();
+}
+
+function compactInlineText(value: string, limit: number) {
+  const compact = value.replace(/\s+/g, " ").trim();
+  if (compact.length <= limit) return compact;
+  return `${compact.slice(0, Math.max(0, limit - 3)).trim()}...`;
+}
+
+function truncateBuddyContext(value: string) {
+  const compact = value
+    .replace(/[ \t]+/g, " ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+  if (compact.length <= BUDDY_CONTEXT_MAX_CHARS) return compact;
+  return `${compact.slice(0, BUDDY_CONTEXT_MAX_CHARS - 3).trim()}...`;
 }
 
 function isTeachingGuideVisual(visual: MaterialArtifacts["visuals"][number] | null | undefined) {
@@ -1141,6 +1158,39 @@ export function App({ request }: { request: RpcRequest }) {
     }
     return refs;
   }, [artifacts, context?.sourceRefs]);
+  const buddyModuleContext = useMemo(() => {
+    if (!artifacts) return null;
+    const moduleId = activeModule?.id || selectedModuleId || session?.currentModuleId || artifacts.coursePlan.modules[0]?.id || null;
+    const module = (moduleId ? artifacts.coursePlan.modules.find((item) => item.id === moduleId) : null) || artifacts.coursePlan.modules[0];
+    if (!module) return null;
+
+    const lecture = artifacts.lecturePlan?.modules.find((item) => item.moduleId === module.id);
+    const conceptNames = artifacts.conceptMap
+      .filter((concept) => module.conceptIds.includes(concept.id))
+      .map((concept) => concept.name)
+      .slice(0, 4)
+      .join(", ");
+    const currentChunkIdInModule = session?.currentChunkId && module.sourceChunkIds.includes(session.currentChunkId) ? session.currentChunkId : null;
+    const orderedChunkIds = Array.from(new Set([currentChunkIdInModule, ...module.sourceChunkIds].filter((id): id is string => Boolean(id)))).slice(0, 3);
+    const sourceLines = orderedChunkIds
+      .map((chunkId) => {
+        const ref = sourceRefById.get(chunkId);
+        if (!ref?.text.trim()) return null;
+        const label = chunkId === currentChunkIdInModule ? "Current source excerpt" : "Module source excerpt";
+        const locator = ref.locator ? `, ${compactInlineText(ref.locator, 60)}` : "";
+        return `${label} (${compactInlineText(ref.title, 80)}${locator}): ${compactInlineText(ref.text, BUDDY_CONTEXT_EXCERPT_CHARS)}`;
+      })
+      .filter((line): line is string => Boolean(line));
+
+    return truncateBuddyContext([
+      `Module: ${displayModuleTitle(module)}`,
+      displayableLearningGoal(module) ? `Learning goal: ${displayableLearningGoal(module)}` : "",
+      conceptNames ? `Concepts: ${conceptNames}` : "",
+      lecture?.intrigue.surpriseLine ? `Interesting angle: ${compactInlineText(lecture.intrigue.surpriseLine, 220)}` : "",
+      lecture?.intrigue.tension ? `Tension: ${compactInlineText(lecture.intrigue.tension, 220)}` : "",
+      ...sourceLines,
+    ].filter(Boolean).join("\n"));
+  }, [activeModule?.id, artifacts, displayModuleTitle, selectedModuleId, session?.currentChunkId, session?.currentModuleId, sourceRefById]);
   const toggleSourceMessage = useCallback((messageId: string) => {
     setExpandedSourceMessages((current) => {
       const next = new Set(current);
@@ -1503,6 +1553,7 @@ export function App({ request }: { request: RpcRequest }) {
           prefetchState={continuePrefetchState}
           progressPercent={progressPercent}
           currentModuleTitle={buddyModuleTitle}
+          currentModuleContext={buddyModuleContext}
           complete={allModulesCovered || session?.status === "completed"}
         />
       </main>

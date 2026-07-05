@@ -27,6 +27,7 @@ export function LearningBuddy({
   prefetchState,
   progressPercent,
   currentModuleTitle,
+  currentModuleContext,
   complete,
 }: {
   enabled: boolean;
@@ -37,6 +38,7 @@ export function LearningBuddy({
   prefetchState: PrefetchState;
   progressPercent: number;
   currentModuleTitle?: string;
+  currentModuleContext?: string | null;
   complete: boolean;
 }) {
   const [progressPulse, setProgressPulse] = useState(false);
@@ -84,6 +86,7 @@ export function LearningBuddy({
     moodVersion: moodVersionRef.current,
     progressPercent,
     currentModuleTitle: currentModuleTitle || null,
+    currentModuleContext: currentModuleContext || null,
     tutorThinking: thinking,
     prefetchStatus: prefetchState,
     previousMessage: null as string | null,
@@ -93,6 +96,7 @@ export function LearningBuddy({
     moodVersion: moodVersionRef.current,
     progressPercent,
     currentModuleTitle: currentModuleTitle || null,
+    currentModuleContext: currentModuleContext || null,
     tutorThinking: thinking,
     prefetchStatus: prefetchState,
     previousMessage: message?.text || null,
@@ -121,6 +125,7 @@ export function LearningBuddy({
         mood: context.mood,
         progressPercent: context.progressPercent,
         currentModuleTitle: context.currentModuleTitle,
+        currentModuleContext: context.currentModuleContext,
         tutorThinking: context.tutorThinking,
         prefetchStatus: context.prefetchStatus,
         previousMessage: context.previousMessage,
