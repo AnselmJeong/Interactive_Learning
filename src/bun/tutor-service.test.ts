@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { prefetchConsumeWaitMs, tutorLanguageInstruction } from "./tutor-service";
+import { prefetchConsumeWaitMs, repairedCurrentChunkId, tutorLanguageInstruction } from "./tutor-service";
 
 describe("prefetch consume wait policy", () => {
   test("does not wait the full consume window when provider timeout is nearly exhausted", () => {
@@ -26,5 +26,22 @@ describe("tutor language instruction", () => {
     expect(instruction).toContain("Keep JSON keys");
     expect(instruction).toContain("source_quote.quote");
     expect(instruction).toContain("original spelling in parentheses");
+  });
+});
+
+describe("session cursor repair", () => {
+  const curriculum = ["chunk-001", "chunk-002", "chunk-003", "chunk-004"];
+
+  test("moves a covered current chunk to the first uncovered chunk", () => {
+    expect(repairedCurrentChunkId("chunk-002", ["chunk-001", "chunk-002"], curriculum)).toBe("chunk-003");
+  });
+
+  test("keeps a valid active current chunk", () => {
+    expect(repairedCurrentChunkId("chunk-003", ["chunk-001", "chunk-002"], curriculum)).toBe("chunk-003");
+  });
+
+  test("uses the last valid chunk once every chunk is covered", () => {
+    expect(repairedCurrentChunkId("chunk-002", curriculum, curriculum)).toBe("chunk-004");
+    expect(repairedCurrentChunkId("missing", curriculum, curriculum)).toBe("chunk-004");
   });
 });

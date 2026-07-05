@@ -366,7 +366,8 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
 }
 .learning-buddy {
   position: absolute;
-  bottom: 176px;
+  top: 66.666%;
+  transform: translateY(-50%);
   width: 62px;
   height: 82px;
   z-index: 5;

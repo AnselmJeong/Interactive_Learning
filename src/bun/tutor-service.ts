@@ -178,6 +178,18 @@ type PlannedProgressTurn = {
   };
 };
 
+export function repairedCurrentChunkId(currentChunkId: string | null, coveredChunkIds: string[], curriculumChunkIds: string[]) {
+  if (!curriculumChunkIds.length) return null;
+  const curriculumIds = new Set(curriculumChunkIds);
+  const covered = new Set(coveredChunkIds.filter((id) => curriculumIds.has(id)));
+  const allCovered = covered.size >= curriculumChunkIds.length;
+  if (allCovered) return curriculumChunkIds[curriculumChunkIds.length - 1]!;
+  if (!currentChunkId || !curriculumIds.has(currentChunkId) || covered.has(currentChunkId)) {
+    return curriculumChunkIds.find((id) => !covered.has(id)) || curriculumChunkIds[0]!;
+  }
+  return currentChunkId;
+}
+
 function jsonArray(raw: string | null): string[] {
   if (!raw) return [];
   try {
@@ -573,6 +585,10 @@ function sameStringSet(a: string[], b: string[]) {
   return left.every((value, index) => value === right[index]);
 }
 
+function isProgressTurnEvent(event: TurnPayload["event"]) {
+  return event === "start_module" || event === "continue_chunk" || event === "next_chunk" || event === "return_to_progress";
+}
+
 type TutorPrefetchEmitter = (status: TutorPrefetchStatus) => void;
 
 export class TutorService {
@@ -610,7 +626,10 @@ export class TutorService {
   async start(materialId: string, input: { mode: "new" | "continue"; sessionId?: string }) {
     if (input.mode === "continue") {
       const target = input.sessionId || this.latestSessionId(materialId);
-      if (target) return { session: this.snapshot(target), context: await this.context(target) };
+      if (target) {
+        await this.repairSessionCursorForSession(target, { persistSnapshot: true, stalePrefetches: true });
+        return { session: this.snapshot(target), context: await this.context(target) };
+      }
       throw new Error("No active session is available for this material. Start fresh to create a new session.");
     }
 
@@ -638,6 +657,7 @@ export class TutorService {
   }
 
   async load(sessionId: string) {
+    await this.repairSessionCursorForSession(sessionId, { persistSnapshot: true, stalePrefetches: true });
     this.scheduleDefaultContinue(sessionId, "session_loaded");
     return { session: this.snapshot(sessionId), context: await this.context(sessionId) };
   }
@@ -649,6 +669,7 @@ export class TutorService {
   async sendTurn(sessionId: string, userText: string) {
     const text = userText.trim();
     if (!text) throw new Error("Answer is empty");
+    await this.repairSessionCursorForSession(sessionId, { persistSnapshot: true, stalePrefetches: true });
     const typedProgressionCommand = classifyProgressionCommand(text);
     if (typedProgressionCommand) {
       if (typedProgressionCommand === "return_to_progress") return this.returnToProgress(sessionId);
@@ -678,9 +699,12 @@ export class TutorService {
   }
 
   async advance(sessionId: string, mode: "chunk" | "paragraph" | "module") {
-    const session = this.snapshotForPlanning(sessionId);
+    let session = this.snapshotForPlanning(sessionId);
     if (session.status !== "active") throw new Error("This session is not active");
     const artifacts = await this.artifacts.getArtifacts(session.materialId);
+    if (await this.repairSessionCursor(sessionId, artifacts, { persistSnapshot: true, stalePrefetches: true })) {
+      session = this.snapshotForPlanning(sessionId);
+    }
 
     if (mode === "paragraph") {
       const consumed = await this.tryConsumeDefaultContinue(sessionId);
@@ -708,15 +732,18 @@ export class TutorService {
   }
 
   async returnToProgress(sessionId: string) {
-    const session = this.snapshotForPlanning(sessionId);
+    let session = this.snapshotForPlanning(sessionId);
     if (session.status !== "active") throw new Error("This session is not active");
+    const artifacts = await this.artifacts.getArtifacts(session.materialId);
+    if (await this.repairSessionCursor(sessionId, artifacts, { persistSnapshot: true, stalePrefetches: true })) {
+      session = this.snapshotForPlanning(sessionId);
+    }
     const consumed = await this.tryConsumeDefaultContinue(sessionId, { returning: true });
     if (consumed) {
       await this.persistSessionSnapshot(sessionId);
       this.scheduleDefaultContinue(sessionId, "assistant_turn");
       return { session: this.snapshot(sessionId), context: await this.context(sessionId), output: consumed };
     }
-    const artifacts = await this.artifacts.getArtifacts(session.materialId);
     this.markPrefetchesStale(sessionId);
     const plan = this.planExplicitProgress(session, artifacts, "return_to_progress");
     const output = await this.generatePlannedProgressTurn(session, artifacts, plan);
@@ -730,17 +757,20 @@ export class TutorService {
     const session = this.snapshotHeader(sessionId);
     if (session.status !== "active") throw new Error("This session is not active");
     const artifacts = await this.artifacts.getArtifacts(session.materialId);
+    this.moduleById(artifacts, moduleId);
+    await this.repairSessionCursor(sessionId, artifacts, { persistSnapshot: true, stalePrefetches: true });
+    return { session: this.snapshot(sessionId), context: await this.context(sessionId) };
+  }
+
+  async openModule(sessionId: string, moduleId: string) {
+    const session = this.snapshotHeader(sessionId);
+    if (session.status !== "active") throw new Error("This session is not active");
+    const artifacts = await this.artifacts.getArtifacts(session.materialId);
     const module = this.moduleById(artifacts, moduleId);
     const firstChunk = this.firstChunkOfModule(artifacts, module);
     if (!firstChunk) throw new Error("This module has no source chunk");
     this.markPrefetchesStale(sessionId);
     this.persistCursor(sessionId, artifacts, firstChunk.id, session.coveredChunkIds);
-    await this.persistSessionSnapshot(sessionId);
-    return { session: this.snapshot(sessionId), context: await this.context(sessionId) };
-  }
-
-  async openModule(sessionId: string, moduleId: string) {
-    await this.selectModule(sessionId, moduleId);
     const output = await this.createTutorTurn(sessionId, { event: "start_module" });
     await this.persistSessionSnapshot(sessionId);
     this.scheduleDefaultContinue(sessionId, "assistant_turn");
@@ -755,6 +785,42 @@ export class TutorService {
   private async persistSessionSnapshot(sessionId: string) {
     const snapshot = this.snapshot(sessionId);
     await writeSessionSnapshot(this.projectRoot(snapshot.projectId), snapshot);
+  }
+
+  private async repairSessionCursorForSession(sessionId: string, options: { persistSnapshot?: boolean; stalePrefetches?: boolean } = {}) {
+    const session = this.snapshotHeader(sessionId);
+    if (session.status !== "active") return false;
+    const artifacts = await this.artifacts.getArtifacts(session.materialId);
+    return this.repairSessionCursor(sessionId, artifacts, options);
+  }
+
+  private async repairSessionCursor(sessionId: string, artifacts: MaterialArtifacts, options: { persistSnapshot?: boolean; stalePrefetches?: boolean } = {}) {
+    const session = this.snapshotHeader(sessionId);
+    if (session.status !== "active") return false;
+    const curriculum = this.orderedCurriculum(artifacts);
+    const curriculumIds = curriculum.map((chunk) => chunk.id);
+    const curriculumIdSet = new Set(curriculumIds);
+    const coveredIds = uniqueStrings(session.coveredChunkIds.filter((id) => curriculumIdSet.has(id)));
+    const nextCurrentChunkId = repairedCurrentChunkId(session.currentChunkId, coveredIds, curriculumIds);
+    const nextCurrentModuleId = nextCurrentChunkId ? this.ownerModuleOf(artifacts, nextCurrentChunkId).id : artifacts.coursePlan.modules[0]?.id || null;
+    const completedModuleIds = this.completedModuleIdsFromChunks(artifacts, new Set(coveredIds));
+    const needsRepair =
+      session.currentChunkId !== nextCurrentChunkId ||
+      session.currentModuleId !== nextCurrentModuleId ||
+      !sameStringSet(session.coveredChunkIds, coveredIds) ||
+      !sameStringSet(session.completedModuleIds, completedModuleIds);
+    if (!needsRepair) return false;
+
+    getDb()
+      .query(
+        `UPDATE learning_sessions
+         SET current_module_id = ?, current_chunk_id = ?, covered_chunk_ids_json = ?, completed_module_ids_json = ?, updated_at = ?
+         WHERE id = ?`
+      )
+      .run(nextCurrentModuleId, nextCurrentChunkId, JSON.stringify(coveredIds), JSON.stringify(completedModuleIds), Date.now(), sessionId);
+    if (options.stalePrefetches) this.markPrefetchesStale(sessionId);
+    if (options.persistSnapshot) await this.persistSessionSnapshot(sessionId);
+    return true;
   }
 
   private latestSessionId(materialId: string) {
@@ -1263,9 +1329,11 @@ export class TutorService {
 
   private currentChunkTeachingTurnCount(session: SessionSnapshot, chunkId: string, curriculum: SourceChunk[]): number {
     const curriculumIds = new Set(curriculum.map((chunk) => chunk.id));
+    const persistedTeachingMessages = this.persistedAssistantTeachingMessages(session.id);
+    const messages = persistedTeachingMessages.length ? persistedTeachingMessages : session.messages;
     let count = 0;
-    for (let index = session.messages.length - 1; index >= 0; index -= 1) {
-      const message = session.messages[index]!;
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index]!;
       if (message.role !== "assistant") continue;
       if (message.stateUpdate?.turnMode === "digress") continue;
       const refs = this.messageTeachingChunkRefs(message).filter((id) => curriculumIds.has(id));
@@ -1277,6 +1345,17 @@ export class TutorService {
       if (count > 0) break;
     }
     return count;
+  }
+
+  private persistedAssistantTeachingMessages(sessionId: string): TutorMessage[] {
+    return getDb()
+      .query<MessageRow, [string]>(
+        `SELECT * FROM learning_messages
+         WHERE session_id = ? AND role = 'assistant'
+         ORDER BY ordinal ASC`
+      )
+      .all(sessionId)
+      .map(toMessage);
   }
 
   private messageTeachingChunkRefs(message: TutorMessage): string[] {
@@ -1900,8 +1979,9 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${chunk.text}`
     for (const id of module.sourceChunkIds) contextualIds.add(id);
     if (focusChunk) contextualIds.add(focusChunk.id);
     const blockRefs = this.collectBlockSourceRefs(blocks).filter((id) => allowedRefs.has(id));
-    const modelRefs = Array.isArray(output.sourceRefs) ? output.sourceRefs.filter((id) => contextualIds.has(id)) : [];
-    const mergedRefs = uniqueStrings([...blockRefs, ...modelRefs]);
+    const groundedBlockRefs = isProgressTurnEvent(payload.event) && focusChunk ? blockRefs.filter((id) => id === focusChunk.id) : blockRefs;
+    const modelRefs = isProgressTurnEvent(payload.event) ? [] : Array.isArray(output.sourceRefs) ? output.sourceRefs.filter((id) => contextualIds.has(id)) : [];
+    const mergedRefs = uniqueStrings([...groundedBlockRefs, ...modelRefs]);
     const fallbackRef = focusChunk?.id || contextualChunks[0]?.id || module.sourceChunkIds[0];
     const sourceRefs = mergedRefs.length ? mergedRefs : fallbackRef ? [fallbackRef] : [];
 
@@ -1983,13 +2063,20 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${chunk.text}`
     const assembled = [...requiredStartBlocks, ...expandedBlocks]
       .filter((block) => (isOpening ? block.type !== "source_quote" : true))
       .map((block) => (block.type === "guided_reading" && !block.sourceRef && firstChunk?.id ? { ...block, sourceRef: firstChunk.id } : block))
+      .map((block) => this.reanchorProgressBlock(block, payload.event, firstChunk))
       .map((block) => this.ensureReflectionAiView(block, firstChunk, lecturePlan))
       .map((block) => this.scrubBlock(block))
-      .filter((block) => (block.type === "source_quote" ? allowedRefs.has(block.sourceRef) : true));
+      .filter((block) => (block.type === "source_quote" ? allowedRefs.has(block.sourceRef) && (!isProgressTurnEvent(payload.event) || !firstChunk || block.sourceRef === firstChunk.id) : true));
     // Final guard against a wall of text: break any long prose block into sentence-aligned,
     // scannable pieces. This is deterministic, so it holds even when the model ignores the
     // "be concise / choose an explicit format" instruction or the turn was salvaged from prose.
     return this.splitWallOfText(assembled).slice(0, 10);
+  }
+
+  private reanchorProgressBlock(block: TutorContentBlock, event: TurnPayload["event"], focusChunk: SourceChunk | undefined): TutorContentBlock {
+    if (!isProgressTurnEvent(event) || !focusChunk) return block;
+    if (block.type === "guided_reading") return { ...block, sourceRef: focusChunk.id };
+    return block;
   }
 
   private expandPseudoStructures(blocks: TutorContentBlock[]): TutorContentBlock[] {

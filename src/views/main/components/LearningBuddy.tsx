@@ -5,20 +5,18 @@ type PrefetchState = "idle" | "generating" | "ready" | "failed";
 type BuddyMessageKind = "auto" | "chat";
 type RpcRequest = (method: string, params: unknown) => Promise<unknown>;
 
-const FALLBACK_CLICK_MESSAGES = [
-  "저는 책갈피 출신이라, 진도 욕심이 조금 있어요.",
-  "어려운 문장은 반으로 접어서 보면 덜 무섭습니다.",
-  "각주도 언젠가는 주인공이 되고 싶대요.",
-  "잠깐 웃고 다시 갑시다. 이해는 도망가지 않아요.",
-  "오늘의 작전: 한 대목만 더 선명하게 만들기.",
-];
-
 const FALLBACK_AUTO_MESSAGES: Partial<Record<BuddyMessageMood, string>> = {
   thinking: "잠깐만요. 이어질 설명을 정리하고 있어요.",
   ready: "다음 설명이 준비됐어요.",
   progress: "좋아요. 한 대목 더 지나갔어요.",
   complete: "오늘 학습 흐름을 끝까지 밟았어요.",
 };
+
+function clickFailureMessage(error: unknown) {
+  const detail = (error as Error)?.message?.replace(/\s+/g, " ").trim();
+  if (!detail) return "지금은 새 한마디를 만들지 못했어요. 잠시 후 다시 눌러 주세요.";
+  return `지금은 새 한마디를 만들지 못했어요. ${detail.slice(0, 120)}`;
+}
 
 export function LearningBuddy({
   enabled,
@@ -45,8 +43,10 @@ export function LearningBuddy({
   const [message, setMessage] = useState<{ text: string; kind: BuddyMessageKind } | null>(null);
   const previousProgressRef = useRef(progressPercent);
   const previousMoodRef = useRef<BuddyMessageMood | null>(null);
-  const fallbackClickMessageIndexRef = useRef(0);
-  const requestIdRef = useRef(0);
+  const autoRequestIdRef = useRef(0);
+  const chatRequestIdRef = useRef(0);
+  const autoDismissTimeoutRef = useRef<number | null>(null);
+  const latestVisibilityRef = useRef({ enabled, active });
 
   useEffect(() => {
     if (!active) {
@@ -73,40 +73,93 @@ export function LearningBuddy({
     : prefetchState === "failed"
     ? "quiet"
     : "idle";
+  const moodVersionRef = useRef(0);
+  const renderedMoodRef = useRef(mood);
+  if (renderedMoodRef.current !== mood) {
+    renderedMoodRef.current = mood;
+    moodVersionRef.current += 1;
+  }
+  const latestRequestContextRef = useRef({
+    mood,
+    moodVersion: moodVersionRef.current,
+    progressPercent,
+    currentModuleTitle: currentModuleTitle || null,
+    tutorThinking: thinking,
+    prefetchStatus: prefetchState,
+    previousMessage: null as string | null,
+  });
+  latestRequestContextRef.current = {
+    mood,
+    moodVersion: moodVersionRef.current,
+    progressPercent,
+    currentModuleTitle: currentModuleTitle || null,
+    tutorThinking: thinking,
+    prefetchStatus: prefetchState,
+    previousMessage: message?.text || null,
+  };
+  latestVisibilityRef.current = { enabled, active };
 
-  const fallbackClickMessage = useCallback(() => {
-    const text = FALLBACK_CLICK_MESSAGES[fallbackClickMessageIndexRef.current % FALLBACK_CLICK_MESSAGES.length] ?? FALLBACK_CLICK_MESSAGES[0]!;
-    fallbackClickMessageIndexRef.current += 1;
-    return text;
+  const clearAutoDismiss = useCallback(() => {
+    if (!autoDismissTimeoutRef.current) return;
+    window.clearTimeout(autoDismissTimeoutRef.current);
+    autoDismissTimeoutRef.current = null;
   }, []);
 
   const generateMessage = useCallback(async (trigger: BuddyMessageInput["trigger"], kind: BuddyMessageKind) => {
-    const requestId = requestIdRef.current + 1;
-    requestIdRef.current = requestId;
-    const previousMessage = message?.text || null;
+    const requestId = kind === "chat" ? chatRequestIdRef.current + 1 : autoRequestIdRef.current + 1;
+    if (kind === "chat") chatRequestIdRef.current = requestId;
+    else autoRequestIdRef.current = requestId;
+
+    const context = { ...latestRequestContextRef.current };
     if (kind === "chat") {
+      clearAutoDismiss();
       setMessage({ text: "한마디 생각하는 중...", kind: "chat" });
     }
     try {
       const result = (await request("buddy.generateMessage", {
         trigger,
-        mood,
-        progressPercent,
-        currentModuleTitle: currentModuleTitle || null,
-        tutorThinking: thinking,
-        prefetchStatus: prefetchState,
-        previousMessage,
+        mood: context.mood,
+        progressPercent: context.progressPercent,
+        currentModuleTitle: context.currentModuleTitle,
+        tutorThinking: context.tutorThinking,
+        prefetchStatus: context.prefetchStatus,
+        previousMessage: context.previousMessage,
       } satisfies BuddyMessageInput)) as { text?: string };
       const text = result.text?.trim();
-      if (!text || requestIdRef.current !== requestId) return;
-      setMessage((current) => (kind === "auto" && current?.kind === "chat" ? current : { text, kind }));
-    } catch {
-      if (requestIdRef.current !== requestId) return;
-      const text = kind === "chat" ? fallbackClickMessage() : FALLBACK_AUTO_MESSAGES[mood];
       if (!text) return;
+      if (kind === "chat" ? chatRequestIdRef.current !== requestId : autoRequestIdRef.current !== requestId) return;
+      if (kind === "auto") {
+        const latest = latestRequestContextRef.current;
+        const visible = latestVisibilityRef.current;
+        if (!visible.enabled || !visible.active || latest.moodVersion !== context.moodVersion) return;
+      }
       setMessage((current) => (kind === "auto" && current?.kind === "chat" ? current : { text, kind }));
+      if (kind === "auto") {
+        clearAutoDismiss();
+        autoDismissTimeoutRef.current = window.setTimeout(() => {
+          autoDismissTimeoutRef.current = null;
+          setMessage((current) => (current?.kind === "auto" ? null : current));
+        }, context.mood === "complete" ? 6200 : 4200);
+      }
+    } catch (error) {
+      if (kind === "chat" ? chatRequestIdRef.current !== requestId : autoRequestIdRef.current !== requestId) return;
+      const text = kind === "chat" ? clickFailureMessage(error) : FALLBACK_AUTO_MESSAGES[context.mood];
+      if (!text) return;
+      if (kind === "auto") {
+        const latest = latestRequestContextRef.current;
+        const visible = latestVisibilityRef.current;
+        if (!visible.enabled || !visible.active || latest.moodVersion !== context.moodVersion) return;
+      }
+      setMessage((current) => (kind === "auto" && current?.kind === "chat" ? current : { text, kind }));
+      if (kind === "auto") {
+        clearAutoDismiss();
+        autoDismissTimeoutRef.current = window.setTimeout(() => {
+          autoDismissTimeoutRef.current = null;
+          setMessage((current) => (current?.kind === "auto" ? null : current));
+        }, context.mood === "complete" ? 6200 : 4200);
+      }
     }
-  }, [currentModuleTitle, fallbackClickMessage, message?.text, mood, prefetchState, progressPercent, request, thinking]);
+  }, [clearAutoDismiss, request]);
 
   function showClickMessage() {
     if (!enabled || !active) return;
@@ -116,26 +169,23 @@ export function LearningBuddy({
   useEffect(() => {
     if (!enabled || !active) {
       previousMoodRef.current = null;
+      autoRequestIdRef.current += 1;
+      chatRequestIdRef.current += 1;
+      clearAutoDismiss();
+      setMessage(null);
       return;
     }
     if (previousMoodRef.current === mood) return;
     previousMoodRef.current = mood;
-    if (!FALLBACK_AUTO_MESSAGES[mood]) return;
+    if (!FALLBACK_AUTO_MESSAGES[mood]) {
+      autoRequestIdRef.current += 1;
+      return;
+    }
 
-    let ignore = false;
-    let timeout = 0;
-    void (async () => {
-      await generateMessage("state", "auto");
-      if (ignore) return;
-      timeout = window.setTimeout(() => {
-        setMessage((current) => (current?.kind === "auto" ? null : current));
-      }, mood === "complete" ? 6200 : 4200);
-    })();
-    return () => {
-      ignore = true;
-      if (timeout) window.clearTimeout(timeout);
-    };
-  }, [active, enabled, generateMessage, mood]);
+    void generateMessage("state", "auto");
+  }, [active, clearAutoDismiss, enabled, generateMessage, mood]);
+
+  useEffect(() => clearAutoDismiss, [clearAutoDismiss]);
 
   if (!enabled || !active) return null;
 

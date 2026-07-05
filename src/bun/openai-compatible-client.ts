@@ -172,7 +172,7 @@ export class OpenAICompatibleClient implements AiChatClient {
       response_format: responseFormat,
     };
     if (params.thinking && this.supportsThinkingToggle(model)) {
-      body.thinking = { type: params.thinking };
+      this.applyThinkingToggle(body, params.thinking);
     }
 
     // Bound every request so a stalled provider fails fast instead of hanging the turn forever.
@@ -220,6 +220,14 @@ export class OpenAICompatibleClient implements AiChatClient {
     const baseUrl = this.settings.baseUrl.toLowerCase();
     const modelId = model.toLowerCase();
     return name.includes("deepseek") || baseUrl.includes("deepseek") || modelId.startsWith("deepseek-v4-");
+  }
+
+  private applyThinkingToggle(body: Record<string, unknown>, thinking: "enabled" | "disabled") {
+    if (this.providerId() === "ollama") {
+      body.reasoning_effort = thinking === "disabled" ? "none" : "medium";
+      return;
+    }
+    body.thinking = { type: thinking };
   }
 }
 

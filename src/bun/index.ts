@@ -138,8 +138,9 @@ async function generateBuddyMessage(input: BuddyMessageInput) {
   };
   const text = await client.chatText({
     temperature: 0.95,
-    maxTokens: 80,
-    timeoutMs: 12000,
+    maxTokens: 256,
+    timeoutMs: 20000,
+    thinking: "disabled",
     messages: [
       {
         role: "system",
