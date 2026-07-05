@@ -39,6 +39,8 @@ const PROGRESSION_CHOICES = new Set(["계속해줘", "계속해줘.", "다음 �
 const FINISH_CONFIRMATION_CHOICE = "네, 마칠게요.";
 const FALLBACK_CHOICES = ["힌트를 하나만 더 주세요.", "예시 답변을 하나 보여주세요.", "이 질문을 더 쉽게 다시 물어봐 주세요."];
 const EMPTY_MESSAGES: TutorMessage[] = [];
+const READY_STATUS = "Ready";
+const TUTOR_THINKING_STATUS = "Tutor is thinking";
 const BUDDY_CONTEXT_EXCERPT_CHARS = 520;
 const BUDDY_CONTEXT_MAX_CHARS = 1800;
 
@@ -504,7 +506,7 @@ export function App({ request }: { request: RpcRequest }) {
   const [busy, setBusy] = useState(false);
   const [tutorThinking, setTutorThinking] = useState(false);
   const [prefetchStatus, setPrefetchStatus] = useState<TutorPrefetchStatus | null>(null);
-  const [status, setStatus] = useState("Ready");
+  const [status, setStatus] = useState(READY_STATUS);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [settings, setSettings] = useState<AppSettings | null>(null);
@@ -572,6 +574,7 @@ export function App({ request }: { request: RpcRequest }) {
       setPrefetchStatus(null);
       setSelectedModuleId(null);
       setState((current) => ({ ...current, projects, sources: [], materials: [], sessions: [] }));
+      setStatus(READY_STATUS);
     }
   }
 
@@ -589,6 +592,7 @@ export function App({ request }: { request: RpcRequest }) {
     setContext(null);
     setPrefetchStatus(null);
     setSelectedModuleId(null);
+    setStatus(READY_STATUS);
   }
 
   async function refreshSettings() {
@@ -639,8 +643,8 @@ export function App({ request }: { request: RpcRequest }) {
   useEffect(() => {
     const onGeneration = (event: Event) => setStatus((event as CustomEvent<{ message: string }>).detail.message);
     const onIngestion = (event: Event) => setStatus((event as CustomEvent<{ message: string }>).detail.message);
-    const onTutor = () => setStatus("Tutor is thinking");
-    const onTutorDone = () => setStatus("Ready");
+    const onTutor = () => setStatus(TUTOR_THINKING_STATUS);
+    const onTutorDone = () => setStatus(READY_STATUS);
     const onTutorError = (event: Event) => setStatus((event as CustomEvent<{ error: string }>).detail.error);
     const onPrefetchStatus = (event: Event) => {
       const detail = (event as CustomEvent<TutorPrefetchStatus>).detail;
@@ -724,7 +728,7 @@ export function App({ request }: { request: RpcRequest }) {
       const materials = (await request("materials.list", { projectId: activeProject.id })) as MaterialSummary[];
       setState((current) => ({ ...current, materials }));
       await selectMaterial(material);
-      setStatus("Ready");
+      setStatus(READY_STATUS);
     } catch (error) {
       setStatus((error as Error).message);
     } finally {
@@ -758,6 +762,7 @@ export function App({ request }: { request: RpcRequest }) {
     setSelectedModuleId(null);
     setInspectorTab("sessions");
     setExpandedSourceMessages(new Set());
+    setStatus(READY_STATUS);
   }
 
   // Core session starter, independent of activeMaterial state so it can be called right after
@@ -765,6 +770,7 @@ export function App({ request }: { request: RpcRequest }) {
   async function beginSession(materialId: string, mode: "new" | "continue") {
     if (mode === "new") queueAnswerReadySound();
     setTutorThinking(true);
+    setStatus(TUTOR_THINKING_STATUS);
     try {
       const result = (await request("sessions.start", { materialId, mode })) as { session: SessionSnapshot; context: TutorContext };
       await refreshMaterialArtifacts(result.session.materialId);
@@ -775,6 +781,7 @@ export function App({ request }: { request: RpcRequest }) {
       setExpandedSourceMessages(new Set());
       await refreshSessions(materialId);
       void refreshPrefetchStatus(result.session.id);
+      setStatus(READY_STATUS);
       return result;
     } catch (error) {
       cancelAnswerReadySound();
@@ -804,6 +811,7 @@ export function App({ request }: { request: RpcRequest }) {
       setInspectorTab("modules");
       setExpandedSourceMessages(new Set());
       void refreshPrefetchStatus(result.session.id);
+      setStatus(READY_STATUS);
     } catch (error) {
       setStatus((error as Error).message);
     } finally {
@@ -817,6 +825,7 @@ export function App({ request }: { request: RpcRequest }) {
     const typedProgressionCommand = PROGRESSION_CHOICES.has(text.trim());
     let thinkingDelay: number | null = null;
     setBusy(true);
+    setStatus(TUTOR_THINKING_STATUS);
     if (typedProgressionCommand && prefetchStatus?.status === "ready") {
       thinkingDelay = window.setTimeout(() => setTutorThinking(true), 300);
     } else {
@@ -829,6 +838,7 @@ export function App({ request }: { request: RpcRequest }) {
       setSelectedModuleId(result.session.currentModuleId);
       await refreshSessions(result.session.materialId);
       void refreshPrefetchStatus(result.session.id);
+      setStatus(READY_STATUS);
       return true;
     } catch (error) {
       cancelAnswerReadySound();
@@ -857,6 +867,7 @@ export function App({ request }: { request: RpcRequest }) {
     queueAnswerReadySound();
     let thinkingDelay: number | null = null;
     setBusy(true);
+    setStatus(TUTOR_THINKING_STATUS);
     if (mode === "paragraph" && prefetchStatus?.status === "ready") {
       thinkingDelay = window.setTimeout(() => setTutorThinking(true), 300);
     } else {
@@ -869,6 +880,7 @@ export function App({ request }: { request: RpcRequest }) {
       setSelectedModuleId(result.session.currentModuleId);
       await refreshSessions(result.session.materialId);
       void refreshPrefetchStatus(result.session.id);
+      setStatus(READY_STATUS);
     } catch (error) {
       cancelAnswerReadySound();
       setStatus(`진행 실패: ${(error as Error).message}`);
@@ -884,6 +896,7 @@ export function App({ request }: { request: RpcRequest }) {
     queueAnswerReadySound();
     let thinkingDelay: number | null = null;
     setBusy(true);
+    setStatus(TUTOR_THINKING_STATUS);
     if (prefetchStatus?.status === "ready") {
       thinkingDelay = window.setTimeout(() => setTutorThinking(true), 300);
     } else {
@@ -896,6 +909,7 @@ export function App({ request }: { request: RpcRequest }) {
       setSelectedModuleId(result.session.currentModuleId);
       await refreshSessions(result.session.materialId);
       void refreshPrefetchStatus(result.session.id);
+      setStatus(READY_STATUS);
     } catch (error) {
       cancelAnswerReadySound();
       setStatus(`진도 복귀 실패: ${(error as Error).message}`);
@@ -920,6 +934,7 @@ export function App({ request }: { request: RpcRequest }) {
       setSession(result.session);
       setContext(result.context);
       await refreshSessions(result.session.materialId);
+      setStatus(READY_STATUS);
     } catch (error) {
       setStatus(`Module 선택 실패: ${(error as Error).message}`);
     } finally {
@@ -932,12 +947,14 @@ export function App({ request }: { request: RpcRequest }) {
     queueAnswerReadySound();
     setBusy(true);
     setTutorThinking(true);
+    setStatus(TUTOR_THINKING_STATUS);
     try {
       const result = (await request("sessions.openModule", { sessionId: session.id, moduleId: selectedModuleId })) as { session: SessionSnapshot; context: TutorContext };
       setSession(result.session);
       setContext(result.context);
       setSelectedModuleId(result.session.currentModuleId);
       await refreshSessions(result.session.materialId);
+      setStatus(READY_STATUS);
     } catch (error) {
       cancelAnswerReadySound();
       setStatus(`Module 시작 실패: ${(error as Error).message}`);
