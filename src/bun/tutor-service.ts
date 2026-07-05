@@ -21,18 +21,36 @@ const VALID_INTENTS: TutorIntent[] = ["start", "answer", "question", "off_topic"
 const DIGRESSION_INTENTS = new Set<TutorIntent>(["question", "off_topic", "deeper", "meta_complaint"]);
 const MAX_HISTORY_TURNS = 8;
 const MAX_HISTORY_CHARS = 1200;
-const PREFETCH_PROMPT_VERSION = "tutor-default-continue-v1";
+const PREFETCH_PROMPT_VERSION = "tutor-default-continue-v2-language";
 const PREFETCH_TTL_MS = 20 * 60 * 1000;
 const PREFETCH_PROVIDER_TIMEOUT_MS = 120 * 1000;
 const PREFETCH_CONSUME_MAX_WAIT_MS = 100 * 1000;
 const MAX_ACTIVE_PREFETCH_JOBS = 2;
 const TERM_RENDERING_RULE = [
   "TERM RENDERING RULE:",
-  "When teaching in Korean, do not replace romanized proper nouns or culturally specific technical terms with Korean-only transliterations.",
-  "If the source gives a romanized original form, preserve that form.",
-  "If a Korean gloss or transliteration helps, put the original form in parentheses on first mention, e.g. 알마문(al-Ma'mun), 무타질라(Mu'tazila), 이성('aql).",
-  "For people, schools, movements, book titles, Arabic/Islamic terms, and other identity-bearing names, prefer the original form alone when the Korean transliteration would be awkward or obscure.",
+  "When teaching in Korean, never replace foreign proper nouns or culturally specific technical terms with Korean-only transliterations.",
+  "If the source gives an original spelling, romanized form, or foreign-language title/name, preserve that form.",
+  "On first mention in Korean, write the Korean gloss/transliteration plus the original in parentheses whenever the original is known, e.g. 보에티우스(Boethius), 포르투나(Fortune), 알마문(al-Ma'mun), 무타질라(Mu'tazila), 이성('aql).",
+  "For people, schools, movements, book titles, Arabic/Islamic terms, philosophical terms, and other identity-bearing names, keep the original form visible; if the Korean rendering would be awkward or obscure, use the original form directly.",
 ].join(" ");
+
+export function tutorLanguageInstruction(tutorLanguage: string) {
+  if (tutorLanguage === "ko") {
+    return [
+      "Reply in Korean.",
+      "This applies to every learner-facing JSON field: message, block body/title/items/steps/table cells/reflection aiView, and choices.",
+      "Keep JSON keys, enum values, ids, and sourceRef values in English exactly as the schema requires.",
+      "Do not switch to English just because the source text, course title, previous messages, lecture plan, or presentation plan is English.",
+      "source_quote.quote may preserve the exact source wording, but all explanation around it must be Korean.",
+      "For foreign proper nouns and specialized terms, include the original spelling in parentheses on first mention when known.",
+    ].join(" ");
+  }
+  return [
+    "Reply in English.",
+    "This applies to every learner-facing JSON field: message, block body/title/items/steps/table cells/reflection aiView, and choices.",
+    "Keep JSON keys, enum values, ids, and sourceRef values exactly as the schema requires.",
+  ].join(" ");
+}
 
 // A lightweight Korean-aware heuristic. It is only a hint and a fallback; when the model
 // returns its own userIntent we trust that instead. The point is that a substantive
@@ -1620,6 +1638,7 @@ export class TutorService {
     const key = await this.secrets.getApiKey(settings.aiProvider);
     if (!settings.providers[settings.aiProvider].selectedModel || !key.value) throw new Error("AI provider is not configured");
     const client = createAiProviderClient(settings, key.value);
+    const languageInstruction = tutorLanguageInstruction(settings.tutorLanguage);
     const chunks = this.contextualChunks(artifacts, module, payload.userText, focusChunk?.id);
     const concepts = artifacts.conceptMap.filter((concept) => module.conceptIds.includes(concept.id));
     const originalTerms = originalTermCandidates(focusChunk ? [focusChunk, ...chunks] : chunks);
@@ -1663,6 +1682,7 @@ After that overview hook, teach the first source chunk with a guided_reading and
         {
           role: "system",
           content: `You are a guided lecturer who teaches a source the learner has not read. Reply only as JSON. Tutor language: ${settings.tutorLanguage}.
+${languageInstruction}
 Invariant: assume the learner has not read the source. Teach it well enough that they feel a good teacher read it with them.
 ${TERM_RENDERING_RULE}
 ${originalTermLine}
@@ -1757,6 +1777,7 @@ Output schema: {"message":"plain text fallback summary","blocks":[/* 2-4 blocks 
     if (!settings.providers[settings.aiProvider].selectedModel || !key.value) throw new Error("AI provider is not configured");
 
     const client = createAiProviderClient(settings, key.value);
+    const languageInstruction = tutorLanguageInstruction(settings.tutorLanguage);
     const chunks = this.contextualChunks(artifacts, module, payload.userText, focusChunk?.id);
     const concepts = artifacts.conceptMap.filter((concept) => module.conceptIds.includes(concept.id));
     const originalTerms = originalTermCandidates(focusChunk ? [focusChunk, ...chunks] : chunks);
@@ -1773,6 +1794,7 @@ Output schema: {"message":"plain text fallback summary","blocks":[/* 2-4 blocks 
         {
           role: "system",
           content: `You are a guided lecturer. Tutor language: ${settings.tutorLanguage}.
+${languageInstruction}
 The structured JSON call failed, so this is a repair call. Return plain tutor text only.
 ${TERM_RENDERING_RULE}
 ${originalTermLine}

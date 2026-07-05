@@ -423,6 +423,10 @@ export function SettingsModal({
             <span>Prepare next response</span>
           </label>
           <label className="toggle-row">
+            <input type="checkbox" checked={draft.learningBuddyEnabled} onChange={(event) => updateDraft({ learningBuddyEnabled: event.target.checked })} />
+            <span>Learning buddy</span>
+          </label>
+          <label className="toggle-row">
             <input type="checkbox" checked={draft.answerReadySound} onChange={(event) => updateDraft({ answerReadySound: event.target.checked })} />
             <span>Answer ready sound</span>
           </label>

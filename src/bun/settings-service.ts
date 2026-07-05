@@ -38,6 +38,7 @@ export const defaultSettings: AppSettings = {
   tutorPrefetchEnabled: true,
   showSourceInspector: true,
   answerReadySound: true,
+  learningBuddyEnabled: true,
   sourceImportMinChars: 1000,
 };
 

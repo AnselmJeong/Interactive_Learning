@@ -6,6 +6,10 @@ describe("settings provider merge", () => {
     expect(defaultSettings.sourceImportMinChars).toBe(1000);
   });
 
+  test("enables the learning buddy by default", () => {
+    expect(defaultSettings.learningBuddyEnabled).toBe(true);
+  });
+
   test("merges provider updates by provider id without dropping saved models", () => {
     const current = {
       ...defaultSettings,

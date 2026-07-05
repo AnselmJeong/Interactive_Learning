@@ -16,6 +16,7 @@ import { ProjectDropdown } from "./components/ProjectDropdown";
 import { SourceImportModal } from "./components/SourceImportModal";
 import { AboutModal } from "./components/AboutModal";
 import { SourceFigureCard } from "./components/SourceFigureCard";
+import { LearningBuddy } from "./components/LearningBuddy";
 import { stripFigureMarkdown } from "./figure-text";
 import { playAnswerReadySound, primeAnswerReadySound } from "./notification-sound";
 import { nextPrefetchStatusForSession } from "./prefetch-status";
@@ -1492,6 +1493,15 @@ export function App({ request }: { request: RpcRequest }) {
             />
           ) : null}
         </div>
+        <LearningBuddy
+          enabled={Boolean(settings?.learningBuddyEnabled)}
+          active={Boolean(artifacts)}
+          viewMode={viewMode}
+          thinking={tutorThinking}
+          prefetchState={continuePrefetchState}
+          progressPercent={progressPercent}
+          complete={allModulesCovered || session?.status === "completed"}
+        />
       </main>
 
       <aside className="inspector">

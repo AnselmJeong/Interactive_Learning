@@ -31,6 +31,7 @@ export type AppSettings = {
   tutorPrefetchEnabled: boolean;
   showSourceInspector: boolean;
   answerReadySound: boolean;
+  learningBuddyEnabled: boolean;
   sourceImportMinChars: SourceImportMinChars;
 };
 
