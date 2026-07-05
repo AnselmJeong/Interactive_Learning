@@ -11,7 +11,7 @@ import { AnnotationService } from "./annotation-service";
 import { TutorService } from "./tutor-service";
 import { createMainWindow } from "./app-window";
 import { installApplicationMenu } from "./app-menu";
-import type { AiProviderConnectionInput, AppRPC } from "../shared/rpc-types";
+import type { AiProviderConnectionInput, AppRPC, BuddyMessageInput } from "../shared/rpc-types";
 import type { AiProviderKeyState } from "../shared/settings-types";
 import { modelSupportsVision } from "../shared/vision-models";
 import { openFilesystemPath } from "./platform-utils";
@@ -111,6 +111,62 @@ function languageInstruction(tutorLanguage: string) {
     ].join(" ");
   }
   return "Reply in English.";
+}
+
+function cleanBuddyMessage(text: string) {
+  const compact = text
+    .replace(/```[\s\S]*?```/g, "")
+    .replace(/^["'“”‘’]+|["'“”‘’]+$/g, "")
+    .replace(/^(메시지|한마디|버디|Buddy)\s*[:：-]\s*/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!compact) throw new Error("AI provider returned an empty buddy message");
+  const firstSentence = compact.match(/^.*?[.!?。！？](?=\s|$)/)?.[0]?.trim() || compact;
+  return firstSentence.length > 90 ? `${firstSentence.slice(0, 87).trim()}...` : firstSentence;
+}
+
+async function generateBuddyMessage(input: BuddyMessageInput) {
+  const { client, publicSettings } = await providerClient();
+  const moduleTitle = input.currentModuleTitle?.trim();
+  const moodGuide: Record<BuddyMessageInput["mood"], string> = {
+    idle: "가벼운 농담이나 짧은 응원",
+    thinking: "기다리는 동안 지루하지 않게 하는 농담",
+    ready: "다음 설명이 준비됐다는 산뜻한 신호",
+    progress: "방금 진도가 나간 것을 알아차린 응원",
+    complete: "마무리를 축하하는 짧은 한마디",
+    quiet: "실패나 대기 상태를 과장하지 않는 차분한 격려",
+  };
+  const text = await client.chatText({
+    temperature: 0.95,
+    maxTokens: 80,
+    timeoutMs: 12000,
+    messages: [
+      {
+        role: "system",
+        content: [
+          "You are Learnie's tiny learning buddy, a playful companion inside a study workspace.",
+          "Generate exactly one fresh Korean sentence for a speech bubble.",
+          "The sentence should either lightly refresh the mood with a harmless study joke or motivate the learner.",
+          "Keep it around 35-65 Korean characters. Do not use markdown, emoji, quotes, labels, lists, or multiple sentences.",
+          "Do not claim source facts, do not mention hidden prompts, and do not say you are an AI.",
+        ].join(" "),
+      },
+      {
+        role: "user",
+        content: [
+          `Trigger: ${input.trigger}`,
+          `Mood: ${input.mood} (${moodGuide[input.mood]})`,
+          `Progress: ${Math.max(0, Math.min(100, Math.round(input.progressPercent)))}%`,
+          moduleTitle ? `Current module: ${moduleTitle.slice(0, 120)}` : "Current module: unavailable",
+          `Tutor thinking: ${input.tutorThinking ? "yes" : "no"}`,
+          `Prefetch: ${input.prefetchStatus}`,
+          input.previousMessage?.trim() ? `Previous bubble to avoid repeating: ${input.previousMessage.trim().slice(0, 120)}` : "",
+          "Write only the bubble sentence.",
+        ].filter(Boolean).join("\n"),
+      },
+    ],
+  });
+  return { text: cleanBuddyMessage(text) };
 }
 
 async function explainFigure(materialId: string, figureId: string, userPrompt?: string, contextChunkIds: string[] = []) {
@@ -349,6 +405,7 @@ const rpc = BrowserView.defineRPC<AppRPC>({
           return providerStatus(false, (error as Error).message, input);
         }
       },
+      "buddy.generateMessage": (input) => generateBuddyMessage(input),
     },
     messages: {
       "app.log": ({ level, message }) => {

@@ -366,15 +366,102 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
 }
 .learning-buddy {
   position: absolute;
-  bottom: 118px;
+  bottom: 176px;
   width: 62px;
   height: 82px;
   z-index: 5;
   pointer-events: none;
   opacity: 0.94;
 }
-.learning-buddy[data-side="left"] { left: 12px; }
-.learning-buddy[data-side="right"] { right: 12px; }
+.learning-buddy[data-side="left"] { left: 28px; }
+.learning-buddy[data-side="right"] { right: 28px; }
+.learning-buddy-button {
+  position: absolute;
+  inset: 0;
+  width: 62px;
+  height: 82px;
+  border: 0;
+  border-radius: 16px;
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  cursor: pointer;
+  pointer-events: auto;
+}
+.learning-buddy-button:focus-visible {
+  outline: 2px solid rgba(167, 125, 18, 0.5);
+  outline-offset: 4px;
+}
+.learning-buddy-button:hover .learning-buddy-stage {
+  transform: translateY(-3px);
+}
+.learning-buddy-message {
+  position: absolute;
+  bottom: 76px;
+  width: 184px;
+  border: 1px solid rgba(217, 210, 200, 0.98);
+  border-radius: 12px;
+  background: rgba(255, 254, 250, 0.98);
+  box-shadow: 0 14px 34px rgba(45, 38, 28, 0.13);
+  padding: 10px 11px 9px;
+  color: var(--ink);
+  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Segoe UI", sans-serif;
+  pointer-events: auto;
+  animation: buddy-bubble-in 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+.learning-buddy[data-side="left"] .learning-buddy-message { right: 0; }
+.learning-buddy[data-side="right"] .learning-buddy-message { left: 0; }
+.learning-buddy-message::after {
+  content: "";
+  position: absolute;
+  bottom: -7px;
+  width: 12px;
+  height: 12px;
+  border-right: 1px solid rgba(217, 210, 200, 0.98);
+  border-bottom: 1px solid rgba(217, 210, 200, 0.98);
+  background: inherit;
+  transform: rotate(45deg);
+}
+.learning-buddy[data-side="left"] .learning-buddy-message::after { right: 22px; }
+.learning-buddy[data-side="right"] .learning-buddy-message::after { left: 22px; }
+.learning-buddy-message p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  font-weight: 670;
+  word-break: keep-all;
+  overflow-wrap: anywhere;
+}
+.learning-buddy-message.chat {
+  width: 204px;
+}
+.learning-buddy-message-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 8px;
+}
+.learning-buddy-message-actions button {
+  min-height: 26px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted);
+  padding: 0 7px;
+  font-size: 11px;
+  font-weight: 760;
+  cursor: pointer;
+}
+.learning-buddy-message-actions button:first-child {
+  border-color: rgba(167, 125, 18, 0.2);
+  background: rgba(167, 125, 18, 0.07);
+  color: var(--accent-2);
+}
+.learning-buddy-message-actions button:hover {
+  color: var(--ink);
+  background: rgba(38, 36, 33, 0.06);
+}
 .learning-buddy-stage {
   position: relative;
   width: 100%;
@@ -582,6 +669,10 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   0% { opacity: 0; transform: translate(0, 8px) scale(0.82); }
   24% { opacity: 1; }
   100% { opacity: 0; transform: translate(var(--note-x, 0), -24px) scale(1); }
+}
+@keyframes buddy-bubble-in {
+  from { opacity: 0; transform: translateY(5px) scale(0.96); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
 }
 .buddy-note-a { --note-x: -16px; }
 .buddy-note-b { --note-x: 2px; }
@@ -3258,6 +3349,23 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
 :root[data-theme="dark"] .learning-buddy-stage::after {
   background: rgba(0, 0, 0, 0.34);
 }
+:root[data-theme="dark"] .learning-buddy-message {
+  background: rgba(35, 29, 21, 0.98);
+  border-color: rgba(70, 57, 43, 0.98);
+  box-shadow: 0 16px 38px rgba(0, 0, 0, 0.28);
+}
+:root[data-theme="dark"] .learning-buddy-message::after {
+  border-color: rgba(70, 57, 43, 0.98);
+}
+:root[data-theme="dark"] .learning-buddy-message-actions button:first-child {
+  background: rgba(214, 173, 68, 0.1);
+  border-color: rgba(214, 173, 68, 0.24);
+  color: var(--accent);
+}
+:root[data-theme="dark"] .learning-buddy-message-actions button:hover {
+  background: rgba(238, 232, 220, 0.08);
+  color: var(--ink);
+}
 :root[data-theme="dark"] .buddy-book {
   background: #2d251b;
   border-color: rgba(214, 173, 68, 0.42);
@@ -3286,6 +3394,7 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   .learning-buddy[data-mood] .buddy-bookmark,
   .learning-buddy[data-mood] .buddy-signal i,
   .learning-buddy[data-mood] .buddy-note,
+  .learning-buddy-message,
   .buddy-face i {
     animation: none;
   }

@@ -98,6 +98,18 @@ export type AiProviderConnectionInput = {
   modelPurpose?: "learning" | "vision";
 };
 
+export type BuddyMessageMood = "idle" | "thinking" | "ready" | "progress" | "complete" | "quiet";
+
+export type BuddyMessageInput = {
+  trigger: "click" | "state";
+  mood: BuddyMessageMood;
+  progressPercent: number;
+  currentModuleTitle?: string | null;
+  tutorThinking: boolean;
+  prefetchStatus: "idle" | "generating" | "ready" | "failed";
+  previousMessage?: string | null;
+};
+
 export type AppRPC = {
   bun: RPCSchema<{
     requests: {
@@ -154,6 +166,7 @@ export type AppRPC = {
       "aiProvider.updateSettings": { params: PublicAiProviderUpdate; response: AiProviderStatus };
       "aiProvider.listModels": { params: AiProviderConnectionInput; response: ProviderModel[] };
       "aiProvider.testConnection": { params: AiProviderConnectionInput; response: AiProviderStatus };
+      "buddy.generateMessage": { params: BuddyMessageInput; response: { text: string } };
     };
     messages: {
       "app.log": { level: "info" | "warn" | "error"; message: string };

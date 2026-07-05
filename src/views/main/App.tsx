@@ -1036,6 +1036,7 @@ export function App({ request }: { request: RpcRequest }) {
   const reachedChunks = coveredChunks + (currentChunkId && !context?.session.coveredChunkIds.includes(currentChunkId) ? 1 : 0);
   const progressText = artifacts ? `${reachedChunks}/${totalChunks}` : "0/0";
   const activeModule = context?.moduleOutline.find((item) => item.status === "in_progress");
+  const buddyModuleTitle = activeModule ? displayModuleTitle(activeModule) : selectedModuleTitle;
   const progressPercent = totalChunks ? Math.round((reachedChunks / totalChunks) * 100) : 0;
   const latestAssistant = [...currentMessages].reverse().find((message) => message.role === "assistant");
   const latestAssistantId = latestAssistant?.id || null;
@@ -1496,10 +1497,12 @@ export function App({ request }: { request: RpcRequest }) {
         <LearningBuddy
           enabled={Boolean(settings?.learningBuddyEnabled)}
           active={Boolean(artifacts)}
+          request={request}
           viewMode={viewMode}
           thinking={tutorThinking}
           prefetchState={continuePrefetchState}
           progressPercent={progressPercent}
+          currentModuleTitle={buddyModuleTitle}
           complete={allModulesCovered || session?.status === "completed"}
         />
       </main>
