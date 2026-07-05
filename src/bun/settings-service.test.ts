@@ -2,6 +2,10 @@ import { describe, expect, test } from "bun:test";
 import { defaultSettings, mergeSettingsPatch } from "./settings-service";
 
 describe("settings provider merge", () => {
+  test("defaults imported chapter auto-selection to 1000 characters", () => {
+    expect(defaultSettings.sourceImportMinChars).toBe(1000);
+  });
+
   test("merges provider updates by provider id without dropping saved models", () => {
     const current = {
       ...defaultSettings,

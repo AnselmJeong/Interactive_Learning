@@ -4,6 +4,7 @@ import { pathToFileURL } from "node:url";
 import { getDb } from "./project-db";
 import { dataPath, sourceDirAt } from "./paths";
 import { buildPreppySourcePack } from "./preppy-service";
+import { SettingsService } from "./settings-service";
 import type { SourceChunk, SourceFigure, SourceManifest, SourceType } from "../shared/artifact-types";
 import type { PreparedSourceImport, PreparedSourceImportItem, SourceSummary } from "../shared/rpc-types";
 
@@ -478,9 +479,9 @@ function previewText(text: string, max = 5200) {
   return `${normalized.slice(0, max).trim()}\n\n...`;
 }
 
-function defaultSelected(kind: string | null, charCount: number) {
+function defaultSelected(kind: string | null, charCount: number, minChars: number) {
   if (kind && ["frontmatter", "backmatter", "notes", "bibliography", "index"].includes(kind)) return false;
-  if (charCount < 300) return false;
+  if (charCount < minChars) return false;
   return true;
 }
 
@@ -496,6 +497,8 @@ function toPrepared(entry: PreparedImportEntry): PreparedSourceImport {
 }
 
 export class SourceService {
+  private readonly settings = new SettingsService();
+
   private projectRoot(projectId: string) {
     const row = getDb().query<{ root_path: string | null }, [string]>("SELECT root_path FROM projects WHERE id = ?").get(projectId);
     return row?.root_path || dataPath("projects");
@@ -523,6 +526,7 @@ export class SourceService {
 
   async prepareImport(projectId: string, paths: string[]) {
     const id = crypto.randomUUID();
+    const settings = await this.settings.get();
     const entry: PreparedImportEntry = {
       id,
       projectId,
@@ -538,12 +542,12 @@ export class SourceService {
       for (const path of paths) {
         const info = await stat(path);
         if (info.isDirectory()) {
-          await this.addPreparedFolder(entry, path, path);
+          await this.addPreparedFolder(entry, path, path, settings.sourceImportMinChars);
         } else if (info.isFile() && isPreppyInputFile(path)) {
           const sourcePack = await buildPreppySourcePack(path);
-          await this.addPreparedFolder(entry, sourcePack.outputPath, path, sourcePack.cleanup);
+          await this.addPreparedFolder(entry, sourcePack.outputPath, path, settings.sourceImportMinChars, sourcePack.cleanup);
         } else if (info.isFile() && isImportableFile(path)) {
-          await this.addPreparedFile(entry, path);
+          await this.addPreparedFile(entry, path, settings.sourceImportMinChars);
         }
       }
       preparedImports.set(id, entry);
@@ -590,7 +594,7 @@ export class SourceService {
     return true;
   }
 
-  private async addPreparedFile(entry: PreparedImportEntry, path: string) {
+  private async addPreparedFile(entry: PreparedImportEntry, path: string, sourceImportMinChars: number) {
     const fileIndex = entry.files.push({ path }) - 1;
     const text = await readFile(path, "utf8");
     const previewSource = rewriteLocalMarkdownImageLinks(path, text);
@@ -603,12 +607,12 @@ export class SourceService {
       kind: null,
       charCount: text.trim().length,
       preview: previewText(previewSource),
-      selected: defaultSelected(null, text.trim().length),
+      selected: defaultSelected(null, text.trim().length, sourceImportMinChars),
     });
     entry.itemRefs.set(itemId, { kind: "file", fileIndex });
   }
 
-  private async addPreparedFolder(entry: PreparedImportEntry, path: string, originalSourcePath: string, cleanup?: () => Promise<void>) {
+  private async addPreparedFolder(entry: PreparedImportEntry, path: string, originalSourcePath: string, sourceImportMinChars: number, cleanup?: () => Promise<void>) {
     const folderIndex = entry.folders.push({ path, originalSourcePath, cleanup }) - 1;
     const preppyManifest = await readPreppyManifest(path);
     const chaptersDir = join(path, preppyManifest.chaptersDir);
@@ -631,7 +635,7 @@ export class SourceService {
         kind: manifestChapter?.kind || null,
         charCount,
         preview: previewText(previewSource),
-        selected: defaultSelected(manifestChapter?.kind || null, charCount),
+        selected: defaultSelected(manifestChapter?.kind || null, charCount, sourceImportMinChars),
       });
       entry.itemRefs.set(itemId, { kind: "folder", folderIndex, relativePath: relativePath || relativeToTextRoot });
     }

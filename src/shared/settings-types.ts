@@ -2,6 +2,8 @@ export type ThemeMode = "light" | "dark" | "system";
 export type TutorLanguage = "ko" | "en";
 export type AiProviderId = "ollama" | "openai" | "anthropic" | "gemini";
 export type ChatSubmitShortcut = "enter" | "cmd-enter";
+export const SOURCE_IMPORT_MIN_CHARS_OPTIONS = [300, 500, 1000, 2000, 5000] as const;
+export type SourceImportMinChars = (typeof SOURCE_IMPORT_MIN_CHARS_OPTIONS)[number];
 
 export type AiProviderPublicSettings = {
   baseUrl: string;
@@ -29,6 +31,7 @@ export type AppSettings = {
   tutorPrefetchEnabled: boolean;
   showSourceInspector: boolean;
   answerReadySound: boolean;
+  sourceImportMinChars: SourceImportMinChars;
 };
 
 export type PublicAiProviderUpdate = {

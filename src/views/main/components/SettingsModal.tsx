@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Brain, FolderOpen, ImageIcon, KeyRound, RefreshCw, Save, SlidersHorizontal, Trash2, X } from "lucide-react";
-import type { AiProviderId, AiProviderStatus, AppSettings, ProviderModel } from "../../../shared/settings-types";
+import { SOURCE_IMPORT_MIN_CHARS_OPTIONS, type AiProviderId, type AiProviderStatus, type AppSettings, type ProviderModel } from "../../../shared/settings-types";
 import { modelSupportsVision } from "../../../shared/vision-models";
 
 type RpcRequest = (method: string, params: unknown) => Promise<unknown>;
@@ -397,6 +397,19 @@ export function SettingsModal({
             >
               <option value="cmd-enter">Cmd-Enter</option>
               <option value="enter">Enter</option>
+            </select>
+          </label>
+          <label>
+            <span>Auto-select import items</span>
+            <select
+              value={draft.sourceImportMinChars}
+              onChange={(event) => updateDraft({ sourceImportMinChars: Number(event.target.value) as AppSettings["sourceImportMinChars"] })}
+            >
+              {SOURCE_IMPORT_MIN_CHARS_OPTIONS.map((chars) => (
+                <option key={chars} value={chars}>
+                  {chars.toLocaleString()}+ chars
+                </option>
+              ))}
             </select>
           </label>
         </div>

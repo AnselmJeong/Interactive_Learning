@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import { Archive, BookOpen, Check, Info, Loader2, MessageSquare, Moon, Play, Send, Settings, Sun, Trash2, Upload } from "lucide-react";
 import type { MaterialSummary, PreparedSourceImport, ProjectArchiveExport, ProjectSummary, SourceSummary } from "../../shared/rpc-types";
@@ -414,10 +414,33 @@ const ChatComposer = memo(function ChatComposer({
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const trimmed = draft.trim();
 
+  const resizeTextarea = useCallback(() => {
+    const textarea = textareaRef.current;
+    if (!textarea) return;
+
+    textarea.style.height = "auto";
+    const cssMaxHeight = Number.parseFloat(window.getComputedStyle(textarea).maxHeight);
+    const viewportMaxHeight = window.innerHeight * 0.28;
+    const maxHeight = Number.isFinite(cssMaxHeight) ? Math.min(cssMaxHeight, viewportMaxHeight) : viewportMaxHeight;
+    const nextHeight = Math.min(textarea.scrollHeight, maxHeight);
+    textarea.style.height = `${nextHeight}px`;
+    textarea.style.overflowY = textarea.scrollHeight > nextHeight ? "auto" : "hidden";
+  }, []);
+
+  useLayoutEffect(() => {
+    resizeTextarea();
+  }, [draft, resizeTextarea]);
+
   useEffect(() => {
     if (!autoFocusToken || disabled) return;
     textareaRef.current?.focus();
-  }, [autoFocusToken, disabled]);
+    resizeTextarea();
+  }, [autoFocusToken, disabled, resizeTextarea]);
+
+  useEffect(() => {
+    window.addEventListener("resize", resizeTextarea);
+    return () => window.removeEventListener("resize", resizeTextarea);
+  }, [resizeTextarea]);
 
   async function submit(text = draft) {
     const next = text.trim();
@@ -475,6 +498,8 @@ export function App({ request }: { request: RpcRequest }) {
   const [selectedModuleId, setSelectedModuleId] = useState<string | null>(null);
   const [composerFocusToken, setComposerFocusToken] = useState(0);
   const tutorSurfaceRef = useRef<HTMLElement | null>(null);
+  const continueButtonRef = useRef<HTMLButtonElement | null>(null);
+  const lastFocusedReadyPrefetchKeyRef = useRef<string | null>(null);
   const answerReadyNotificationPendingRef = useRef(false);
   const latestNotifiedAssistantIdRef = useRef<string | null>(null);
   const latestAlignedAssistantKeyRef = useRef<string | null>(null);
@@ -1053,6 +1078,16 @@ export function App({ request }: { request: RpcRequest }) {
   const allModulesCovered = totalChunks > 0 && coveredChunks >= totalChunks;
   const showCompletionActions = Boolean(!sessionReadOnly && !selectedModuleWaiting && allModulesCovered);
   const showProgressActions = Boolean(!sessionReadOnly && !selectedModuleReadOnly && !allModulesCovered);
+  useEffect(() => {
+    if (viewMode !== "chat" || !showProgressActions || busy || selectedModuleWaiting) return;
+    if (prefetchStatus?.status !== "ready") return;
+
+    const readyKey = `${prefetchStatus.sessionId}:${prefetchStatus.updatedAt ?? "ready"}`;
+    if (lastFocusedReadyPrefetchKeyRef.current === readyKey) return;
+    lastFocusedReadyPrefetchKeyRef.current = readyKey;
+    continueButtonRef.current?.focus({ preventScroll: true });
+  }, [busy, prefetchStatus, selectedModuleWaiting, showProgressActions, viewMode]);
+
   const canContinueFromCompletedModule = Boolean(
     !sessionReadOnly
       && selectedModuleReadOnly
@@ -1355,6 +1390,7 @@ export function App({ request }: { request: RpcRequest }) {
                         </button>
                       ) : null}
                       <button
+                        ref={continueButtonRef}
                         type="button"
                         className={continueButtonClass}
                         onClick={() => (useReadyReturnButton ? returnToProgress() : advanceLearning("paragraph"))}

@@ -2,7 +2,7 @@ import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { dataPath } from "./paths";
 import { readJsonFile, writeJsonFile } from "./json-file";
-import type { AiProviderId, AppSettings, ChatSubmitShortcut } from "../shared/settings-types";
+import { SOURCE_IMPORT_MIN_CHARS_OPTIONS, type AiProviderId, type AppSettings, type ChatSubmitShortcut, type SourceImportMinChars } from "../shared/settings-types";
 import { modelSupportsVision } from "../shared/vision-models";
 
 const SETTINGS_PATH = dataPath("settings.json");
@@ -17,6 +17,7 @@ const DEFAULT_PROVIDERS: AppSettings["providers"] = {
 const AI_PROVIDERS: AiProviderId[] = ["ollama", "openai", "anthropic", "gemini"];
 const CHAT_SUBMIT_SHORTCUTS: ChatSubmitShortcut[] = ["enter", "cmd-enter"];
 const THEME_MODES: AppSettings["theme"][] = ["light", "dark", "system"];
+const SOURCE_IMPORT_MIN_CHARS = SOURCE_IMPORT_MIN_CHARS_OPTIONS as readonly number[];
 
 export type SettingsPatch = Omit<Partial<AppSettings>, "providers"> & {
   providers?: Partial<AppSettings["providers"]>;
@@ -37,6 +38,7 @@ export const defaultSettings: AppSettings = {
   tutorPrefetchEnabled: true,
   showSourceInspector: true,
   answerReadySound: true,
+  sourceImportMinChars: 1000,
 };
 
 export class SettingsService {
@@ -91,6 +93,9 @@ function normalizeSettings(saved: Partial<AppSettings>): AppSettings {
   const chatSubmitShortcut = CHAT_SUBMIT_SHORTCUTS.includes(saved.chatSubmitShortcut as ChatSubmitShortcut)
     ? (saved.chatSubmitShortcut as ChatSubmitShortcut)
     : defaultSettings.chatSubmitShortcut;
+  const sourceImportMinChars = SOURCE_IMPORT_MIN_CHARS.includes(Number(saved.sourceImportMinChars))
+    ? (Number(saved.sourceImportMinChars) as SourceImportMinChars)
+    : defaultSettings.sourceImportMinChars;
   const savedProviders = saved.providers || {};
   const providers = AI_PROVIDERS.reduce((acc, id) => {
     acc[id] = {
@@ -117,5 +122,6 @@ function normalizeSettings(saved: Partial<AppSettings>): AppSettings {
     ollamaBaseUrl: providers.ollama.baseUrl,
     selectedModel: providers[provider].selectedModel,
     chatSubmitShortcut,
+    sourceImportMinChars,
   };
 }

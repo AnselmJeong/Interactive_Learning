@@ -965,10 +965,12 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
 }
 .composer textarea {
   min-height: 42px;
+  max-height: 188px;
   border: 0;
   background: transparent;
   box-shadow: none;
   resize: none;
+  overflow-y: hidden;
   line-height: 1.35;
   padding: 11px 14px;
 }
