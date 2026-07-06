@@ -16,6 +16,8 @@
   --quiet: #928d84;
   --line: #e5e0d8;
   --line-strong: #d9d2c8;
+  --table-header-bg: rgba(238, 235, 226, 0.72);
+  --table-header-ink: var(--ink);
   --accent: #a77d12;
   --accent-2: #9f7814;
   --teal: #256f68;
@@ -47,6 +49,8 @@
   --quiet: #8e8578;
   --line: #30281f;
   --line-strong: #46392b;
+  --table-header-bg: #2a2319;
+  --table-header-ink: #f1eadf;
   --accent: #d6ad44;
   --accent-2: #d6ad44;
   --teal: #9ab7ad;
@@ -1071,7 +1075,8 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   line-height: 1.45;
 }
 .compare-table-block th {
-  background: rgba(238, 235, 226, 0.7);
+  background: var(--table-header-bg);
+  color: var(--table-header-ink);
   font-weight: 780;
 }
 .bridge-block {
@@ -1523,7 +1528,8 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   vertical-align: top;
 }
 .annotated-table th {
-  color: var(--teal);
+  background: var(--table-header-bg);
+  color: var(--table-header-ink);
   font-size: 12px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -1786,7 +1792,8 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   vertical-align: top;
 }
 .markdown-content th {
-  background: rgba(238, 235, 226, 0.72);
+  background: var(--table-header-bg);
+  color: var(--table-header-ink);
   font-weight: 750;
 }
 .markdown-content .katex-display {
@@ -3438,10 +3445,16 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
 :root[data-theme="dark"] .axis-end,
 :root[data-theme="dark"] .matrix-grid span,
 :root[data-theme="dark"] .geometry-row span,
-:root[data-theme="dark"] .source-figure-media,
-:root[data-theme="dark"] .markdown-content th {
+:root[data-theme="dark"] .source-figure-media {
   background: #252017;
   border-color: var(--line);
+}
+:root[data-theme="dark"] .compare-table-block th,
+:root[data-theme="dark"] .annotated-table th,
+:root[data-theme="dark"] .markdown-content th {
+  background: var(--table-header-bg);
+  border-color: var(--line);
+  color: var(--table-header-ink);
 }
 :root[data-theme="dark"] .flow-block > ol > li::before {
   background: var(--panel);
