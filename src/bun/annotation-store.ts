@@ -6,6 +6,7 @@ import type {
   LookupSourceMeta,
   MaterialAnnotation,
   MaterialAnnotationKind,
+  MaterialAnnotationSurface,
   NoteResult,
 } from "../shared/artifact-types";
 
@@ -17,6 +18,7 @@ type MaterialAnnotationRow = {
   material_id: string;
   source_id: string | null;
   chunk_id: string;
+  surface: MaterialAnnotationSurface;
   anchor_message_id: string | null;
   anchor_block_id: string | null;
   kind: MaterialAnnotationKind;
@@ -32,6 +34,7 @@ export type SaveMaterialAnnotationInput = {
   materialId: string;
   chunkId: string;
   sourceId?: string | null;
+  surface?: MaterialAnnotationSurface;
   anchorMessageId?: string | null;
   anchorBlockId?: string | null;
   kind: MaterialAnnotationKind;
@@ -56,6 +59,12 @@ function safeTimestamp(value: unknown, fallback: number) {
   return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
+function annotationSurface(input: { surface?: string | null; anchorMessageId?: string | null; anchorBlockId?: string | null; kind?: MaterialAnnotationKind }) {
+  if (input.surface === "chat" || input.surface === "source") return input.surface;
+  if (input.kind === "highlight" || input.kind === "note") return "source";
+  return input.anchorMessageId || input.anchorBlockId ? "chat" : "source";
+}
+
 function rowToAnnotation(row: MaterialAnnotationRow): MaterialAnnotation {
   return {
     id: row.id,
@@ -63,6 +72,12 @@ function rowToAnnotation(row: MaterialAnnotationRow): MaterialAnnotation {
     materialId: row.material_id,
     sourceId: row.source_id,
     chunkId: row.chunk_id,
+    surface: annotationSurface({
+      surface: row.surface,
+      anchorMessageId: row.anchor_message_id,
+      anchorBlockId: row.anchor_block_id,
+      kind: row.kind,
+    }),
     anchorMessageId: row.anchor_message_id,
     anchorBlockId: row.anchor_block_id,
     kind: row.kind,
@@ -105,9 +120,9 @@ export function saveMaterialAnnotation(input: SaveMaterialAnnotationInput) {
   getDb()
     .query(
       `INSERT INTO material_annotations
-       (id, project_id, material_id, source_id, chunk_id, anchor_message_id, anchor_block_id, kind, selected_text, normalized_text,
+       (id, project_id, material_id, source_id, chunk_id, surface, anchor_message_id, anchor_block_id, kind, selected_text, normalized_text,
         result_json, source_meta_json, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       id,
@@ -115,6 +130,7 @@ export function saveMaterialAnnotation(input: SaveMaterialAnnotationInput) {
       input.materialId,
       input.sourceId || null,
       input.chunkId,
+      annotationSurface(input),
       input.anchorMessageId || null,
       input.anchorBlockId || null,
       input.kind,
@@ -141,9 +157,9 @@ export function replaceMaterialAnnotations(materialId: string, annotations: Mate
   const db = getDb();
   const insert = db.query(
     `INSERT INTO material_annotations
-     (id, project_id, material_id, source_id, chunk_id, anchor_message_id, anchor_block_id, kind, selected_text, normalized_text,
+     (id, project_id, material_id, source_id, chunk_id, surface, anchor_message_id, anchor_block_id, kind, selected_text, normalized_text,
       result_json, source_meta_json, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
   const replace = db.transaction((items: MaterialAnnotation[]) => {
     db.query("DELETE FROM material_annotations WHERE material_id = ?").run(materialId);
@@ -157,6 +173,7 @@ export function replaceMaterialAnnotations(materialId: string, annotations: Mate
         materialId,
         annotation.sourceId || null,
         annotation.chunkId,
+        annotationSurface(annotation),
         annotation.anchorMessageId || null,
         annotation.anchorBlockId || null,
         annotation.kind,

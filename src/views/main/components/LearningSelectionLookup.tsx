@@ -259,6 +259,7 @@ export function LearningSelectionLookup({
       const saved = (await request("annotations.save", {
         materialId,
         chunkId: panel.selection.chunkId,
+        surface: "chat",
         anchorMessageId: panel.selection.anchorMessageId || null,
         anchorBlockId: panel.selection.anchorBlockId || null,
         kind: result.kind,

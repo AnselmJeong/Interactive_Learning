@@ -163,6 +163,7 @@ export function getDb() {
       material_id TEXT NOT NULL REFERENCES learning_materials(id) ON DELETE CASCADE,
       source_id TEXT,
       chunk_id TEXT NOT NULL,
+      surface TEXT NOT NULL DEFAULT 'source' CHECK (surface IN ('chat', 'source')),
       anchor_message_id TEXT,
       anchor_block_id TEXT,
       kind TEXT NOT NULL CHECK (kind IN ('define', 'lookup', 'question', 'image', 'note', 'highlight')),
@@ -213,6 +214,16 @@ export function getDb() {
   if (!annotationColumns.includes("anchor_block_id")) {
     db.exec("ALTER TABLE material_annotations ADD COLUMN anchor_block_id TEXT;");
   }
+  if (!annotationColumns.includes("surface")) {
+    db.exec("ALTER TABLE material_annotations ADD COLUMN surface TEXT NOT NULL DEFAULT 'source';");
+    db.exec(`
+      UPDATE material_annotations
+      SET surface = CASE
+        WHEN anchor_message_id IS NOT NULL OR anchor_block_id IS NOT NULL THEN 'chat'
+        ELSE 'source'
+      END;
+    `);
+  }
   migrateMaterialAnnotationKindCheck(db);
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_material_annotations_material_chunk
@@ -243,6 +254,7 @@ function migrateMaterialAnnotationKindCheck(database: Database) {
         material_id TEXT NOT NULL REFERENCES learning_materials(id) ON DELETE CASCADE,
         source_id TEXT,
         chunk_id TEXT NOT NULL,
+        surface TEXT NOT NULL DEFAULT 'source' CHECK (surface IN ('chat', 'source')),
         anchor_message_id TEXT,
         anchor_block_id TEXT,
         kind TEXT NOT NULL CHECK (kind IN ('define', 'lookup', 'question', 'image', 'note', 'highlight')),
@@ -255,10 +267,10 @@ function migrateMaterialAnnotationKindCheck(database: Database) {
       );
 
       INSERT INTO material_annotations
-       (id, project_id, material_id, source_id, chunk_id, anchor_message_id, anchor_block_id, kind, selected_text, normalized_text,
+       (id, project_id, material_id, source_id, chunk_id, surface, anchor_message_id, anchor_block_id, kind, selected_text, normalized_text,
         result_json, source_meta_json, created_at, updated_at)
       SELECT
-        id, project_id, material_id, source_id, chunk_id, anchor_message_id, anchor_block_id, kind, selected_text, normalized_text,
+        id, project_id, material_id, source_id, chunk_id, surface, anchor_message_id, anchor_block_id, kind, selected_text, normalized_text,
         result_json, source_meta_json, created_at, updated_at
       FROM material_annotations_old;
 

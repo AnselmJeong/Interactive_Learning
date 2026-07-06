@@ -97,6 +97,7 @@ export type HighlightResult = {
 };
 
 export type MaterialAnnotationKind = "define" | "lookup" | "question" | "image" | "note" | "highlight";
+export type MaterialAnnotationSurface = "chat" | "source";
 
 export type MaterialAnnotation = {
   id: string;
@@ -104,6 +105,7 @@ export type MaterialAnnotation = {
   materialId: string;
   sourceId: string | null;
   chunkId: string;
+  surface: MaterialAnnotationSurface;
   anchorMessageId?: string | null;
   anchorBlockId?: string | null;
   kind: MaterialAnnotationKind;

@@ -8,6 +8,7 @@ import type {
   LookupResult,
   LookupSourceMeta,
   MaterialAnnotationKind,
+  MaterialAnnotationSurface,
   MaterialArtifacts,
   NoteResult,
   HighlightResult,
@@ -36,6 +37,7 @@ type SelectionQuestionInput = SelectionLookupInput & {
 type SaveLookupInput = {
   materialId: string;
   chunkId: string;
+  surface?: MaterialAnnotationSurface;
   anchorMessageId?: string | null;
   anchorBlockId?: string | null;
   kind: MaterialAnnotationKind;
@@ -281,7 +283,7 @@ async function fetchJson<T>(url: string, timeoutMs = 10000): Promise<T> {
   const response = await fetch(url, {
     headers: {
       accept: "application/json",
-      "user-agent": "Learnie/0.5.4 desktop learning app",
+      "user-agent": "Learnie/0.5.5 desktop learning app",
     },
     signal: AbortSignal.timeout(timeoutMs),
   });
@@ -301,7 +303,7 @@ async function fetchImageDataUrl(value: string, timeoutMs = 10000): Promise<stri
   const response = await fetch(url.toString(), {
     headers: {
       accept: "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
-      "user-agent": "Learnie/0.5.4 desktop learning app",
+      "user-agent": "Learnie/0.5.5 desktop learning app",
     },
     signal: AbortSignal.timeout(timeoutMs),
   });
@@ -764,6 +766,7 @@ export class AnnotationService {
       materialId: input.materialId,
       chunkId: input.chunkId,
       sourceId,
+      surface: input.surface,
       anchorMessageId: input.anchorMessageId || null,
       anchorBlockId: input.anchorBlockId || null,
       kind: input.kind,

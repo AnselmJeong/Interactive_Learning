@@ -6,6 +6,7 @@ import type {
   LookupSourceMeta,
   MaterialAnnotation,
   MaterialAnnotationKind,
+  MaterialAnnotationSurface,
   MaterialArtifacts,
   MaterialStatus,
   NoteResult,
@@ -142,6 +143,7 @@ export type AppRPC = {
         params: {
           materialId: string;
           chunkId: string;
+          surface?: MaterialAnnotationSurface;
           anchorMessageId?: string | null;
           anchorBlockId?: string | null;
           kind: MaterialAnnotationKind;

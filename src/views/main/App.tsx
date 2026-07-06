@@ -18,6 +18,7 @@ import { AboutModal } from "./components/AboutModal";
 import { SourceFigureCard } from "./components/SourceFigureCard";
 import { LearningBuddy } from "./components/LearningBuddy";
 import { stripFigureMarkdown } from "./figure-text";
+import { placeAnnotationsForMessages } from "./annotation-placement";
 import { playAnswerReadySound, primeAnswerReadySound } from "./notification-sound";
 import { nextPrefetchStatusForSession } from "./prefetch-status";
 import { shouldSubmitTextArea } from "./submit-shortcut";
@@ -275,57 +276,7 @@ const ChatLog = memo(function ChatLog({
   onToggleSource: (messageId: string) => void;
   onDeleteAnnotation: (annotationId: string) => void;
 }) {
-  const annotationPlacement = useMemo(() => {
-    const assistantMessageIds = new Set(messages.filter((message) => message.role === "assistant").map((message) => message.id));
-    const visibleChunkIds = new Set(messages.flatMap((message) => message.sourceRefs));
-    const placed = new Set<string>();
-    const groups = new Map<string, MaterialAnnotation[]>();
-    const blockGroups = new Map<string, MaterialAnnotation[]>();
-
-    function add(messageId: string, annotation: MaterialAnnotation) {
-      const group = groups.get(messageId) || [];
-      group.push(annotation);
-      groups.set(messageId, group);
-      placed.add(annotation.id);
-    }
-
-    function addBlock(blockId: string, annotation: MaterialAnnotation) {
-      const group = blockGroups.get(blockId) || [];
-      group.push(annotation);
-      blockGroups.set(blockId, group);
-      placed.add(annotation.id);
-    }
-
-    for (const annotation of annotations) {
-      if (annotation.anchorBlockId && annotation.anchorMessageId && assistantMessageIds.has(annotation.anchorMessageId)) {
-        addBlock(annotation.anchorBlockId, annotation);
-        continue;
-      }
-      if (annotation.anchorMessageId && assistantMessageIds.has(annotation.anchorMessageId)) {
-        add(annotation.anchorMessageId, annotation);
-      }
-    }
-
-    for (const message of messages) {
-      if (message.role !== "assistant" || !message.sourceRefs.length) continue;
-      const refs = new Set(message.sourceRefs);
-      for (const annotation of annotations) {
-        if (placed.has(annotation.id) || !refs.has(annotation.chunkId)) continue;
-        add(message.id, annotation);
-      }
-    }
-
-    for (const group of groups.values()) {
-      group.sort((a, b) => a.createdAt - b.createdAt);
-    }
-    for (const group of blockGroups.values()) {
-      group.sort((a, b) => a.createdAt - b.createdAt);
-    }
-    const unplaced = annotations
-      .filter((annotation) => !placed.has(annotation.id) && visibleChunkIds.has(annotation.chunkId))
-      .sort((a, b) => a.createdAt - b.createdAt);
-    return { groups, blockGroups, unplaced };
-  }, [annotations, messages]);
+  const annotationPlacement = useMemo(() => placeAnnotationsForMessages(annotations, messages), [annotations, messages]);
 
   return (
     <div className="chat-log">

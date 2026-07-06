@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
 import { Bookmark, Highlighter, Image as ImageIcon, Loader2, MessageSquare, Save, Search, Sparkles, StickyNote, Trash2, X } from "lucide-react";
 import type { ImageLookupResult, LookupResult, MaterialAnnotation, MaterialArtifacts } from "../../../shared/artifact-types";
 import type { ChatSubmitShortcut } from "../../../shared/settings-types";
+import { shouldRenderSourceAnnotationCard } from "../annotation-placement";
 import { stripFigureMarkdown } from "../figure-text";
 import { shouldSubmitTextArea } from "../submit-shortcut";
 import { MarkdownContent } from "./MarkdownContent";
@@ -187,7 +188,7 @@ export function ImmersiveSourceView({
   const annotationsByChunk = useMemo(() => {
     const groups = new Map<string, MaterialAnnotation[]>();
     for (const annotation of annotations) {
-      if (annotation.kind === "highlight" || annotation.kind === "note") continue;
+      if (!shouldRenderSourceAnnotationCard(annotation)) continue;
       const group = groups.get(annotation.chunkId) || [];
       group.push(annotation);
       groups.set(annotation.chunkId, group);
@@ -240,6 +241,7 @@ export function ImmersiveSourceView({
           const saved = (await request("annotations.save", {
             materialId,
             chunkId: mark.chunkId,
+            surface: "source",
             kind: mark.kind,
             selectedText: mark.text,
             result: mark.kind === "note" ? { kind: "note", note: mark.note || "" } : { kind: "highlight" },
@@ -339,6 +341,7 @@ export function ImmersiveSourceView({
     const saved = (await request("annotations.save", {
       materialId: artifacts.manifest.id,
       chunkId: selected.chunkId,
+      surface: "source",
       kind,
       selectedText: selected.text,
       result: kind === "note" ? { kind: "note", note: "" } : { kind: "highlight" },
@@ -453,6 +456,7 @@ export function ImmersiveSourceView({
       const saved = (await request("annotations.save", {
         materialId: artifacts.manifest.id,
         chunkId: panel.selection.chunkId,
+        surface: "source",
         kind: result.kind,
         selectedText: panel.selection.text,
         result,
