@@ -29,10 +29,15 @@ type SelectionLookupInput = {
   selectedText: string;
 };
 
+type SelectionQuestionInput = SelectionLookupInput & {
+  question: string;
+};
+
 type SaveLookupInput = {
   materialId: string;
   chunkId: string;
   anchorMessageId?: string | null;
+  anchorBlockId?: string | null;
   kind: MaterialAnnotationKind;
   selectedText: string;
   result: LookupResult | ImageLookupResult | NoteResult | HighlightResult;
@@ -222,6 +227,53 @@ function chunkContext(artifacts: MaterialArtifacts, chunkId: string) {
     sourceTitle: sourceTitleOf(artifacts, chunkId),
     locator: artifacts.sourceIndex[chunkId]?.locator || chunk.locator,
     context: contextParts.join("\n\n"),
+  };
+}
+
+function moduleForChunk(artifacts: MaterialArtifacts, chunkId: string) {
+  let last = artifacts.coursePlan.modules[0];
+  for (const chunk of artifacts.sourceChunks) {
+    const owner = artifacts.coursePlan.modules.find((module) => module.sourceChunkIds.includes(chunk.id));
+    if (owner) last = owner;
+    if (chunk.id === chunkId) return last || owner || artifacts.coursePlan.modules[0];
+  }
+  return artifacts.coursePlan.modules[0];
+}
+
+function moduleQuestionContext(artifacts: MaterialArtifacts, chunkId: string, question: string) {
+  const focus = chunkContext(artifacts, chunkId);
+  const module = moduleForChunk(artifacts, chunkId);
+  const moduleChunkIds = new Set(module?.sourceChunkIds || []);
+  const focusChunk = focus.chunk;
+  const moduleChunks = artifacts.sourceChunks.filter((chunk) => moduleChunkIds.has(chunk.id));
+  const relatedTokens = question.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((token) => token.length >= 3).slice(0, 20);
+  const related = artifacts.sourceChunks
+    .filter((chunk) => chunk.id !== chunkId && !moduleChunkIds.has(chunk.id))
+    .map((chunk) => {
+      const haystack = `${chunk.headingPath.join(" ")} ${chunk.text}`.toLowerCase();
+      const score = relatedTokens.reduce((sum, token) => sum + (haystack.includes(token) ? 1 : 0), 0);
+      return { chunk, score };
+    })
+    .filter((item) => item.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 2)
+    .map((item) => item.chunk);
+  const contextChunks = [
+    focusChunk,
+    ...moduleChunks.filter((chunk) => chunk.id !== chunkId),
+    ...related,
+  ].slice(0, 6);
+
+  return {
+    ...focus,
+    module,
+    context: contextChunks
+      .map((chunk) => {
+        const label = chunk.id === chunkId ? "Selected text chunk" : "Module context chunk";
+        const heading = chunk.headingPath.length ? ` (${chunk.headingPath.join(" > ")})` : "";
+        return `${label}${heading}:\n${compactText(chunk.text, chunk.id === chunkId ? 1800 : 900)}`;
+      })
+      .join("\n\n"),
   };
 }
 
@@ -657,6 +709,17 @@ export class AnnotationService {
     return this.aiLookup("define", term, context.chunk, context.sourceTitle, context.locator, context.context);
   }
 
+  async ask(input: SelectionQuestionInput): Promise<LookupResult> {
+    const selectedText = normalizeSelectedText(input.selectedText, 420);
+    const question = input.question.replace(/\s+/g, " ").trim().slice(0, 900);
+    if (!selectedText) throw new Error("Selected text is empty");
+    if (!question) throw new Error("Question is empty");
+
+    const artifacts = await this.materials.getArtifacts(input.materialId);
+    const context = moduleQuestionContext(artifacts, input.chunkId, question);
+    return this.aiAnswerSelectionQuestion(selectedText, question, context);
+  }
+
   async lookup(input: SelectionLookupInput): Promise<LookupResult> {
     const term = normalizeSelectedText(input.selectedText);
     if (!term) throw new Error("Selected text is empty");
@@ -702,6 +765,7 @@ export class AnnotationService {
       chunkId: input.chunkId,
       sourceId,
       anchorMessageId: input.anchorMessageId || null,
+      anchorBlockId: input.anchorBlockId || null,
       kind: input.kind,
       selectedText: input.selectedText,
       result: input.result,
@@ -775,6 +839,64 @@ export class AnnotationService {
       sourceTitle,
       retrievedAt,
       sourceMeta: [{ title: `${providerLabel} ${model}`, provider: "AI provider", retrievedAt }],
+    };
+  }
+
+  private async aiAnswerSelectionQuestion(
+    selectedText: string,
+    question: string,
+    context: ReturnType<typeof moduleQuestionContext>
+  ): Promise<LookupResult> {
+    const { publicSettings, apiKey, client } = await this.providerClient();
+    const model = publicSettings.providers[publicSettings.aiProvider].selectedModel;
+    if (!apiKey.value || !model) throw new Error("AI provider is not configured");
+
+    const prompt = [
+      `Selected text: ${selectedText}`,
+      `Learner question: ${question}`,
+      `Source title: ${context.sourceTitle}`,
+      context.module ? `Current module: ${context.module.title}` : "",
+      context.module?.learningGoal ? `Module learning goal: ${context.module.learningGoal}` : "",
+      context.locator ? `Locator: ${context.locator}` : "",
+      `Module-bounded source context:\n${context.context}`,
+    ].filter(Boolean).join("\n\n");
+
+    const body = await client.chatText({
+      model,
+      temperature: 0.35,
+      maxTokens: 1200,
+      timeoutMs: 60000,
+      messages: [
+        {
+          role: "system",
+          content: [
+            "You are Learnie, a guided tutor answering a learner's follow-up about selected text.",
+            "Use the current module context as the main basis. If broader background is needed, add it clearly as background.",
+            "Answer the learner's exact question first, then connect it back to the selected text.",
+            "Write in Korean unless the learner's question is clearly in another language.",
+            TERM_RENDERING_RULE,
+            "Use 2-4 short paragraphs or a compact bullet list when that is clearer.",
+            "Do not mention internal app terms such as module ids, chunks, annotations, or lookup.",
+            "Keep the answer concise but substantive.",
+          ].join(" "),
+        },
+        { role: "user", content: prompt },
+      ],
+    });
+
+    const providerLabel = publicSettings.aiProvider;
+    const retrievedAt = new Date().toISOString();
+    return {
+      kind: "question",
+      title: question,
+      body: compactMarkdownText(body, 1800),
+      query: selectedText,
+      question,
+      provider: "ai",
+      model,
+      sourceTitle: context.sourceTitle,
+      retrievedAt,
+      sourceMeta: [{ title: `${providerLabel} ${model}`, provider: "AI tutor", retrievedAt }],
     };
   }
 

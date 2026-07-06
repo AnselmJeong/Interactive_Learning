@@ -7,14 +7,19 @@ import type { PluggableList } from "unified";
 
 const remarkPlugins: PluggableList = [[remarkGfm, { singleTilde: false }], remarkMath];
 
-function normalizeMarkdownContent(content: string): string {
+export function normalizeMarkdownContent(content: string): string {
   return content
     .split(/(```[\s\S]*?```|`[^`\n]*`)/g)
     .map((segment) => {
       if (segment.startsWith("```") || segment.startsWith("`")) return segment;
       return segment
         .replace(/(\*{1,3})[\u200b\u200c\u200d\ufeff]+/gu, "$1")
-        .replace(/[\u200b\u200c\u200d\ufeff]+(\*{1,3})/gu, "$1");
+        .replace(/[\u200b\u200c\u200d\ufeff]+(\*{1,3})/gu, "$1")
+        .replace(/\\\*\\\*\\\*/gu, "***")
+        .replace(/\\\*\\\*/gu, "**")
+        .replace(/\\(\*{2,3})(?=\S)/gu, "$1")
+        .replace(/(?<=\S)\\(\*{2,3})/gu, "$1")
+        .replace(/(?<=[\p{P}\p{S}])(\*{2,3})(?=[\u3131-\u318e\uac00-\ud7a3])/gu, "$1&ZeroWidthSpace;");
     })
     .join("");
 }

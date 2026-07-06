@@ -51,10 +51,11 @@ export type LookupSourceMeta = {
 };
 
 export type LookupResult = {
-  kind: "define" | "lookup";
+  kind: "define" | "lookup" | "question";
   title: string;
   body: string;
   query: string;
+  question?: string;
   provider: "ai" | "wikipedia";
   model?: string;
   url?: string;
@@ -95,7 +96,7 @@ export type HighlightResult = {
   kind: "highlight";
 };
 
-export type MaterialAnnotationKind = "define" | "lookup" | "image" | "note" | "highlight";
+export type MaterialAnnotationKind = "define" | "lookup" | "question" | "image" | "note" | "highlight";
 
 export type MaterialAnnotation = {
   id: string;
@@ -104,6 +105,7 @@ export type MaterialAnnotation = {
   sourceId: string | null;
   chunkId: string;
   anchorMessageId?: string | null;
+  anchorBlockId?: string | null;
   kind: MaterialAnnotationKind;
   selectedText: string;
   normalizedText: string;

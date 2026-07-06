@@ -1,4 +1,4 @@
-import { memo, useState } from "react";
+import { memo, useState, type ReactNode } from "react";
 import type { SourceRef, TutorContentBlock } from "../../../shared/tutor-types";
 import { MarkdownContent } from "./MarkdownContent";
 import { SourceFigureCard } from "./SourceFigureCard";
@@ -223,12 +223,16 @@ export const TutorBlockRenderer = memo(function TutorBlockRenderer({
   fallbackSourceRefs = [],
   materialId,
   request,
+  messageId,
+  renderBlockAfter,
 }: {
   blocks: TutorContentBlock[];
   sourceRefById?: Map<string, SourceRef>;
   fallbackSourceRefs?: SourceRef[];
   materialId?: string;
   request?: RpcRequest;
+  messageId?: string;
+  renderBlockAfter?: (blockId: string) => ReactNode;
 }) {
   const visibleBlocks = blocks.filter((block) => block.type !== "source_quote" || block.showToLearner);
   if (!visibleBlocks.length) return null;
@@ -259,8 +263,14 @@ export const TutorBlockRenderer = memo(function TutorBlockRenderer({
         const refId = blockSourceRef(block);
         const figures = figuresFor(refId);
         const lookupChunkId = refId || fallbackSourceRefs[0]?.chunkId || undefined;
+        const lookupBlockId = messageId ? `${messageId}:block-${index}` : undefined;
         return (
-          <div key={`${block.type}-${index}`} className="tutor-block-with-figures" data-lookup-chunk-id={lookupChunkId}>
+          <div
+            key={`${block.type}-${index}`}
+            className="tutor-block-with-figures"
+            data-lookup-chunk-id={lookupChunkId}
+            data-lookup-block-id={lookupBlockId}
+          >
             <TutorBlock block={block} />
             {figures.length && materialId && request ? (
               <div className="tutor-inline-figures">
@@ -269,6 +279,7 @@ export const TutorBlockRenderer = memo(function TutorBlockRenderer({
                 ))}
               </div>
             ) : null}
+            {lookupBlockId && renderBlockAfter ? renderBlockAfter(lookupBlockId) : null}
           </div>
         );
       })}

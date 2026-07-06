@@ -186,7 +186,8 @@ function annotationsMarkdown(artifacts: MaterialArtifacts) {
     if (meta?.title || meta?.locator) lines.push(`Source: ${[meta.title, meta.locator].filter(Boolean).join(", ")}`);
     lines.push("");
     const result = annotation.result;
-    if (result.kind === "define" || result.kind === "lookup") {
+    if (result.kind === "define" || result.kind === "lookup" || result.kind === "question") {
+      if (result.kind === "question" && result.question) lines.push(`Question: ${result.question}`, "");
       lines.push(result.body, "");
     } else if (result.kind === "image") {
       if (result.body) lines.push(result.body, "");

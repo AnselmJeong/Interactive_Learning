@@ -1,5 +1,4 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { KeyboardEvent } from "react";
 import { Archive, BookOpen, Check, Info, Loader2, MessageSquare, Moon, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Play, Send, Settings, Sun, Trash2, Upload } from "lucide-react";
 import type { MaterialSummary, PreparedSourceImport, ProjectArchiveExport, ProjectSummary, SourceSummary } from "../../shared/rpc-types";
 import type { AppSettings, AiProviderStatus, ChatSubmitShortcut, ProviderModel } from "../../shared/settings-types";
@@ -20,6 +19,7 @@ import { LearningBuddy } from "./components/LearningBuddy";
 import { stripFigureMarkdown } from "./figure-text";
 import { playAnswerReadySound, primeAnswerReadySound } from "./notification-sound";
 import { nextPrefetchStatusForSession } from "./prefetch-status";
+import { shouldSubmitTextArea } from "./submit-shortcut";
 
 type RpcRequest = (method: string, params: unknown) => Promise<unknown>;
 
@@ -43,12 +43,6 @@ const READY_STATUS = "Ready";
 const TUTOR_THINKING_STATUS = "Tutor is thinking";
 const BUDDY_CONTEXT_EXCERPT_CHARS = 520;
 const BUDDY_CONTEXT_MAX_CHARS = 1800;
-
-function shouldSubmitChatDraft(event: KeyboardEvent<HTMLTextAreaElement>, submitShortcut: ChatSubmitShortcut) {
-  if (event.key !== "Enter" || event.nativeEvent.isComposing) return false;
-  if (submitShortcut === "enter") return !event.shiftKey && !event.altKey && !event.metaKey && !event.ctrlKey;
-  return (event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey;
-}
 
 function resolveTheme(mode: AppSettings["theme"] | undefined, systemDark: boolean): AppTheme {
   if (mode === "dark" || mode === "light") return mode;
@@ -220,6 +214,7 @@ function AnswerSourceRefs({ refs, materialId, request }: { refs: SourceRef[]; ma
 function annotationKindLabel(kind: MaterialAnnotation["kind"]) {
   if (kind === "define") return "정의";
   if (kind === "lookup") return "위키 요약";
+  if (kind === "question") return "추가 질문";
   if (kind === "image") return "이미지";
   if (kind === "note") return "노트";
   return "표시";
@@ -246,17 +241,22 @@ function AnnotationSourceLinks({ sourceMeta }: { sourceMeta: MaterialAnnotation[
 
 function ChatSavedAnnotationCard({ annotation, onDelete }: { annotation: MaterialAnnotation; onDelete: (annotationId: string) => void }) {
   const result = annotation.result;
+  const isQuestion = annotation.kind === "question" && result.kind === "question";
   return (
     <article className={`chat-annotation-card ${annotation.kind}`}>
       <header>
         <span>{annotationKindLabel(annotation.kind)}</span>
-        <strong>{annotation.selectedText}</strong>
+        {isQuestion ? null : <strong>{annotation.selectedText}</strong>}
         <button type="button" onClick={() => onDelete(annotation.id)} title="삭제">
           <Trash2 size={14} />
         </button>
       </header>
-      {result.kind === "define" || result.kind === "lookup" ? (
+      {result.kind === "define" || result.kind === "lookup" || result.kind === "question" ? (
         <>
+          {isQuestion ? <em className="chat-annotation-selected-text">{annotation.selectedText}</em> : null}
+          {result.kind === "question" && result.question ? (
+            <blockquote className="chat-annotation-question">{result.question}</blockquote>
+          ) : null}
           <MarkdownContent content={result.body} compact />
           <AnnotationSourceLinks sourceMeta={annotation.sourceMeta} />
         </>
@@ -322,6 +322,7 @@ const ChatLog = memo(function ChatLog({
     const visibleChunkIds = new Set(messages.flatMap((message) => message.sourceRefs));
     const placed = new Set<string>();
     const groups = new Map<string, MaterialAnnotation[]>();
+    const blockGroups = new Map<string, MaterialAnnotation[]>();
 
     function add(messageId: string, annotation: MaterialAnnotation) {
       const group = groups.get(messageId) || [];
@@ -330,7 +331,18 @@ const ChatLog = memo(function ChatLog({
       placed.add(annotation.id);
     }
 
+    function addBlock(blockId: string, annotation: MaterialAnnotation) {
+      const group = blockGroups.get(blockId) || [];
+      group.push(annotation);
+      blockGroups.set(blockId, group);
+      placed.add(annotation.id);
+    }
+
     for (const annotation of annotations) {
+      if (annotation.anchorBlockId && annotation.anchorMessageId && assistantMessageIds.has(annotation.anchorMessageId)) {
+        addBlock(annotation.anchorBlockId, annotation);
+        continue;
+      }
       if (annotation.anchorMessageId && assistantMessageIds.has(annotation.anchorMessageId)) {
         add(annotation.anchorMessageId, annotation);
       }
@@ -348,10 +360,13 @@ const ChatLog = memo(function ChatLog({
     for (const group of groups.values()) {
       group.sort((a, b) => a.createdAt - b.createdAt);
     }
+    for (const group of blockGroups.values()) {
+      group.sort((a, b) => a.createdAt - b.createdAt);
+    }
     const unplaced = annotations
       .filter((annotation) => !placed.has(annotation.id) && visibleChunkIds.has(annotation.chunkId))
       .sort((a, b) => a.createdAt - b.createdAt);
-    return { groups, unplaced };
+    return { groups, blockGroups, unplaced };
   }, [annotations, messages]);
 
   return (
@@ -375,6 +390,13 @@ const ChatLog = memo(function ChatLog({
                 fallbackSourceRefs={message.sourceRefs.map((id) => sourceRefById.get(id)).filter((ref): ref is SourceRef => Boolean(ref))}
                 materialId={materialId}
                 request={request}
+                messageId={message.id}
+                renderBlockAfter={(blockId) => {
+                  const blockAnnotations = annotationPlacement.blockGroups.get(blockId) || [];
+                  return blockAnnotations.length ? (
+                    <ChatSavedAnnotations annotations={blockAnnotations} onDelete={onDeleteAnnotation} />
+                  ) : null;
+                }}
               />
             ) : (
               <MarkdownContent content={message.content} />
@@ -476,7 +498,7 @@ const ChatComposer = memo(function ChatComposer({
         value={draft}
         onChange={(event) => setDraft(event.target.value)}
         onKeyDown={(event) => {
-          if (shouldSubmitChatDraft(event, submitShortcut)) {
+          if (shouldSubmitTextArea(event, submitShortcut)) {
             event.preventDefault();
             void submit(event.currentTarget.value);
           }
@@ -848,6 +870,29 @@ export function App({ request }: { request: RpcRequest }) {
       setStatus(READY_STATUS);
     } catch (error) {
       setStatus((error as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteSession(item: SessionSummary) {
+    const confirmed = window.confirm(`"${item.title}" session을 삭제할까요?\n\n이 session의 대화 기록과 진행 상태가 삭제됩니다. Source와 material은 유지됩니다.`);
+    if (!confirmed) return;
+    setBusy(true);
+    setStatus("세션 삭제 중");
+    try {
+      await request("sessions.delete", { sessionId: item.id });
+      setState((current) => ({ ...current, sessions: current.sessions.filter((sessionItem) => sessionItem.id !== item.id) }));
+      if (session?.id === item.id) {
+        setSession(null);
+        setContext(null);
+        setSelectedModuleId(null);
+        setExpandedSourceMessages(new Set());
+        setPrefetchStatus(null);
+      }
+      setStatus(READY_STATUS);
+    } catch (error) {
+      setStatus(`세션 삭제 실패: ${(error as Error).message}`);
     } finally {
       setBusy(false);
     }
@@ -1472,6 +1517,7 @@ export function App({ request }: { request: RpcRequest }) {
               displayHeadingPath={displayableHeadingPath}
               cleanSourceText={stripRepeatedSourceHeading}
               request={request}
+              submitShortcut={settings?.chatSubmitShortcut || "cmd-enter"}
               onAnnotationSaved={handleAnnotationSaved}
               onAnnotationDeleted={handleAnnotationDeleted}
             />
@@ -1590,18 +1636,6 @@ export function App({ request }: { request: RpcRequest }) {
                       <div key={module.id} className="module-tile">
                         <div className="module-tile-head">
                           <strong title={moduleTitle}>{moduleTitle}</strong>
-                          {activeSource ? (
-                            <button
-                              type="button"
-                              className="module-delete-button"
-                              onClick={() => deleteSource(activeSource)}
-                              disabled={busy}
-                              title="이 학습 기록 삭제"
-                              aria-label="이 학습 기록 삭제"
-                            >
-                              <Trash2 size={14} />
-                            </button>
-                          ) : null}
                         </div>
                         {learningGoal ? <span>{learningGoal}</span> : null}
                       </div>
@@ -1621,6 +1655,7 @@ export function App({ request }: { request: RpcRequest }) {
               materialId={artifacts.manifest.id}
               defaultChunkId={defaultLookupChunkId}
               request={request}
+              submitShortcut={settings?.chatSubmitShortcut || "cmd-enter"}
               onAnnotationSaved={handleAnnotationSaved}
             />
           ) : null}
@@ -1721,19 +1756,31 @@ export function App({ request }: { request: RpcRequest }) {
                   <div className="session-list">
                     {state.sessions.length ? (
                       state.sessions.map((item) => (
-                        <button key={item.id} className={`session-row ${session?.id === item.id ? "active" : ""}`} onClick={() => loadSession(item.id)} disabled={busy}>
-                          <span className="session-row-main">
-                            <strong>{item.title}</strong>
-                            <small>{item.currentModuleTitle || "No current module"}</small>
-                          </span>
-                          <em className={`session-status ${item.status}`}>{item.status}</em>
-                          <span className="session-row-meta">
-                            <small>{new Date(item.updatedAt).toLocaleString()}</small>
-                            <small>
-                              {item.completedModuleCount}/{item.totalModuleCount || "?"} modules · {item.messageCount} messages
-                            </small>
-                          </span>
-                        </button>
+                        <article key={item.id} className={`session-row ${session?.id === item.id ? "active" : ""}`}>
+                          <button type="button" className="session-row-open" onClick={() => loadSession(item.id)} disabled={busy}>
+                            <span className="session-row-main">
+                              <strong>{item.title}</strong>
+                              <small>{item.currentModuleTitle || "No current module"}</small>
+                            </span>
+                            <em className={`session-status ${item.status}`}>{item.status}</em>
+                            <span className="session-row-meta">
+                              <small>{new Date(item.updatedAt).toLocaleString()}</small>
+                              <small>
+                                {item.completedModuleCount}/{item.totalModuleCount || "?"} modules · {item.messageCount} messages
+                              </small>
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            className="session-delete-button"
+                            onClick={() => void deleteSession(item)}
+                            disabled={busy}
+                            title="세션 삭제"
+                            aria-label={`${item.title} 세션 삭제`}
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </article>
                       ))
                     ) : (
                       <p className="muted-copy">No sessions for this material yet.</p>

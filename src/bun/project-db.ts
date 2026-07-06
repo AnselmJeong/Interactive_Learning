@@ -164,7 +164,8 @@ export function getDb() {
       source_id TEXT,
       chunk_id TEXT NOT NULL,
       anchor_message_id TEXT,
-      kind TEXT NOT NULL CHECK (kind IN ('define', 'lookup', 'image', 'note', 'highlight')),
+      anchor_block_id TEXT,
+      kind TEXT NOT NULL CHECK (kind IN ('define', 'lookup', 'question', 'image', 'note', 'highlight')),
       selected_text TEXT NOT NULL,
       normalized_text TEXT NOT NULL,
       result_json TEXT NOT NULL,
@@ -209,6 +210,14 @@ export function getDb() {
   if (!annotationColumns.includes("anchor_message_id")) {
     db.exec("ALTER TABLE material_annotations ADD COLUMN anchor_message_id TEXT;");
   }
+  if (!annotationColumns.includes("anchor_block_id")) {
+    db.exec("ALTER TABLE material_annotations ADD COLUMN anchor_block_id TEXT;");
+  }
+  migrateMaterialAnnotationKindCheck(db);
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_material_annotations_material_chunk
+      ON material_annotations(material_id, chunk_id, created_at ASC);
+  `);
   normalizeMessageOrdinals(db);
   db.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_learning_messages_session_ordinal_unique
@@ -216,6 +225,47 @@ export function getDb() {
   `);
 
   return db;
+}
+
+function migrateMaterialAnnotationKindCheck(database: Database) {
+  const row = database
+    .query<{ sql: string | null }, []>("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'material_annotations'")
+    .get();
+  if (!row?.sql || row.sql.includes("'question'")) return;
+
+  const migrate = database.transaction(() => {
+    database.exec(`
+      ALTER TABLE material_annotations RENAME TO material_annotations_old;
+
+      CREATE TABLE material_annotations (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        material_id TEXT NOT NULL REFERENCES learning_materials(id) ON DELETE CASCADE,
+        source_id TEXT,
+        chunk_id TEXT NOT NULL,
+        anchor_message_id TEXT,
+        anchor_block_id TEXT,
+        kind TEXT NOT NULL CHECK (kind IN ('define', 'lookup', 'question', 'image', 'note', 'highlight')),
+        selected_text TEXT NOT NULL,
+        normalized_text TEXT NOT NULL,
+        result_json TEXT NOT NULL,
+        source_meta_json TEXT NOT NULL DEFAULT '[]',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+
+      INSERT INTO material_annotations
+       (id, project_id, material_id, source_id, chunk_id, anchor_message_id, anchor_block_id, kind, selected_text, normalized_text,
+        result_json, source_meta_json, created_at, updated_at)
+      SELECT
+        id, project_id, material_id, source_id, chunk_id, anchor_message_id, anchor_block_id, kind, selected_text, normalized_text,
+        result_json, source_meta_json, created_at, updated_at
+      FROM material_annotations_old;
+
+      DROP TABLE material_annotations_old;
+    `);
+  });
+  migrate();
 }
 
 function normalizeMessageOrdinals(database: Database) {

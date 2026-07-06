@@ -135,6 +135,7 @@ export type AppRPC = {
       "figures.getAsset": { params: { materialId: string; figureId: string }; response: { figureId: string; mimeType: string; dataUrl: string } };
       "figures.explain": { params: { materialId: string; figureId: string; userPrompt?: string; contextChunkIds?: string[] }; response: { figureId: string; explanation: string; model: string; visionCapable: true } };
       "annotations.define": { params: { materialId: string; chunkId: string; selectedText: string }; response: LookupResult };
+      "annotations.ask": { params: { materialId: string; chunkId: string; selectedText: string; question: string }; response: LookupResult };
       "annotations.lookup": { params: { materialId: string; chunkId: string; selectedText: string }; response: LookupResult };
       "annotations.findImages": { params: { materialId: string; chunkId: string; selectedText: string }; response: ImageLookupResult };
       "annotations.save": {
@@ -142,6 +143,7 @@ export type AppRPC = {
           materialId: string;
           chunkId: string;
           anchorMessageId?: string | null;
+          anchorBlockId?: string | null;
           kind: MaterialAnnotationKind;
           selectedText: string;
           result: LookupResult | ImageLookupResult | NoteResult | HighlightResult;
@@ -157,6 +159,7 @@ export type AppRPC = {
       "sessions.advance": { params: { sessionId: string; mode: "chunk" | "paragraph" | "module" }; response: { session: SessionSnapshot; context: TutorContext; output: TutorTurnOutput } };
       "sessions.returnToProgress": { params: { sessionId: string }; response: { session: SessionSnapshot; context: TutorContext; output: TutorTurnOutput } };
       "sessions.prefetchStatus": { params: { sessionId: string }; response: TutorPrefetchStatus };
+      "sessions.delete": { params: { sessionId: string }; response: boolean };
       "sessions.selectModule": { params: { sessionId: string; moduleId: string }; response: { session: SessionSnapshot; context: TutorContext } };
       "sessions.openModule": { params: { sessionId: string; moduleId: string }; response: { session: SessionSnapshot; context: TutorContext; output: TutorTurnOutput } };
       "tutor.sendTurn": { params: { sessionId: string; userText: string }; response: { session: SessionSnapshot; context: TutorContext; output: TutorTurnOutput } };

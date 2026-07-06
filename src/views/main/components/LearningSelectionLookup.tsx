@@ -1,14 +1,17 @@
 import { useEffect, useRef, useState, type PointerEvent, type RefObject } from "react";
-import { BookOpen, Image as ImageIcon, Loader2, Save, Search, X } from "lucide-react";
+import { Image as ImageIcon, Loader2, MessageSquare, Save, Search, X } from "lucide-react";
 import type { ImageLookupResult, LookupResult, MaterialAnnotation } from "../../../shared/artifact-types";
+import type { ChatSubmitShortcut } from "../../../shared/settings-types";
 import { MarkdownContent } from "./MarkdownContent";
+import { shouldSubmitTextArea } from "../submit-shortcut";
 
 type RpcRequest = (method: string, params: unknown) => Promise<unknown>;
-type LookupAction = "define" | "lookup" | "image";
+type LookupAction = "question" | "lookup" | "image";
 
 type SelectionState = {
   chunkId: string;
   anchorMessageId?: string | null;
+  anchorBlockId?: string | null;
   text: string;
   x: number;
   y: number;
@@ -30,6 +33,7 @@ type LearningSelectionLookupProps = {
   materialId: string | null;
   defaultChunkId: string | null;
   request: RpcRequest;
+  submitShortcut: ChatSubmitShortcut;
   onAnnotationSaved?: (annotation: MaterialAnnotation) => void;
 };
 
@@ -58,7 +62,7 @@ function toolbarPointForRange(rect: DOMRect, container: HTMLElement | null) {
 }
 
 function actionLabel(action: LookupAction) {
-  if (action === "define") return "원문 정의";
+  if (action === "question") return "추가 질문";
   if (action === "lookup") return "위키 요약";
   return "이미지 후보";
 }
@@ -80,7 +84,11 @@ function imageLookupKey(image: ImageLookupResult["images"][number], index: numbe
 }
 
 function annotationMethod(action: LookupAction) {
-  return action === "define" ? "annotations.define" : action === "lookup" ? "annotations.lookup" : "annotations.findImages";
+  return action === "lookup" ? "annotations.lookup" : "annotations.findImages";
+}
+
+function initialQueryText(panel: LookupPanelState) {
+  return panel.action === "question" ? panel.queryText : panel.queryText || panel.selection.text;
 }
 
 export function LearningSelectionLookup({
@@ -88,6 +96,7 @@ export function LearningSelectionLookup({
   materialId,
   defaultChunkId,
   request,
+  submitShortcut,
   onAnnotationSaved,
 }: LearningSelectionLookupProps) {
   const [selection, setSelection] = useState<SelectionState | null>(null);
@@ -141,6 +150,9 @@ export function LearningSelectionLookup({
     const startMessage = startElement.closest<HTMLElement>("[data-lookup-message-id]");
     const endMessage = endElement.closest<HTMLElement>("[data-lookup-message-id]");
     const anchorMessageId = startMessage?.dataset.lookupMessageId || endMessage?.dataset.lookupMessageId || null;
+    const startBlock = startElement.closest<HTMLElement>("[data-lookup-block-id]");
+    const endBlock = endElement.closest<HTMLElement>("[data-lookup-block-id]");
+    const anchorBlockId = startBlock?.dataset.lookupBlockId || endBlock?.dataset.lookupBlockId || null;
 
     const rect = range.getBoundingClientRect();
     if (!rect.width && !rect.height) return null;
@@ -148,6 +160,7 @@ export function LearningSelectionLookup({
     return {
       chunkId,
       anchorMessageId,
+      anchorBlockId,
       text: text.slice(0, 420),
       x: point.x,
       y: point.y,
@@ -169,6 +182,11 @@ export function LearningSelectionLookup({
     const panelPoint = clampPoint(sourceSelection.x - 448, sourceSelection.y);
     const nextSelection = { ...sourceSelection };
     const queryText = sourceSelection.text;
+    if (action === "question") {
+      setSelection(nextSelection);
+      setLookupPanel({ action, selection: nextSelection, status: "ready", x: panelPoint.x, y: panelPoint.y, queryText: "", result: undefined });
+      return;
+    }
     const requestSeq = lookupRequestSeqRef.current + 1;
     lookupRequestSeqRef.current = requestSeq;
     setSelection(nextSelection);
@@ -197,18 +215,28 @@ export function LearningSelectionLookup({
   }
 
   async function searchLookupResult(panel: LookupPanelState, queryText: string) {
-    if (!materialId || panel.action === "define") return;
+    if (!materialId) return;
     const normalized = queryText.replace(/\s+/g, " ").trim();
     if (!normalized) return;
     const requestSeq = lookupRequestSeqRef.current + 1;
     lookupRequestSeqRef.current = requestSeq;
     setLookupPanel({ ...panel, status: "loading", queryText: normalized, result: undefined, error: undefined });
     try {
-      const result = (await request(annotationMethod(panel.action), {
-        materialId,
-        chunkId: panel.selection.chunkId,
-        selectedText: normalized,
-      })) as LookupResult | ImageLookupResult;
+      const result = (await request(
+        panel.action === "question" ? "annotations.ask" : annotationMethod(panel.action),
+        panel.action === "question"
+          ? {
+              materialId,
+              chunkId: panel.selection.chunkId,
+              selectedText: panel.selection.text,
+              question: normalized,
+            }
+          : {
+              materialId,
+              chunkId: panel.selection.chunkId,
+              selectedText: normalized,
+            }
+      )) as LookupResult | ImageLookupResult;
       if (lookupRequestSeqRef.current !== requestSeq) return;
       setLookupPanel({ ...panel, status: "ready", queryText: normalized, result, error: undefined });
     } catch (error) {
@@ -232,6 +260,7 @@ export function LearningSelectionLookup({
         materialId,
         chunkId: panel.selection.chunkId,
         anchorMessageId: panel.selection.anchorMessageId || null,
+        anchorBlockId: panel.selection.anchorBlockId || null,
         kind: result.kind,
         selectedText: panel.selection.text,
         result,
@@ -260,13 +289,13 @@ export function LearningSelectionLookup({
         <div className="selection-toolbar" style={{ left: selection.x, top: selection.y }} aria-label="선택 텍스트 작업">
           <button
             type="button"
-            className="define-action"
+            className="question-action"
             onMouseDown={(event) => event.preventDefault()}
-            onClick={() => void runLookup("define")}
-            aria-label="원문 정의"
-            title="원문 정의"
+            onClick={() => void runLookup("question")}
+            aria-label="추가 질문"
+            title="추가 질문"
           >
-            <BookOpen size={20} />
+            <MessageSquare size={20} />
           </button>
           <button
             type="button"
@@ -297,6 +326,7 @@ export function LearningSelectionLookup({
           onSearch={(queryText) => void searchLookupResult(lookupPanel, queryText)}
           onClose={closePanel}
           onMove={(x, y) => setLookupPanel((current) => (current ? { ...current, x, y } : current))}
+          submitShortcut={submitShortcut}
         />
       ) : null}
     </>
@@ -309,17 +339,19 @@ function LookupPopover({
   onSearch,
   onClose,
   onMove,
+  submitShortcut,
 }: {
   panel: LookupPanelState;
   onSave: (result: LookupResult | ImageLookupResult) => void;
   onSearch: (queryText: string) => void;
   onClose: () => void;
   onMove: (x: number, y: number) => void;
+  submitShortcut: ChatSubmitShortcut;
 }) {
   const dragRef = useRef<{ offsetX: number; offsetY: number } | null>(null);
   const [dragging, setDragging] = useState(false);
   const [selectedImageKeys, setSelectedImageKeys] = useState<Set<string>>(new Set());
-  const [queryText, setQueryText] = useState(panel.queryText || panel.selection.text);
+  const [queryText, setQueryText] = useState(() => initialQueryText(panel));
   const selectedResult = panel.result?.kind === "image"
     ? {
         ...panel.result,
@@ -333,8 +365,8 @@ function LookupPopover({
   }, [panel.result]);
 
   useEffect(() => {
-    setQueryText(panel.queryText || panel.selection.text);
-  }, [panel.queryText, panel.selection.text]);
+    setQueryText(initialQueryText(panel));
+  }, [panel.action, panel.queryText, panel.selection.text]);
 
   useEffect(() => {
     if (!dragging) return;
@@ -380,7 +412,34 @@ function LookupPopover({
         </button>
       </header>
 
-      {panel.action !== "define" ? (
+      {panel.action === "question" ? (
+        <form
+          className="lookup-query-form question-query-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            onSearch(queryText);
+          }}
+        >
+          <label>
+            <span>Question</span>
+            <textarea
+              value={queryText}
+              onChange={(event) => setQueryText(event.target.value)}
+              onKeyDown={(event) => {
+                if (shouldSubmitTextArea(event, submitShortcut) && queryText.trim()) {
+                  event.preventDefault();
+                  onSearch(queryText);
+                }
+              }}
+              placeholder="이 부분에 대해 더 묻고 싶은 점"
+              rows={3}
+            />
+          </label>
+          <button type="submit" title="Ask" disabled={panel.status === "saving" || panel.status === "loading" || !queryText.trim()}>
+            <MessageSquare size={15} />
+          </button>
+        </form>
+      ) : (
         <form
           className="lookup-query-form"
           onSubmit={(event) => {
@@ -396,12 +455,12 @@ function LookupPopover({
             <Search size={15} />
           </button>
         </form>
-      ) : null}
+      )}
 
       {panel.status === "loading" || panel.status === "saving" ? (
         <div className="lookup-state">
           <Loader2 size={18} className="spin" />
-          <span>{panel.status === "saving" ? "저장 중" : "찾는 중"}</span>
+          <span>{panel.status === "saving" ? "저장 중" : panel.action === "question" ? "답변 중" : "찾는 중"}</span>
         </div>
       ) : null}
 
@@ -492,7 +551,11 @@ function LookupResultBody({
 
   return (
     <div className="lookup-result-body">
-      <h4>{result.title}</h4>
+      {result.kind === "question" ? (
+        result.question ? <blockquote className="lookup-question-text">{result.question}</blockquote> : null
+      ) : (
+        <h4>{result.title}</h4>
+      )}
       <MarkdownContent content={result.body} compact />
       <SourceMetaLinks sourceMeta={result.sourceMeta} />
     </div>

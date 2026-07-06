@@ -1081,6 +1081,11 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   border-left-color: var(--accent);
   background: rgba(167, 125, 18, 0.06);
 }
+.chat-annotation-card.question {
+  border-color: rgba(45, 76, 126, 0.18);
+  border-left-color: #2d4c7e;
+  background: rgba(45, 76, 126, 0.065);
+}
 .chat-annotation-card.image {
   border-color: rgba(41, 58, 68, 0.16);
   border-left-color: #51606a;
@@ -1101,6 +1106,7 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   text-transform: uppercase;
 }
 .chat-annotation-card.define > header span { color: var(--accent-2); }
+.chat-annotation-card.question > header span { color: #2d4c7e; }
 .chat-annotation-card > header strong {
   flex: 1;
   min-width: 0;
@@ -1127,13 +1133,37 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
 }
 .chat-annotation-card .markdown-content {
   color: #3b352d;
-  font-size: 13px;
-  line-height: 1.55;
+  font-size: 14.5px;
+  line-height: 1.62;
 }
 .chat-annotation-card p {
   margin: 0;
   color: #3b352d;
-  font-size: 13px;
+  font-size: 14.5px;
+  line-height: 1.62;
+}
+.chat-annotation-selected-text {
+  display: block;
+  color: var(--ink);
+  font-size: 14.5px;
+  line-height: 1.45;
+  font-style: italic;
+  font-weight: 650;
+}
+.chat-annotation-question,
+.lookup-question-text {
+  margin: 0;
+  border-left: 3px solid rgba(45, 76, 126, 0.32);
+  padding-left: 10px;
+  color: #263f67;
+  font-weight: 720;
+}
+.chat-annotation-question {
+  font-size: 14.5px;
+  line-height: 1.62;
+}
+.lookup-question-text {
+  font-size: 15px;
   line-height: 1.55;
 }
 .chat-annotation-card .lookup-image-grid {
@@ -1354,8 +1384,6 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
 .module-tile-head {
   min-width: 0;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 30px;
-  align-items: center;
   gap: 8px;
 }
 .module-tile strong {
@@ -1365,27 +1393,6 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   white-space: nowrap;
 }
 .module-tile span { color: var(--muted); line-height: 1.45; font-size: 13px; }
-.module-delete-button {
-  width: 28px;
-  min-height: 28px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  border: 0;
-  border-radius: 7px;
-  background: transparent;
-  color: var(--quiet);
-  cursor: pointer;
-  opacity: 0;
-}
-.module-tile:hover .module-delete-button,
-.module-delete-button:focus-visible {
-  opacity: 1;
-}
-.module-delete-button:hover:not(:disabled) {
-  background: rgba(157, 55, 50, 0.08);
-  color: var(--danger);
-}
 
 .visual-block {
   max-width: 980px;
@@ -1559,16 +1566,50 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
 }
 .session-row {
   width: 100%;
+  position: relative;
   border: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.72);
   border-radius: 7px;
-  padding: 10px 11px;
+  overflow: hidden;
+}
+.session-row-open {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  padding: 10px 42px 10px 11px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px 10px;
   align-items: start;
   text-align: left;
   cursor: pointer;
+}
+.session-row-open:hover:not(:disabled) {
+  background: rgba(167, 125, 18, 0.04);
+}
+.session-row-open:disabled {
+  cursor: not-allowed;
+}
+.session-delete-button {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 28px;
+  min-height: 28px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--quiet);
+  display: grid;
+  place-items: center;
+  cursor: pointer;
+}
+.session-delete-button:hover:not(:disabled) {
+  background: rgba(157, 55, 50, 0.08);
+  color: var(--danger);
+}
+.session-delete-button:disabled {
+  cursor: not-allowed;
 }
 .session-row.active {
   border-color: rgba(167, 125, 18, 0.28);
@@ -2905,7 +2946,7 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   background: rgba(46, 122, 111, 0.14);
   color: #256f68;
 }
-.selection-toolbar .define-action,
+.selection-toolbar .question-action,
 .selection-toolbar .lookup-action,
 .selection-toolbar .image-action {
   background: rgba(45, 76, 126, 0.08);
@@ -3057,6 +3098,23 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   font: inherit;
   font-size: 13px;
 }
+.lookup-query-form textarea {
+  width: 100%;
+  min-width: 0;
+  resize: vertical;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  padding: 8px 10px;
+  color: var(--ink);
+  background: #fffefd;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.question-query-form {
+  grid-template-columns: minmax(0, 1fr) 36px;
+  align-items: center;
+}
 .lookup-query-form button {
   width: 36px;
   min-height: 34px;
@@ -3186,9 +3244,19 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   padding: 12px 14px;
 }
 .source-annotation-card.define { background: rgba(167, 125, 18, 0.08); border-color: rgba(167, 125, 18, 0.18); }
+.source-annotation-card.question { background: rgba(45, 76, 126, 0.07); border-color: rgba(45, 76, 126, 0.2); }
+.source-annotation-card.question > header span { color: #2d4c7e; }
 .source-annotation-card.image { background: rgba(41, 58, 68, 0.06); border-color: rgba(41, 58, 68, 0.16); }
 .source-annotation-card .lookup-result-body {
   padding: 0;
+}
+.source-annotation-card .markdown-content,
+.source-annotation-card p {
+  font-size: 14.5px;
+  line-height: 1.62;
+}
+.source-annotation-selected-text {
+  color: var(--ink);
 }
 .source-annotation-card .lookup-image-grid a {
   background: rgba(255, 255, 255, 0.64);
@@ -3419,6 +3487,17 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
 :root[data-theme="dark"] .source-mark.highlight {
   background: rgba(214, 173, 68, 0.1);
   border-color: rgba(214, 173, 68, 0.22);
+}
+:root[data-theme="dark"] .chat-annotation-card.question,
+:root[data-theme="dark"] .source-annotation-card.question {
+  background: rgba(126, 161, 212, 0.1);
+  border-color: rgba(126, 161, 212, 0.22);
+}
+:root[data-theme="dark"] .chat-annotation-card.question > header span,
+:root[data-theme="dark"] .source-annotation-card.question > header span,
+:root[data-theme="dark"] .lookup-question-text,
+:root[data-theme="dark"] .chat-annotation-question {
+  color: #a9c4ed;
 }
 :root[data-theme="dark"] .source-search,
 :root[data-theme="dark"] .source-search-results,

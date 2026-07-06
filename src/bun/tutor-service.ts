@@ -6,7 +6,7 @@ import { AiProviderSettingsService } from "./ai-provider-settings";
 import { createAiProviderClient } from "./ai-provider-client";
 import { isProviderError } from "./provider-error";
 import { dataPath } from "./paths";
-import { writeSessionSnapshot } from "./project-bundle-sync";
+import { deleteSessionSnapshot, writeSessionSnapshot } from "./project-bundle-sync";
 import { classifyProgressionCommand } from "../shared/progression-command";
 import type { CourseModule, LectureModulePlan, MaterialArtifacts, PresentationModulePlan, SourceChunk, VisualSpec } from "../shared/artifact-types";
 import type { SessionSnapshot, SessionSummary, SourceRef, TutorContentBlock, TutorContext, TutorIntent, TutorMessage, TutorPrefetchStatus, TutorStateUpdate, TutorTurnOutput } from "../shared/tutor-types";
@@ -664,6 +664,16 @@ export class TutorService {
 
   async prefetchStatus(sessionId: string): Promise<TutorPrefetchStatus> {
     return this.currentPrefetchStatus(sessionId);
+  }
+
+  async deleteSession(sessionId: string) {
+    const row = this.getSessionRow(sessionId);
+    this.markPrefetchesStale(sessionId);
+    const deleted = getDb().query("DELETE FROM learning_sessions WHERE id = ?").run(sessionId).changes > 0;
+    if (deleted) {
+      await deleteSessionSnapshot(this.projectRoot(row.project_id), row.project_id, sessionId);
+    }
+    return deleted;
   }
 
   async sendTurn(sessionId: string, userText: string) {

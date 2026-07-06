@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { getDb } from "./project-db";
 import { dataPath } from "./paths";
@@ -421,6 +421,10 @@ export async function writeSessionSnapshot(rootPath: string, snapshot: SessionSn
     schemaVersion: PROJECT_BUNDLE_SCHEMA_VERSION,
     ...snapshot,
   });
+}
+
+export async function deleteSessionSnapshot(rootPath: string, projectId: string, sessionId: string) {
+  await rm(join(rootPath, projectId, "sessions", sessionId), { recursive: true, force: true });
 }
 
 export async function writeMaterialAnnotationsSnapshot(materialId: string) {

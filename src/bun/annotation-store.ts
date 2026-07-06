@@ -18,6 +18,7 @@ type MaterialAnnotationRow = {
   source_id: string | null;
   chunk_id: string;
   anchor_message_id: string | null;
+  anchor_block_id: string | null;
   kind: MaterialAnnotationKind;
   selected_text: string;
   normalized_text: string;
@@ -32,6 +33,7 @@ export type SaveMaterialAnnotationInput = {
   chunkId: string;
   sourceId?: string | null;
   anchorMessageId?: string | null;
+  anchorBlockId?: string | null;
   kind: MaterialAnnotationKind;
   selectedText: string;
   result: AnnotationResult;
@@ -62,6 +64,7 @@ function rowToAnnotation(row: MaterialAnnotationRow): MaterialAnnotation {
     sourceId: row.source_id,
     chunkId: row.chunk_id,
     anchorMessageId: row.anchor_message_id,
+    anchorBlockId: row.anchor_block_id,
     kind: row.kind,
     selectedText: row.selected_text,
     normalizedText: row.normalized_text,
@@ -102,9 +105,9 @@ export function saveMaterialAnnotation(input: SaveMaterialAnnotationInput) {
   getDb()
     .query(
       `INSERT INTO material_annotations
-       (id, project_id, material_id, source_id, chunk_id, anchor_message_id, kind, selected_text, normalized_text,
+       (id, project_id, material_id, source_id, chunk_id, anchor_message_id, anchor_block_id, kind, selected_text, normalized_text,
         result_json, source_meta_json, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       id,
@@ -113,6 +116,7 @@ export function saveMaterialAnnotation(input: SaveMaterialAnnotationInput) {
       input.sourceId || null,
       input.chunkId,
       input.anchorMessageId || null,
+      input.anchorBlockId || null,
       input.kind,
       selectedText,
       normalizeSelectedText(selectedText),
@@ -137,9 +141,9 @@ export function replaceMaterialAnnotations(materialId: string, annotations: Mate
   const db = getDb();
   const insert = db.query(
     `INSERT INTO material_annotations
-     (id, project_id, material_id, source_id, chunk_id, anchor_message_id, kind, selected_text, normalized_text,
+     (id, project_id, material_id, source_id, chunk_id, anchor_message_id, anchor_block_id, kind, selected_text, normalized_text,
       result_json, source_meta_json, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
   const replace = db.transaction((items: MaterialAnnotation[]) => {
     db.query("DELETE FROM material_annotations WHERE material_id = ?").run(materialId);
@@ -154,6 +158,7 @@ export function replaceMaterialAnnotations(materialId: string, annotations: Mate
         annotation.sourceId || null,
         annotation.chunkId,
         annotation.anchorMessageId || null,
+        annotation.anchorBlockId || null,
         annotation.kind,
         selectedText,
         annotation.normalizedText || normalizeSelectedText(selectedText),
