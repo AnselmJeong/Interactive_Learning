@@ -3,6 +3,7 @@ import type { BuddyMessageInput, BuddyMessageMood } from "../../../shared/rpc-ty
 
 type PrefetchState = "idle" | "generating" | "ready" | "failed";
 type RpcRequest = (method: string, params: unknown) => Promise<unknown>;
+const botanBuddySrc = "views://main/assets/botan-kamiina.gif";
 
 function clickFailureMessage(error: unknown) {
   const detail = (error as Error)?.message?.replace(/\s+/g, " ").trim();
@@ -139,21 +140,14 @@ export function LearningBuddy({
           </div>
         </div>
       ) : null}
-      <button type="button" className="learning-buddy-button" onClick={showClickMessage} aria-label="Learning buddy 메시지 열기" aria-expanded={Boolean(message)}>
+      <button type="button" className="learning-buddy-button" onClick={showClickMessage} aria-label="Kamiina Botan learning buddy 메시지 열기" aria-expanded={Boolean(message)}>
         <div className="learning-buddy-stage" aria-hidden="true">
           <span className="buddy-note buddy-note-a" />
           <span className="buddy-note buddy-note-b" />
           <span className="buddy-note buddy-note-c" />
-          <div className="buddy-book">
-            <span className="buddy-cover" />
-            <span className="buddy-page-line buddy-page-line-a" />
-            <span className="buddy-page-line buddy-page-line-b" />
-            <span className="buddy-face">
-              <i />
-              <i />
-              <b />
-            </span>
-            <span className="buddy-bookmark" />
+          <div className="buddy-portrait">
+            <img src={botanBuddySrc} alt="" draggable={false} />
+            <span className="buddy-glint" />
           </div>
           <div className="buddy-signal">
             <i />
