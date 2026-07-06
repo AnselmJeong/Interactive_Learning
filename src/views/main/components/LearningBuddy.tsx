@@ -3,7 +3,7 @@ import type { BuddyMessageInput, BuddyMessageMood } from "../../../shared/rpc-ty
 
 type PrefetchState = "idle" | "generating" | "ready" | "failed";
 type RpcRequest = (method: string, params: unknown) => Promise<unknown>;
-const botanBuddySrc = "views://main/assets/botan-kamiina.gif";
+const botanBuddySrc = "views://main/assets/botan-kamiina-sharpened.webp";
 
 function clickFailureMessage(error: unknown) {
   const detail = (error as Error)?.message?.replace(/\s+/g, " ").trim();

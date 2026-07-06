@@ -125,6 +125,20 @@ function cleanBuddyMessage(text: string) {
   return firstSentence.length > 120 ? `${firstSentence.slice(0, 117).trim()}...` : firstSentence;
 }
 
+async function testSelectedLearningModel(client: Awaited<ReturnType<typeof providerClient>>["client"], model: string) {
+  await client.chatText({
+    model,
+    messages: [
+      { role: "system", content: "Reply with exactly: OK" },
+      { role: "user", content: "Connection test." },
+    ],
+    temperature: 0,
+    maxTokens: 8,
+    timeoutMs: 15000,
+    thinking: "disabled",
+  });
+}
+
 async function generateBuddyMessage(input: BuddyMessageInput) {
   const { client, publicSettings } = await providerClient();
   const moduleTitle = input.currentModuleTitle?.trim();
@@ -404,6 +418,9 @@ const rpc = BrowserView.defineRPC<AppRPC>({
           }
           if (input.modelPurpose === "vision" && selectedModel && !modelSupportsVision(provider, selectedModel)) {
             return providerStatus(true, "Selected model is not in the known image-input list; figure explanation will still try it.", input);
+          }
+          if (input.modelPurpose !== "vision" && selectedModel) {
+            await testSelectedLearningModel(client, selectedModel);
           }
           return providerStatus(true, undefined, input);
         } catch (error) {

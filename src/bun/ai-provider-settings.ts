@@ -17,7 +17,7 @@ const PROVIDER_KEY_FIELDS: Record<AiProviderId, keyof AiProviderSecretSettings> 
   gemini: "geminiApiKey",
 };
 const PROVIDER_ENV_KEYS: Record<AiProviderId, string[]> = {
-  ollama: ["OLLAMA_API_KEY", "OPENAI_API_KEY"],
+  ollama: ["OLLAMA_API_KEY"],
   openai: ["OPENAI_API_KEY"],
   anthropic: ["ANTHROPIC_API_KEY", "CLAUDE_API_KEY"],
   gemini: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],

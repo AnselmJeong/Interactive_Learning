@@ -76,7 +76,7 @@ export function providerErrorKindForStatus(status: number): ProviderErrorKind {
 function providerHttpMessage(status: number, provider: string, model: string | undefined, body: string, prefix: string) {
   const target = model ? `${provider} model ${model}` : provider;
   const tail = body ? ` Details: ${body}` : "";
-  if (status === 401 || status === 403) return `${target} rejected the API key or account access (${status}). Check the saved API key.${tail}`;
+  if (status === 401 || status === 403) return `${target} rejected this request (${status}). The API key may be valid for model listing but not authorized for this model/action, or the saved key/account access may need checking.${tail}`;
   if (status === 404) return `${target} was not found (${status}). Check the model name and base URL.${tail}`;
   if (status === 429) return `${target} hit a quota or rate limit (${status}). Wait or choose another provider/model.${tail}`;
   if (status >= 500) return `${target} returned a server error (${status}). This is usually retryable.${tail}`;

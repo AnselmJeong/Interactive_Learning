@@ -23,7 +23,7 @@ export default {
       "src/views/main/index.html": "views/main/index.html",
       "src/views/main/styles/app.css": "views/main/app.css",
       "assets/app-icon.svg": "views/main/assets/app-icon.svg",
-      "buddy/botan-kamiina.gif": "views/main/assets/botan-kamiina.gif",
+      "buddy/botan-kamiina-sharpened.webp": "views/main/assets/botan-kamiina-sharpened.webp",
       "node_modules/katex/dist/katex.min.css": "views/main/katex.min.css",
       "python/pyproject.toml": "python/pyproject.toml",
       "python/uv.lock": "python/uv.lock",
