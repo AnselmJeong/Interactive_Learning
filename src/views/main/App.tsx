@@ -1320,81 +1320,93 @@ export function App({ request }: { request: RpcRequest }) {
   return (
     <div className={shellClassName}>
       <aside className="sidebar">
-        <div className="brand-row">
-          <div className="brand-mark" aria-hidden="true">lr</div>
-          <div>
-            <h1>Learnie</h1>
-            <p>Source-grounded tutoring</p>
+        <button
+          type="button"
+          className="icon-button pane-edge-toggle left-pane-toggle"
+          onClick={() => setLeftPaneOpen((open) => !open)}
+          title={leftPaneOpen ? "Hide left pane" : "Show left pane"}
+          aria-label={leftPaneOpen ? "Hide left pane" : "Show left pane"}
+          aria-pressed={leftPaneOpen}
+        >
+          {leftPaneOpen ? <PanelLeftClose size={18} /> : <PanelLeftOpen size={18} />}
+        </button>
+        <div className="pane-content">
+          <div className="brand-row">
+            <div className="brand-mark" aria-hidden="true">lr</div>
+            <div>
+              <h1>Learnie</h1>
+              <p>Source-grounded tutoring</p>
+            </div>
           </div>
-        </div>
 
-        <section className="pane-section">
-          <div className="section-heading">
-            <h2>Project</h2>
-          </div>
-          <ProjectDropdown
-            projects={state.projects}
-            activeProject={activeProject}
-            busy={busy}
-            onSelect={(project) => void openProject(project)}
-            onCreate={() => setNewProjectOpen(true)}
-          />
-        </section>
+          <section className="pane-section">
+            <div className="section-heading">
+              <h2>Project</h2>
+            </div>
+            <ProjectDropdown
+              projects={state.projects}
+              activeProject={activeProject}
+              busy={busy}
+              onSelect={(project) => void openProject(project)}
+              onCreate={() => setNewProjectOpen(true)}
+            />
+          </section>
 
-        <section className="pane-section sources-section">
-          <div className="section-heading">
-            <h2>Sources</h2>
-            <button className="icon-button ghost" onClick={chooseAndImportSources} disabled={!activeProject || busy} title="소스 추가">
-              <Upload size={16} />
-            </button>
-          </div>
-          {sourceNotice ? <p className="source-notice">{sourceNotice}</p> : null}
-          <div className="list source-list-fill">
-            {state.sources.map((source, sourceIndex) => {
-              const isActive = activeSourceId === source.id;
-              const sourceName = displayableSourceName(source);
-              return (
-                <div
-                  key={source.id}
-                  className={`list-item source-learn-row ${isActive ? "active" : ""}`}
-                  title={sourceName}
-                >
-                  <button
-                    type="button"
-                    className="source-learn-main"
-                    onClick={() => learnFromSource(source.id)}
-                    disabled={!activeProject || busy}
+          <section className="pane-section sources-section">
+            <div className="section-heading">
+              <h2>Sources</h2>
+              <button className="icon-button ghost" onClick={chooseAndImportSources} disabled={!activeProject || busy} title="소스 추가">
+                <Upload size={16} />
+              </button>
+            </div>
+            {sourceNotice ? <p className="source-notice">{sourceNotice}</p> : null}
+            <div className="list source-list-fill">
+              {state.sources.map((source, sourceIndex) => {
+                const isActive = activeSourceId === source.id;
+                const sourceName = displayableSourceName(source);
+                return (
+                  <div
+                    key={source.id}
+                    className={`list-item source-learn-row ${isActive ? "active" : ""}`}
                     title={sourceName}
                   >
-                    <span className="source-row-index">{sourceIndex + 1}</span>
-                    <span className="source-row-title">{sourceName}</span>
-                  </button>
-                  <button
-                    type="button"
-                    className="source-delete-button"
-                    onClick={() => deleteSource(source)}
-                    disabled={!activeProject || busy}
-                    title={`${sourceName} 삭제`}
-                    aria-label={`${sourceName} 삭제`}
-                  >
-                    <Trash2 size={13} />
-                  </button>
-                </div>
-              );
-            })}
-            {!state.sources.length ? (
-              <p className="muted-copy">{activeProject ? "아직 가져온 소스가 없습니다. + 버튼으로 소스를 추가하세요." : "프로젝트를 열면 소스를 추가할 수 있습니다."}</p>
-            ) : null}
-          </div>
-        </section>
+                    <button
+                      type="button"
+                      className="source-learn-main"
+                      onClick={() => learnFromSource(source.id)}
+                      disabled={!activeProject || busy}
+                      title={sourceName}
+                    >
+                      <span className="source-row-index">{sourceIndex + 1}</span>
+                      <span className="source-row-title">{sourceName}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className="source-delete-button"
+                      onClick={() => deleteSource(source)}
+                      disabled={!activeProject || busy}
+                      title={`${sourceName} 삭제`}
+                      aria-label={`${sourceName} 삭제`}
+                    >
+                      <Trash2 size={13} />
+                    </button>
+                  </div>
+                );
+              })}
+              {!state.sources.length ? (
+                <p className="muted-copy">{activeProject ? "아직 가져온 소스가 없습니다. + 버튼으로 소스를 추가하세요." : "프로젝트를 열면 소스를 추가할 수 있습니다."}</p>
+              ) : null}
+            </div>
+          </section>
 
-        <div className="sidebar-footer">
-          <button className="wide-button settings-button" onClick={() => setSettingsOpen(true)}>
-            <Settings size={16} /> Settings
-          </button>
-          <button className="wide-button settings-button" onClick={() => setAboutOpen(true)}>
-            <Info size={16} /> About
-          </button>
+          <div className="sidebar-footer">
+            <button className="wide-button settings-button" onClick={() => setSettingsOpen(true)}>
+              <Settings size={16} /> Settings
+            </button>
+            <button className="wide-button settings-button" onClick={() => setAboutOpen(true)}>
+              <Info size={16} /> About
+            </button>
+          </div>
         </div>
       </aside>
 
@@ -1404,28 +1416,6 @@ export function App({ request }: { request: RpcRequest }) {
             <p className="project-title">{activeProject?.title || "Learning Workspace"}</p>
           </div>
           <div className="topbar-actions">
-            <div className="pane-switches" aria-label="Pane visibility">
-              <button
-                type="button"
-                className={`icon-button pane-switch ${leftPaneOpen ? "active" : ""}`}
-                onClick={() => setLeftPaneOpen((open) => !open)}
-                title={leftPaneOpen ? "Hide left pane" : "Show left pane"}
-                aria-label={leftPaneOpen ? "Hide left pane" : "Show left pane"}
-                aria-pressed={leftPaneOpen}
-              >
-                {leftPaneOpen ? <PanelLeftClose size={18} /> : <PanelLeftOpen size={18} />}
-              </button>
-              <button
-                type="button"
-                className={`icon-button pane-switch ${rightPaneOpen ? "active" : ""}`}
-                onClick={() => setRightPaneOpen((open) => !open)}
-                title={rightPaneOpen ? "Hide right pane" : "Show right pane"}
-                aria-label={rightPaneOpen ? "Hide right pane" : "Show right pane"}
-                aria-pressed={rightPaneOpen}
-              >
-                {rightPaneOpen ? <PanelRightClose size={18} /> : <PanelRightOpen size={18} />}
-              </button>
-            </div>
             <button
               type="button"
               className="icon-button theme-toggle"
@@ -1668,83 +1658,95 @@ export function App({ request }: { request: RpcRequest }) {
       </main>
 
       <aside className="inspector">
-        <div className="section-heading">
-          <h2>Inspector</h2>
-        </div>
-        {activeMaterial ? (
-          <>
-            <div className="inspector-tabs" role="tablist" aria-label="Inspector sections">
-              <button
-                type="button"
-                role="tab"
-                aria-selected={inspectorTab === "sessions"}
-                aria-controls="inspector-sessions-panel"
-                className={inspectorTab === "sessions" ? "active" : ""}
-                onClick={() => setInspectorTab("sessions")}
-              >
-                Sessions
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={inspectorTab === "modules"}
-                aria-controls="inspector-modules-panel"
-                className={inspectorTab === "modules" ? "active" : ""}
-                onClick={() => setInspectorTab("modules")}
-              >
-                Modules
-              </button>
-            </div>
-            {inspectorTab === "modules" ? (
-              <section className="inspector-section inspector-tab-panel" id="inspector-modules-panel" role="tabpanel">
-                <p className="inspector-count">{inspectorModules.length} module{inspectorModules.length === 1 ? "" : "s"}</p>
-                <div className="outline-list">
-                  {inspectorModules.map((item) => (
-                    <button
-                      key={item.id}
-                      type="button"
-                      className={`outline-row ${item.status} ${selectedModuleId === item.id ? "active" : ""}`}
-                      onClick={() => selectModuleFromOutline(item.id, item.status)}
-                      disabled={busy}
-                      title={item.title}
-                    >
-                      <span>{item.title}</span>
-                      <small>{item.status.replace(/_/g, " ")}</small>
-                    </button>
-                  ))}
-                </div>
-              </section>
-            ) : (
-              <section className="inspector-section inspector-tab-panel" id="inspector-sessions-panel" role="tabpanel">
-                <p className="inspector-count">{state.sessions.length} session{state.sessions.length === 1 ? "" : "s"}</p>
-                <div className="session-list">
-                  {state.sessions.length ? (
-                    state.sessions.map((item) => (
-                      <button key={item.id} className={`session-row ${session?.id === item.id ? "active" : ""}`} onClick={() => loadSession(item.id)} disabled={busy}>
-                        <span className="session-row-main">
-                          <strong>{item.title}</strong>
-                          <small>{item.currentModuleTitle || "No current module"}</small>
-                        </span>
-                        <em className={`session-status ${item.status}`}>{item.status}</em>
-                        <span className="session-row-meta">
-                          <small>{new Date(item.updatedAt).toLocaleString()}</small>
-                          <small>
-                            {item.completedModuleCount}/{item.totalModuleCount || "?"} modules · {item.messageCount} messages
-                          </small>
-                        </span>
-                      </button>
-                    ))
-                  ) : (
-                    <p className="muted-copy">No sessions for this material yet.</p>
-                  )}
-                </div>
-              </section>
-            )}
-          </>
-        ) : null}
-        <button className="wide-button archive-action" onClick={exportProjectArchive} disabled={!activeProject || busy}>
-          <Archive size={16} /> Export project archive
+        <button
+          type="button"
+          className="icon-button pane-edge-toggle right-pane-toggle"
+          onClick={() => setRightPaneOpen((open) => !open)}
+          title={rightPaneOpen ? "Hide right pane" : "Show right pane"}
+          aria-label={rightPaneOpen ? "Hide right pane" : "Show right pane"}
+          aria-pressed={rightPaneOpen}
+        >
+          {rightPaneOpen ? <PanelRightClose size={18} /> : <PanelRightOpen size={18} />}
         </button>
+        <div className="pane-content">
+          <div className="section-heading">
+            <h2>Inspector</h2>
+          </div>
+          {activeMaterial ? (
+            <>
+              <div className="inspector-tabs" role="tablist" aria-label="Inspector sections">
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={inspectorTab === "sessions"}
+                  aria-controls="inspector-sessions-panel"
+                  className={inspectorTab === "sessions" ? "active" : ""}
+                  onClick={() => setInspectorTab("sessions")}
+                >
+                  Sessions
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={inspectorTab === "modules"}
+                  aria-controls="inspector-modules-panel"
+                  className={inspectorTab === "modules" ? "active" : ""}
+                  onClick={() => setInspectorTab("modules")}
+                >
+                  Modules
+                </button>
+              </div>
+              {inspectorTab === "modules" ? (
+                <section className="inspector-section inspector-tab-panel" id="inspector-modules-panel" role="tabpanel">
+                  <p className="inspector-count">{inspectorModules.length} module{inspectorModules.length === 1 ? "" : "s"}</p>
+                  <div className="outline-list">
+                    {inspectorModules.map((item) => (
+                      <button
+                        key={item.id}
+                        type="button"
+                        className={`outline-row ${item.status} ${selectedModuleId === item.id ? "active" : ""}`}
+                        onClick={() => selectModuleFromOutline(item.id, item.status)}
+                        disabled={busy}
+                        title={item.title}
+                      >
+                        <span>{item.title}</span>
+                        <small>{item.status.replace(/_/g, " ")}</small>
+                      </button>
+                    ))}
+                  </div>
+                </section>
+              ) : (
+                <section className="inspector-section inspector-tab-panel" id="inspector-sessions-panel" role="tabpanel">
+                  <p className="inspector-count">{state.sessions.length} session{state.sessions.length === 1 ? "" : "s"}</p>
+                  <div className="session-list">
+                    {state.sessions.length ? (
+                      state.sessions.map((item) => (
+                        <button key={item.id} className={`session-row ${session?.id === item.id ? "active" : ""}`} onClick={() => loadSession(item.id)} disabled={busy}>
+                          <span className="session-row-main">
+                            <strong>{item.title}</strong>
+                            <small>{item.currentModuleTitle || "No current module"}</small>
+                          </span>
+                          <em className={`session-status ${item.status}`}>{item.status}</em>
+                          <span className="session-row-meta">
+                            <small>{new Date(item.updatedAt).toLocaleString()}</small>
+                            <small>
+                              {item.completedModuleCount}/{item.totalModuleCount || "?"} modules · {item.messageCount} messages
+                            </small>
+                          </span>
+                        </button>
+                      ))
+                    ) : (
+                      <p className="muted-copy">No sessions for this material yet.</p>
+                    )}
+                  </div>
+                </section>
+              )}
+            </>
+          ) : null}
+          <button className="wide-button archive-action" onClick={exportProjectArchive} disabled={!activeProject || busy}>
+            <Archive size={16} /> Export project archive
+          </button>
+        </div>
       </aside>
 
       {settingsOpen && settings && providerStatus ? (
