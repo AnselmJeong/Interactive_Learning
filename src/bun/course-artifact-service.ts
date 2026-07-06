@@ -18,6 +18,7 @@ import type {
   VisualSpec,
 } from "../shared/artifact-types";
 import type { MaterialSummary } from "../shared/rpc-types";
+import { displayableCourseTitle, displayableHeadingPath, displayableOutlineTitle, plainDisplayText } from "../shared/display-title";
 
 type MaterialRow = {
   id: string;
@@ -94,27 +95,11 @@ function sourceSpark(text: string) {
 }
 
 function chunkTitle(chunk: SourceChunk, fallback: string) {
-  return chunk.headingPath.at(-1) || fallback;
-}
-
-function normalizeHeadingTitle(title: string) {
-  return title
-    .replace(/\s+course$/i, "")
-    .replace(/\.[A-Za-z0-9]+$/u, "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .toLowerCase();
-}
-
-function cleanHeadingParts(parts: string[], leadingTitle?: string) {
-  const normalized = parts.map((part) => part.replace(/\s+course$/i, "").trim()).filter(Boolean);
-  if (normalized.length > 1 && leadingTitle && normalizeHeadingTitle(normalized[0] || "") === normalizeHeadingTitle(leadingTitle)) return normalized.slice(1);
-  if (normalized.length > 1 && /^chapter\s+\d+\b/i.test(normalized[0] || "")) return normalized.slice(1);
-  return normalized;
+  return plainDisplayText(chunk.headingPath.at(-1) || fallback) || fallback;
 }
 
 function sectionTitle(chunk: SourceChunk, fallback: string, leadingTitle?: string) {
-  return cleanHeadingParts(chunk.headingPath, leadingTitle).join(" > ") || chunkTitle(chunk, fallback);
+  return displayableHeadingPath(chunk.headingPath, " > ", leadingTitle ? [leadingTitle] : []) || chunkTitle(chunk, fallback);
 }
 
 function learningSections(chunks: SourceChunk[], sourceTitleForChunk?: SourceTitleForChunk): LearningSection[] {
@@ -134,7 +119,7 @@ function learningSections(chunks: SourceChunk[], sourceTitleForChunk?: SourceTit
 
 function buildConcepts(chunks: SourceChunk[]): Concept[] {
   return chunks.slice(0, 12).map((chunk, index) => {
-    const name = chunk.headingPath.at(-1) || `핵심 개념 ${index + 1}`;
+    const name = chunkTitle(chunk, `핵심 개념 ${index + 1}`);
     const firstSentence = sentences(chunk.text)[0] || chunk.text.slice(0, 120);
     return {
       id: `concept-${index + 1}`,
@@ -176,12 +161,36 @@ function buildCoursePlan(title: string, chunks: SourceChunk[], concepts: Concept
 
   return {
     id: `course-${crypto.randomUUID()}`,
-    title,
+    title: displayableCourseTitle(title) || plainDisplayText(title) || title,
     subtitle: "Source-grounded adaptive learning material",
     audience: "일반 성인 학습자",
     estimatedTimeMinutes: Math.max(10, modules.length * 5),
     modules,
   };
+}
+
+function sanitizeCoursePlan(coursePlan: CoursePlan): CoursePlan {
+  return {
+    ...coursePlan,
+    title: displayableCourseTitle(coursePlan.title) || plainDisplayText(coursePlan.title) || coursePlan.title,
+    modules: coursePlan.modules.map((module) => ({
+      ...module,
+      title: displayableOutlineTitle(module.title) || plainDisplayText(module.title) || module.title,
+      learningGoal: plainDisplayText(module.learningGoal) || module.learningGoal,
+    })),
+  };
+}
+
+function sanitizeSourceIndex(sourceIndex: MaterialArtifacts["sourceIndex"]): MaterialArtifacts["sourceIndex"] {
+  return Object.fromEntries(
+    Object.entries(sourceIndex).map(([chunkId, meta]) => [
+      chunkId,
+      {
+        ...meta,
+        title: displayableOutlineTitle(meta.title) || plainDisplayText(meta.title) || meta.title,
+      },
+    ])
+  );
 }
 
 function buildVisuals(chunks: SourceChunk[], sourceTitleForChunk?: SourceTitleForChunk): VisualSpec[] {
@@ -298,7 +307,8 @@ export class CourseArtifactService {
       const sourceId = this.sourceIdForChunk(chunk, sourceIds);
       return sourceId ? sourceTitleById.get(sourceId) : undefined;
     };
-    const title = rows.length === 1 ? rows[0]!.title : `${rows[0]!.title} 외 ${rows.length - 1}개`;
+    const rawTitle = rows.length === 1 ? rows[0]!.title : `${rows[0]!.title} 외 ${rows.length - 1}개`;
+    const title = plainDisplayText(rawTitle) || rawTitle || "Learning material";
     const dir = materialDirAt(this.projectRoot(projectId), projectId, id);
     await mkdir(dir, { recursive: true });
 
@@ -479,7 +489,19 @@ export class CourseArtifactService {
     const sourceChunks = await this.loadMaterialSourceChunks(row);
     const figures = await this.loadMaterialFigures(row);
     const figureIndex = await this.loadMaterialFigureIndex(row, figures);
-    return { manifest, conceptMap, coursePlan, lecturePlan, presentationPlan, criticReport, visuals, sourceChunks, sourceIndex, figures, figureIndex };
+    return {
+      manifest,
+      conceptMap,
+      coursePlan: sanitizeCoursePlan(coursePlan),
+      lecturePlan,
+      presentationPlan,
+      criticReport,
+      visuals,
+      sourceChunks,
+      sourceIndex: sanitizeSourceIndex(sourceIndex),
+      figures,
+      figureIndex,
+    };
   }
 
   private async loadMaterialSourceChunks(row: MaterialRow) {

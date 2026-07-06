@@ -1,5 +1,6 @@
 import { memo, useState, type ReactNode } from "react";
 import type { SourceRef, TutorContentBlock } from "../../../shared/tutor-types";
+import { plainDisplayText } from "../../../shared/display-title";
 import { MarkdownContent } from "./MarkdownContent";
 import { SourceFigureCard } from "./SourceFigureCard";
 
@@ -217,6 +218,11 @@ function stripFlowStepMarker(step: string) {
   return step.replace(/^\s*(?:(?:\d{1,2}[\.)、．])|[①②③④⑤⑥⑦⑧⑨⑩])\s+/u, "").trim();
 }
 
+function BlockTitle({ title }: { title: string | undefined }) {
+  const displayTitle = title ? plainDisplayText(title) : "";
+  return displayTitle ? <h4>{displayTitle}</h4> : null;
+}
+
 export const TutorBlockRenderer = memo(function TutorBlockRenderer({
   blocks,
   sourceRefById,
@@ -358,7 +364,7 @@ function TutorBlock({ block }: { block: TutorContentBlock }) {
   if (block.type === "bullets") {
     return (
       <section className="tutor-block bullet-block">
-        {block.title ? <h4>{block.title}</h4> : null}
+        <BlockTitle title={block.title} />
         <ul>
           {block.items.map((item) => (
             <li key={item}>
@@ -373,7 +379,7 @@ function TutorBlock({ block }: { block: TutorContentBlock }) {
   if (block.type === "flow") {
     return (
       <section className="tutor-block flow-block">
-        {block.title ? <h4>{block.title}</h4> : null}
+        <BlockTitle title={block.title} />
         <ol>
           {block.steps.map((step, index) => (
             <li key={`${index}-${step}`}>
@@ -388,13 +394,13 @@ function TutorBlock({ block }: { block: TutorContentBlock }) {
   if (block.type === "compare_table") {
     return (
       <section className="tutor-block compare-table-block">
-        {block.title ? <h4>{block.title}</h4> : null}
+        <BlockTitle title={block.title} />
         <div className="block-table-scroll">
           <table>
             <thead>
               <tr>
                 {block.columns.map((column) => (
-                  <th key={column}>{column}</th>
+                  <th key={column}>{plainDisplayText(column) || column}</th>
                 ))}
               </tr>
             </thead>
@@ -422,7 +428,7 @@ function TutorBlock({ block }: { block: TutorContentBlock }) {
   if (block.type === "misconception") {
     return (
       <section className="tutor-block misconception-block">
-        <h4>{block.title || "헷갈릴 수 있는 지점"}</h4>
+        <BlockTitle title={block.title || "헷갈릴 수 있는 지점"} />
         <p>{block.body}</p>
         <div className="misconception-repair">
           <MarkdownContent content={block.repair} compact />

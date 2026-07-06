@@ -8,6 +8,7 @@ import { isProviderError } from "./provider-error";
 import { dataPath } from "./paths";
 import { deleteSessionSnapshot, writeSessionSnapshot } from "./project-bundle-sync";
 import { classifyProgressionCommand } from "../shared/progression-command";
+import { plainDisplayText } from "../shared/display-title";
 import type { CourseModule, LectureModulePlan, MaterialArtifacts, PresentationModulePlan, SourceChunk, VisualSpec } from "../shared/artifact-types";
 import type { SessionSnapshot, SessionSummary, SourceRef, TutorContentBlock, TutorContext, TutorIntent, TutorMessage, TutorPrefetchStatus, TutorStateUpdate, TutorTurnOutput } from "../shared/tutor-types";
 
@@ -70,6 +71,11 @@ function classifyIntent(userText: string, event: TurnPayload["event"]): TutorInt
 function normalizeChoiceText(choice: string) {
   if (choice.includes("원래 흐름") || choice.includes("돌아갈게요")) return "이 설명을 원문 흐름과 다시 연결해 주세요.";
   return choice;
+}
+
+function plainOptionalTitle(value: unknown, maxLength = 90) {
+  if (!value) return undefined;
+  return plainDisplayText(String(value)).slice(0, maxLength) || undefined;
 }
 
 function originalTermCandidates(chunks: SourceChunk[], limit = 18) {
@@ -2161,11 +2167,11 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${chunk.text}`
     if (type === "paragraph") return { type, body: String(raw.body || "").slice(0, 4000) };
     if (type === "bullets") {
       const items = Array.isArray(raw.items) ? raw.items.map((item) => String(item).trim()).filter(Boolean).slice(0, 5) : [];
-      return items.length ? { type, title: raw.title ? String(raw.title).slice(0, 90) : undefined, items } : null;
+      return items.length ? { type, title: plainOptionalTitle(raw.title), items } : null;
     }
     if (type === "flow") {
       const steps = Array.isArray(raw.steps) ? raw.steps.map((step) => String(step).trim()).filter(Boolean).slice(0, 8) : [];
-      return steps.length >= 2 ? { type, title: raw.title ? String(raw.title).slice(0, 90) : undefined, steps } : null;
+      return steps.length >= 2 ? { type, title: plainOptionalTitle(raw.title), steps } : null;
     }
     if (type === "compare_table") {
       const columns = Array.isArray(raw.columns) ? raw.columns.map((item) => String(item).trim()).filter(Boolean).slice(0, 4) : [];
@@ -2179,7 +2185,7 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${chunk.text}`
             .filter(hasTableContent)
             .slice(0, 5)
         : [];
-      return columns.length >= 2 && rows.length ? { type, title: raw.title ? String(raw.title).slice(0, 90) : undefined, columns, rows } : null;
+      return columns.length >= 2 && rows.length ? { type, title: plainOptionalTitle(raw.title), columns, rows } : null;
     }
     if (type === "source_quote") {
       const sourceRef = String(raw.sourceRef || "");
@@ -2199,7 +2205,7 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${chunk.text}`
     if (type === "misconception") {
       return {
         type,
-        title: raw.title ? String(raw.title).slice(0, 90) : undefined,
+        title: plainOptionalTitle(raw.title),
         body: String(raw.body || "").slice(0, 360),
         repair: String(raw.repair || "").slice(0, 500),
       };

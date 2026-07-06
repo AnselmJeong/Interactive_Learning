@@ -4,6 +4,7 @@ import type { MaterialSummary, PreparedSourceImport, ProjectArchiveExport, Proje
 import type { AppSettings, AiProviderStatus, ChatSubmitShortcut, ProviderModel } from "../../shared/settings-types";
 import type { MaterialAnnotation, MaterialArtifacts } from "../../shared/artifact-types";
 import type { SessionSnapshot, SessionSummary, SourceRef, TutorContext, TutorMessage, TutorPrefetchStatus } from "../../shared/tutor-types";
+import { displayableCourseTitle, displayableHeadingPath, displayableOutlineTitle } from "../../shared/display-title";
 import { SettingsModal } from "./components/SettingsModal";
 import { VisualRenderer } from "./components/VisualRenderer";
 import { MarkdownContent } from "./components/MarkdownContent";
@@ -90,49 +91,6 @@ function displayableLearningGoal(module: CoursePlanModule) {
   if (!goal) return "";
   const boilerplate = /^원문을\s*직접\s*읽지\s*않아도\s*.+의\s*핵심\s*주장과\s*긴장을\s*설명할\s*수\s*있다\.?$/;
   return boilerplate.test(goal) ? "" : goal;
-}
-
-function displayableCourseTitle(title: string) {
-  return title.replace(/\s+course$/i, "").trim();
-}
-
-function comparableHeadingTitle(title: string) {
-  return displayableCourseTitle(title)
-    .replace(/\.[A-Za-z0-9]+$/u, "")
-    .replace(/\s+/g, " ")
-    .trim()
-    .toLowerCase();
-}
-
-function cleanHeadingParts(parts: string[], leadingTitles: string[] = []) {
-  const normalized = parts.map((part) => displayableCourseTitle(part.trim())).filter(Boolean);
-  if (
-    normalized.length > 1
-    && leadingTitles.some((title) => comparableHeadingTitle(title) === comparableHeadingTitle(normalized[0] || ""))
-  ) {
-    return normalized.slice(1);
-  }
-  if (normalized.length > 1 && /^chapter\s+\d+\b/i.test(normalized[0] || "")) return normalized.slice(1);
-  return normalized;
-}
-
-function displayableHeadingPath(parts: string[], separator = " › ", leadingTitles: string[] = []) {
-  return cleanHeadingParts(parts, leadingTitles).join(separator);
-}
-
-function displayableOutlineTitle(title: string, leadingTitles: string[] = []) {
-  const normalized = displayableCourseTitle(title)
-    .replace(/^chapter\s+\d+\s*(?:>|›|:|-)\s*/i, "")
-    .replace(/\s*(?:>|›)\s*/g, " › ")
-    .trim();
-  const parts = normalized.split(" › ").map((part) => part.trim()).filter(Boolean);
-  if (
-    parts.length > 1
-    && leadingTitles.some((leadingTitle) => comparableHeadingTitle(leadingTitle) === comparableHeadingTitle(parts[0] || ""))
-  ) {
-    return parts.slice(1).join(" › ");
-  }
-  return normalized;
 }
 
 function displayableSourceName(source: SourceSummary) {
@@ -1149,7 +1107,8 @@ export function App({ request }: { request: RpcRequest }) {
   const reachedChunks = coveredChunks + (currentChunkId && !context?.session.coveredChunkIds.includes(currentChunkId) ? 1 : 0);
   const progressText = artifacts ? `${reachedChunks}/${totalChunks}` : "0/0";
   const activeModule = context?.moduleOutline.find((item) => item.status === "in_progress");
-  const buddyModuleTitle = activeModule ? displayModuleTitle(activeModule) : selectedModuleTitle;
+  const activeModuleTitle = activeModule ? displayModuleTitle(activeModule) : "";
+  const buddyModuleTitle = activeModuleTitle || selectedModuleTitle;
   const progressPercent = totalChunks ? Math.round((reachedChunks / totalChunks) * 100) : 0;
   const latestAssistant = [...currentMessages].reverse().find((message) => message.role === "assistant");
   const latestAssistantId = latestAssistant?.id || null;
@@ -1526,7 +1485,7 @@ export function App({ request }: { request: RpcRequest }) {
               <div className="lesson-header">
                 <div>
                   <p className="eyebrow">Learning Session</p>
-                  <h3>{selectedModuleTitle || activeModule?.title || activeMaterial?.title || session.title}</h3>
+                  <h3>{selectedModuleTitle || activeModuleTitle || activeMaterial?.title || session.title}</h3>
                 </div>
               </div>
               {selectedModuleWaiting ? (
