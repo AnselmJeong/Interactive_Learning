@@ -39,6 +39,7 @@ type LearningSelectionLookupProps = {
 
 const LOOKUP_PANEL_WIDTH = 420;
 const LOOKUP_PANEL_HEIGHT = 560;
+const SELECTED_TEXT_MAX_CHARS = 4000;
 
 function clampPoint(x: number, y: number) {
   const width = Math.min(LOOKUP_PANEL_WIDTH, window.innerWidth - 24);
@@ -161,7 +162,7 @@ export function LearningSelectionLookup({
       chunkId,
       anchorMessageId,
       anchorBlockId,
-      text: text.slice(0, 420),
+      text: text.slice(0, SELECTED_TEXT_MAX_CHARS),
       x: point.x,
       y: point.y,
     };

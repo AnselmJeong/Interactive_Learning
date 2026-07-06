@@ -110,6 +110,10 @@ type WikipediaMediaItem = {
 
 const MAX_LOOKUP_IMAGE_BYTES = 1_500_000;
 const MAX_LOOKUP_IMAGE_RESULTS = 3;
+const SELECTION_QUESTION_CONTEXT_CHARS = 4000;
+const SELECTION_QUESTION_CHARS = 2000;
+const SELECTION_QUESTION_ANSWER_CHARS = 8000;
+const SELECTION_QUESTION_ANSWER_TOKENS = 3200;
 const TERM_RENDERING_RULE = [
   "When writing in Korean, do not replace romanized proper nouns or culturally specific technical terms with Korean-only transliterations.",
   "If the source or lookup result gives a romanized original form, preserve that form.",
@@ -118,6 +122,10 @@ const TERM_RENDERING_RULE = [
 
 function normalizeSelectedText(value: string, max = 160) {
   return cleanupLookupQuery(value.replace(/\s+/g, " ").trim()).slice(0, max);
+}
+
+function normalizeSelectedPassage(value: string, max: number) {
+  return value.replace(/\s+/g, " ").trim().slice(0, max);
 }
 
 function compactText(value: string, max: number) {
@@ -712,8 +720,8 @@ export class AnnotationService {
   }
 
   async ask(input: SelectionQuestionInput): Promise<LookupResult> {
-    const selectedText = normalizeSelectedText(input.selectedText, 420);
-    const question = input.question.replace(/\s+/g, " ").trim().slice(0, 900);
+    const selectedText = normalizeSelectedPassage(input.selectedText, SELECTION_QUESTION_CONTEXT_CHARS);
+    const question = input.question.replace(/\s+/g, " ").trim().slice(0, SELECTION_QUESTION_CHARS);
     if (!selectedText) throw new Error("Selected text is empty");
     if (!question) throw new Error("Question is empty");
 
@@ -867,8 +875,8 @@ export class AnnotationService {
     const body = await client.chatText({
       model,
       temperature: 0.35,
-      maxTokens: 1200,
-      timeoutMs: 60000,
+      maxTokens: SELECTION_QUESTION_ANSWER_TOKENS,
+      timeoutMs: 90000,
       messages: [
         {
           role: "system",
@@ -880,7 +888,7 @@ export class AnnotationService {
             TERM_RENDERING_RULE,
             "Use 2-4 short paragraphs or a compact bullet list when that is clearer.",
             "Do not mention internal app terms such as module ids, chunks, annotations, or lookup.",
-            "Keep the answer concise but substantive.",
+            "Keep the answer complete and substantive; do not stop mid-sentence.",
           ].join(" "),
         },
         { role: "user", content: prompt },
@@ -892,7 +900,7 @@ export class AnnotationService {
     return {
       kind: "question",
       title: question,
-      body: compactMarkdownText(body, 1800),
+      body: compactMarkdownText(body, SELECTION_QUESTION_ANSWER_CHARS),
       query: selectedText,
       question,
       provider: "ai",

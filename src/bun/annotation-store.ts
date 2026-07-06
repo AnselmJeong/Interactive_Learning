@@ -11,6 +11,7 @@ import type {
 } from "../shared/artifact-types";
 
 type AnnotationResult = LookupResult | ImageLookupResult | NoteResult | HighlightResult;
+const SELECTED_TEXT_MAX_CHARS = 4000;
 
 type MaterialAnnotationRow = {
   id: string;
@@ -114,7 +115,7 @@ export function saveMaterialAnnotation(input: SaveMaterialAnnotationInput) {
 
   const id = crypto.randomUUID();
   const now = Date.now();
-  const selectedText = input.selectedText.replace(/\s+/g, " ").trim().slice(0, 420);
+  const selectedText = input.selectedText.replace(/\s+/g, " ").trim().slice(0, SELECTED_TEXT_MAX_CHARS);
   if (!selectedText) throw new Error("Selected text is empty");
 
   getDb()
@@ -165,7 +166,7 @@ export function replaceMaterialAnnotations(materialId: string, annotations: Mate
     db.query("DELETE FROM material_annotations WHERE material_id = ?").run(materialId);
     for (const annotation of items) {
       if (!annotation.id || annotation.materialId !== materialId || !annotation.chunkId) continue;
-      const selectedText = annotation.selectedText.replace(/\s+/g, " ").trim().slice(0, 420);
+      const selectedText = annotation.selectedText.replace(/\s+/g, " ").trim().slice(0, SELECTED_TEXT_MAX_CHARS);
       if (!selectedText) continue;
       insert.run(
         annotation.id,
