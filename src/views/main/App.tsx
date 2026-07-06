@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
-import { Archive, BookOpen, Check, Info, Loader2, MessageSquare, Moon, Play, Send, Settings, Sun, Trash2, Upload } from "lucide-react";
+import { Archive, BookOpen, Check, Info, Loader2, MessageSquare, Moon, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Play, Send, Settings, Sun, Trash2, Upload } from "lucide-react";
 import type { MaterialSummary, PreparedSourceImport, ProjectArchiveExport, ProjectSummary, SourceSummary } from "../../shared/rpc-types";
 import type { AppSettings, AiProviderStatus, ChatSubmitShortcut, ProviderModel } from "../../shared/settings-types";
 import type { MaterialAnnotation, MaterialArtifacts } from "../../shared/artifact-types";
@@ -514,6 +514,8 @@ export function App({ request }: { request: RpcRequest }) {
   const [models, setModels] = useState<ProviderModel[]>([]);
   const [viewMode, setViewMode] = useState<"chat" | "source">("chat");
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>("sessions");
+  const [leftPaneOpen, setLeftPaneOpen] = useState(true);
+  const [rightPaneOpen, setRightPaneOpen] = useState(true);
   const [systemThemeDark, setSystemThemeDark] = useState(false);
   const [selectedModuleId, setSelectedModuleId] = useState<string | null>(null);
   const [composerFocusToken, setComposerFocusToken] = useState(0);
@@ -731,6 +733,38 @@ export function App({ request }: { request: RpcRequest }) {
       setStatus(READY_STATUS);
     } catch (error) {
       setStatus((error as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteSource(source: SourceSummary) {
+    if (!activeProject) return;
+    const sourceName = displayableSourceName(source);
+    const confirmed = window.confirm(`"${sourceName}" 소스와 연결된 학습 기록을 삭제할까요?\n\n생성된 material, session, annotation, and local files will be removed.`);
+    if (!confirmed) return;
+    const activeMaterialUsesSource = Boolean(activeMaterial?.sourceIds.includes(source.id));
+    setBusy(true);
+    setStatus("소스 삭제 중");
+    try {
+      await request("sources.delete", { projectId: activeProject.id, sourceId: source.id });
+      const [sources, materials] = await Promise.all([
+        request("sources.list", { projectId: activeProject.id }) as Promise<SourceSummary[]>,
+        request("materials.list", { projectId: activeProject.id }) as Promise<MaterialSummary[]>,
+      ]);
+      setState((current) => ({ ...current, sources, materials, sessions: activeMaterialUsesSource ? [] : current.sessions }));
+      if (activeMaterialUsesSource) {
+        setActiveMaterial(null);
+        setArtifacts(null);
+        setSession(null);
+        setContext(null);
+        setPrefetchStatus(null);
+        setSelectedModuleId(null);
+      }
+      setSourceNotice(`Deleted ${sourceName}`);
+      setStatus(READY_STATUS);
+    } catch (error) {
+      setStatus(`소스 삭제 실패: ${(error as Error).message}`);
     } finally {
       setBusy(false);
     }
@@ -1141,6 +1175,7 @@ export function App({ request }: { request: RpcRequest }) {
     : [];
   const visibleVisual = isTeachingGuideVisual(context?.visual) ? null : context?.visual;
   const activeSourceId = activeMaterial && activeMaterial.sourceIds.length === 1 ? activeMaterial.sourceIds[0] : null;
+  const activeSource = activeSourceId ? state.sources.find((source) => source.id === activeSourceId) || null : null;
   const courseTitle = artifacts ? displayableCourseTitle(artifacts.coursePlan.title) : "";
   const overviewModules = useMemo(() => {
     if (!artifacts) return [];
@@ -1263,6 +1298,11 @@ export function App({ request }: { request: RpcRequest }) {
   const defaultLookupChunkId = latestAssistant?.sourceRefs[0] || currentChunkId || artifacts?.sourceChunks[0]?.id || null;
 
   const importedSourceLabel = `${state.sources.length} source${state.sources.length === 1 ? "" : "s"} imported`;
+  const shellClassName = [
+    "app-shell",
+    leftPaneOpen ? "" : "left-pane-collapsed",
+    rightPaneOpen ? "" : "right-pane-collapsed",
+  ].filter(Boolean).join(" ");
   const inspectorModules = useMemo(() => {
     if (context?.moduleOutline.length) {
       return context.moduleOutline.map((item) => ({
@@ -1278,7 +1318,7 @@ export function App({ request }: { request: RpcRequest }) {
   }, [artifacts?.coursePlan.modules, context?.moduleOutline, displayModuleTitle]);
 
   return (
-    <div className="app-shell">
+    <div className={shellClassName}>
       <aside className="sidebar">
         <div className="brand-row">
           <div className="brand-mark" aria-hidden="true">lr</div>
@@ -1314,16 +1354,32 @@ export function App({ request }: { request: RpcRequest }) {
               const isActive = activeSourceId === source.id;
               const sourceName = displayableSourceName(source);
               return (
-                <button
+                <div
                   key={source.id}
                   className={`list-item source-learn-row ${isActive ? "active" : ""}`}
-                  onClick={() => learnFromSource(source.id)}
-                  disabled={!activeProject || busy}
                   title={sourceName}
                 >
-                  <span className="source-row-index">{sourceIndex + 1}</span>
-                  <span className="source-row-title">{sourceName}</span>
-                </button>
+                  <button
+                    type="button"
+                    className="source-learn-main"
+                    onClick={() => learnFromSource(source.id)}
+                    disabled={!activeProject || busy}
+                    title={sourceName}
+                  >
+                    <span className="source-row-index">{sourceIndex + 1}</span>
+                    <span className="source-row-title">{sourceName}</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="source-delete-button"
+                    onClick={() => deleteSource(source)}
+                    disabled={!activeProject || busy}
+                    title={`${sourceName} 삭제`}
+                    aria-label={`${sourceName} 삭제`}
+                  >
+                    <Trash2 size={13} />
+                  </button>
+                </div>
               );
             })}
             {!state.sources.length ? (
@@ -1348,6 +1404,28 @@ export function App({ request }: { request: RpcRequest }) {
             <p className="project-title">{activeProject?.title || "Learning Workspace"}</p>
           </div>
           <div className="topbar-actions">
+            <div className="pane-switches" aria-label="Pane visibility">
+              <button
+                type="button"
+                className={`icon-button pane-switch ${leftPaneOpen ? "active" : ""}`}
+                onClick={() => setLeftPaneOpen((open) => !open)}
+                title={leftPaneOpen ? "Hide left pane" : "Show left pane"}
+                aria-label={leftPaneOpen ? "Hide left pane" : "Show left pane"}
+                aria-pressed={leftPaneOpen}
+              >
+                {leftPaneOpen ? <PanelLeftClose size={18} /> : <PanelLeftOpen size={18} />}
+              </button>
+              <button
+                type="button"
+                className={`icon-button pane-switch ${rightPaneOpen ? "active" : ""}`}
+                onClick={() => setRightPaneOpen((open) => !open)}
+                title={rightPaneOpen ? "Hide right pane" : "Show right pane"}
+                aria-label={rightPaneOpen ? "Hide right pane" : "Show right pane"}
+                aria-pressed={rightPaneOpen}
+              >
+                {rightPaneOpen ? <PanelRightClose size={18} /> : <PanelRightOpen size={18} />}
+              </button>
+            </div>
             <button
               type="button"
               className="icon-button theme-toggle"
@@ -1520,7 +1598,21 @@ export function App({ request }: { request: RpcRequest }) {
                     const moduleTitle = displayModuleTitle(module) || displayableCourseTitle(module.title);
                     return (
                       <div key={module.id} className="module-tile">
-                        <strong title={moduleTitle}>{moduleTitle}</strong>
+                        <div className="module-tile-head">
+                          <strong title={moduleTitle}>{moduleTitle}</strong>
+                          {activeSource ? (
+                            <button
+                              type="button"
+                              className="module-delete-button"
+                              onClick={() => deleteSource(activeSource)}
+                              disabled={busy}
+                              title="이 학습 기록 삭제"
+                              aria-label="이 학습 기록 삭제"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          ) : null}
+                        </div>
                         {learningGoal ? <span>{learningGoal}</span> : null}
                       </div>
                     );

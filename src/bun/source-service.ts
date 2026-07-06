@@ -24,6 +24,11 @@ type SourceRow = {
   updated_at: number;
 };
 
+type MaterialDeletionRow = {
+  id: string;
+  manifest_path: string | null;
+};
+
 type PreppyManifest = {
   output?: {
     chapters_dir?: string;
@@ -473,6 +478,19 @@ function sourcePackRelativePath(row: SourceRow) {
   return parts[1]!.slice(originalIndex + "/original/".length);
 }
 
+function isInsidePath(parent: string, child: string) {
+  const rel = relative(resolve(parent), resolve(child));
+  return rel === "" || (!rel.startsWith("..") && !rel.startsWith("/") && !rel.match(/^[A-Za-z]:/));
+}
+
+function sourceFolderDirFor(projectRoot: string, projectId: string, path: string) {
+  const foldersRoot = join(projectRoot, projectId, "source_folders");
+  if (!isInsidePath(foldersRoot, path)) return null;
+  const rel = relative(foldersRoot, path);
+  const folderId = rel.split(/[\\/]/).find(Boolean);
+  return folderId ? join(foldersRoot, folderId) : null;
+}
+
 function previewText(text: string, max = 5200) {
   const normalized = text.trim();
   if (normalized.length <= max) return normalized;
@@ -897,6 +915,53 @@ export class SourceService {
     const row = getDb().query<SourceRow, [string]>("SELECT * FROM project_sources WHERE id = ?").get(sourceId);
     if (!row) throw new Error("Source not found");
     return row;
+  }
+
+  async delete(projectId: string, sourceId: string) {
+    const db = getDb();
+    const row = db.query<SourceRow, [string, string]>("SELECT * FROM project_sources WHERE id = ? AND project_id = ?").get(sourceId, projectId);
+    if (!row) throw new Error("Source not found");
+
+    const root = this.projectRoot(projectId);
+    const projectPath = join(root, projectId);
+    const materialRows = db
+      .query<MaterialDeletionRow, [string]>(
+        `SELECT learning_materials.id, learning_materials.manifest_path
+         FROM learning_materials
+         JOIN material_sources ON material_sources.material_id = learning_materials.id
+         WHERE material_sources.source_id = ?`
+      )
+      .all(sourceId);
+    const pathsToRemove = new Set<string>();
+    for (const material of materialRows) {
+      pathsToRemove.add(material.manifest_path ? dirname(material.manifest_path) : join(projectPath, "materials", material.id));
+    }
+    pathsToRemove.add(row.manifest_path ? dirname(row.manifest_path) : join(projectPath, "sources", sourceId));
+
+    const sourceFolderDir = sourceFolderDirFor(root, projectId, row.imported_file_path);
+    const deleteRows = db.transaction(() => {
+      for (const material of materialRows) {
+        db.query("DELETE FROM learning_materials WHERE id = ? AND project_id = ?").run(material.id, projectId);
+      }
+      db.query("DELETE FROM project_sources WHERE id = ? AND project_id = ?").run(sourceId, projectId);
+    });
+    deleteRows();
+
+    if (sourceFolderDir) {
+      const remainingRows = db.query<SourceRow, [string]>("SELECT * FROM project_sources WHERE project_id = ?").all(projectId);
+      const folderStillUsed = remainingRows.some((item) => isInsidePath(sourceFolderDir, item.imported_file_path));
+      if (folderStillUsed) {
+        const exactPathStillUsed = remainingRows.some((item) => resolve(item.imported_file_path) === resolve(row.imported_file_path));
+        if (!exactPathStillUsed && isInsidePath(sourceFolderDir, row.imported_file_path)) pathsToRemove.add(row.imported_file_path);
+      } else {
+        pathsToRemove.add(sourceFolderDir);
+      }
+    }
+
+    for (const path of [...pathsToRemove].filter((path) => isInsidePath(projectPath, path)).sort((a, b) => b.length - a.length)) {
+      await rm(path, { recursive: true, force: true }).catch(() => undefined);
+    }
+    return true;
   }
 
   async loadChunks(sourceId: string) {
