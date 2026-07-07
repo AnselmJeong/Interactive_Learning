@@ -16,6 +16,7 @@ import type { AiProviderKeyState } from "../shared/settings-types";
 import { modelSupportsVision } from "../shared/vision-models";
 import { openFilesystemPath } from "./platform-utils";
 import { configureAppDataBase } from "./paths";
+import { normalizeSelectedPaths } from "./file-dialog-selection";
 
 configureAppDataBase(Utils.paths.userData);
 
@@ -46,11 +47,6 @@ function firstSelectedPath(selection: unknown) {
   if (typeof selection === "string") return selection;
   if (Array.isArray(selection)) return typeof selection[0] === "string" ? selection[0] : "";
   return "";
-}
-
-function normalizeSelectedPaths(selection: unknown) {
-  const values = Array.isArray(selection) ? selection : typeof selection === "string" ? selection.split(",") : [];
-  return values.map((path) => String(path).trim()).filter((path) => path && existsSync(path));
 }
 
 async function chooseSourcePaths() {

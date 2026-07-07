@@ -298,7 +298,7 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
 .source-notice { white-space: pre-wrap; overflow-wrap: anywhere; }
 .source-count { margin-top: 18px; font-size: 13px; }
 
-.topbar { justify-content: space-between; padding: 22px 42px; border-bottom: 1px solid var(--line); }
+.topbar { justify-content: space-between; min-width: 0; overflow: hidden; padding: 22px 42px; border-bottom: 1px solid var(--line); }
 .topbar > div:first-child { min-width: 0; flex: 1; }
 .topbar h2 { font-size: 20px; line-height: 1.2; font-weight: 780; }
 .project-title {
@@ -319,7 +319,10 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
-  flex-wrap: wrap;
+  flex: 0 1 58%;
+  flex-wrap: nowrap;
+  min-width: 0;
+  max-width: min(520px, 58%);
 }
 .pane-switches {
   display: inline-flex;
@@ -350,6 +353,7 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
 .eyebrow { margin: 0 0 6px; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.14em; font-weight: 820; }
 .theme-toggle {
   width: 44px;
+  flex: 0 0 44px;
   min-height: 44px;
   border-radius: 12px;
   border-color: var(--line);
@@ -364,6 +368,10 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
   border: 0;
   background: var(--panel-soft);
   border-radius: 999px;
@@ -372,7 +380,14 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   font-weight: 720;
   white-space: nowrap;
 }
-.status-pill svg { color: var(--accent); }
+.status-pill svg { flex: 0 0 auto; color: var(--accent); }
+.status-text {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .spin { animation: spin 900ms linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
@@ -3701,7 +3716,7 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   .tutor-surface { padding: 32px 18px 18px; }
   .composer { width: calc(100% - 36px); margin-bottom: 16px; }
   .topbar, .course-strip, .read-only-session { flex-wrap: wrap; }
-  .topbar-actions { justify-content: flex-start; }
+  .topbar-actions { flex: 1 1 100%; justify-content: flex-start; max-width: 100%; }
   .bubble { grid-template-columns: 1fr; gap: 10px; }
   .bubble::before, .bubble > * { grid-column: 1; }
   .lesson-header { grid-template-columns: 1fr; }

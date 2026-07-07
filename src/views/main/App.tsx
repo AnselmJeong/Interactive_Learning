@@ -731,13 +731,13 @@ export function App({ request }: { request: RpcRequest }) {
 
   async function chooseAndImportSources() {
     if (!activeProject) return;
-    setBusy(true);
     try {
       const paths = (await request("sources.openDialog", { projectId: activeProject.id })) as string[];
       if (!paths.length) {
         setSourceNotice("No files selected");
         return;
       }
+      setBusy(true);
       const prepared = (await request("sources.prepareImport", { projectId: activeProject.id, paths })) as PreparedSourceImport;
       setPreparedImport(prepared);
       setSourceNotice("");
@@ -1525,9 +1525,9 @@ export function App({ request }: { request: RpcRequest }) {
             >
               {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
             </button>
-            <div className="status-pill">
+            <div className="status-pill" title={status} aria-live="polite">
               {busy ? <Loader2 size={16} className="spin" /> : <Check size={16} />}
-              {status}
+              <span className="status-text">{status}</span>
             </div>
           </div>
         </header>

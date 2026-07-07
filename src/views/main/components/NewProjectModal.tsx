@@ -44,7 +44,6 @@ export function NewProjectModal({
 
   async function addSources() {
     if (!project) return;
-    setBusy(true);
     setNotice("");
     try {
       const paths = (await request("sources.openDialog", { projectId: project.id })) as string[];
@@ -52,6 +51,7 @@ export function NewProjectModal({
         setNotice("선택된 파일이 없습니다");
         return;
       }
+      setBusy(true);
       const prepared = (await request("sources.prepareImport", { projectId: project.id, paths })) as PreparedSourceImport;
       setPreparedImport(prepared);
     } catch (error) {
