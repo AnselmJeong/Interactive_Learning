@@ -516,8 +516,8 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   pointer-events: auto;
   animation: buddy-bubble-in 180ms cubic-bezier(0.16, 1, 0.3, 1);
 }
-.learning-buddy[data-side="left"] .learning-buddy-message { right: 0; }
-.learning-buddy[data-side="right"] .learning-buddy-message { left: 0; }
+.learning-buddy[data-side="left"] .learning-buddy-message { left: 0; }
+.learning-buddy[data-side="right"] .learning-buddy-message { right: 0; }
 .learning-buddy-message::after {
   content: "";
   position: absolute;
@@ -529,8 +529,8 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   background: inherit;
   transform: rotate(45deg);
 }
-.learning-buddy[data-side="left"] .learning-buddy-message::after { right: 22px; }
-.learning-buddy[data-side="right"] .learning-buddy-message::after { left: 22px; }
+.learning-buddy[data-side="left"] .learning-buddy-message::after { left: 22px; }
+.learning-buddy[data-side="right"] .learning-buddy-message::after { right: 22px; }
 .learning-buddy-message p {
   margin: 0;
   font-size: 12px;
