@@ -1,9 +1,9 @@
 import { existsSync, mkdirSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { Utils } from "electrobun/bun";
 import { defaultUserDataBase } from "./platform-utils";
 
 const APP_DATA_DIR_NAME = "learnie";
+let configuredUserDataBase: string | null = null;
 
 function ensureDir(path: string) {
   if (!existsSync(path)) {
@@ -13,8 +13,12 @@ function ensureDir(path: string) {
 }
 
 export function appDataDir() {
-  const base = process.env.LEARNIE_APP_DATA_ROOT || defaultUserDataBase({ electrobunUserData: Utils.paths.userData });
+  const base = process.env.LEARNIE_APP_DATA_ROOT || configuredUserDataBase || defaultUserDataBase({});
   return ensureDir(join(base, APP_DATA_DIR_NAME));
+}
+
+export function configureAppDataBase(path: string | null | undefined) {
+  configuredUserDataBase = path || null;
 }
 
 export function dataPath(...parts: string[]) {

@@ -15,6 +15,9 @@ import type { AiProviderConnectionInput, AppRPC, BuddyMessageInput } from "../sh
 import type { AiProviderKeyState } from "../shared/settings-types";
 import { modelSupportsVision } from "../shared/vision-models";
 import { openFilesystemPath } from "./platform-utils";
+import { configureAppDataBase } from "./paths";
+
+configureAppDataBase(Utils.paths.userData);
 
 const projects = new ProjectService();
 const settings = new SettingsService();

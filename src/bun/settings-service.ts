@@ -5,10 +5,8 @@ import { readJsonFile, writeJsonFile } from "./json-file";
 import { SOURCE_IMPORT_MIN_CHARS_OPTIONS, type AiProviderId, type AppSettings, type ChatSubmitShortcut, type SourceImportMinChars } from "../shared/settings-types";
 import { modelSupportsVision } from "../shared/vision-models";
 
-const SETTINGS_PATH = dataPath("settings.json");
-const DEFAULT_DOWNLOAD_FOLDER = process.env.HOME ? join(process.env.HOME, "Downloads") : dataPath("exports");
 const DEFAULT_PROVIDERS: AppSettings["providers"] = {
-  ollama: { baseUrl: "https://ollama.com/v1", selectedModel: "", selectedVisionModel: "" },
+  ollama: { baseUrl: "http://localhost:11434/v1", selectedModel: "", selectedVisionModel: "" },
   openai: { baseUrl: "https://api.openai.com/v1", selectedModel: "", selectedVisionModel: "" },
   anthropic: { baseUrl: "https://api.anthropic.com", selectedModel: "", selectedVisionModel: "" },
   gemini: { baseUrl: "https://generativelanguage.googleapis.com/v1beta", selectedModel: "", selectedVisionModel: "" },
@@ -28,10 +26,10 @@ export const defaultSettings: AppSettings = {
   aiProvider: "ollama",
   visionProvider: "ollama",
   selectedModel: "",
-  ollamaBaseUrl: "https://ollama.com/v1",
+  ollamaBaseUrl: DEFAULT_PROVIDERS.ollama.baseUrl,
   providers: DEFAULT_PROVIDERS,
-  projectRootFolder: dataPath("projects"),
-  defaultDownloadFolder: DEFAULT_DOWNLOAD_FOLDER,
+  projectRootFolder: "",
+  defaultDownloadFolder: "",
   tutorLanguage: "ko",
   chatSubmitShortcut: "cmd-enter",
   autoAdvanceOnMastery: true,
@@ -42,19 +40,44 @@ export const defaultSettings: AppSettings = {
   sourceImportMinChars: 1000,
 };
 
+function settingsPath() {
+  return dataPath("settings.json");
+}
+
+function defaultDownloadFolder() {
+  return process.env.HOME ? join(process.env.HOME, "Downloads") : dataPath("exports");
+}
+
+function runtimeDefaultSettings(): AppSettings {
+  return {
+    ...defaultSettings,
+    providers: cloneProviders(defaultSettings.providers),
+    projectRootFolder: dataPath("projects"),
+    defaultDownloadFolder: defaultDownloadFolder(),
+  };
+}
+
+function cloneProviders(providers: AppSettings["providers"]): AppSettings["providers"] {
+  return AI_PROVIDERS.reduce((acc, id) => {
+    acc[id] = { ...providers[id] };
+    return acc;
+  }, {} as AppSettings["providers"]);
+}
+
 export class SettingsService {
   async get() {
-    const saved = await readJsonFile<Partial<AppSettings>>(SETTINGS_PATH, {});
+    const saved = await readJsonFile<Partial<AppSettings>>(settingsPath(), {});
     return normalizeSettings(saved);
   }
 
   async update(patch: SettingsPatch) {
     const current = await this.get();
+    const defaults = runtimeDefaultSettings();
     const next = normalizeSettings(mergeSettingsPatch(current, patch));
-    if (!next.ollamaBaseUrl.trim()) next.ollamaBaseUrl = defaultSettings.ollamaBaseUrl;
+    if (!next.ollamaBaseUrl.trim()) next.ollamaBaseUrl = defaults.ollamaBaseUrl;
     for (const provider of AI_PROVIDERS) {
       if (!next.providers[provider].baseUrl.trim()) {
-        next.providers[provider].baseUrl = defaultSettings.providers[provider].baseUrl;
+        next.providers[provider].baseUrl = defaults.providers[provider].baseUrl;
       }
     }
     if (typeof patch.selectedModel === "string") {
@@ -62,11 +85,11 @@ export class SettingsService {
     }
     next.selectedModel = next.providers[next.aiProvider].selectedModel;
     next.ollamaBaseUrl = next.providers.ollama.baseUrl;
-    if (!next.projectRootFolder.trim()) next.projectRootFolder = defaultSettings.projectRootFolder;
-    if (!next.defaultDownloadFolder.trim()) next.defaultDownloadFolder = defaultSettings.defaultDownloadFolder;
+    if (!next.projectRootFolder.trim()) next.projectRootFolder = defaults.projectRootFolder;
+    if (!next.defaultDownloadFolder.trim()) next.defaultDownloadFolder = defaults.defaultDownloadFolder;
     await mkdir(next.projectRootFolder, { recursive: true });
     await mkdir(next.defaultDownloadFolder, { recursive: true });
-    await writeJsonFile(SETTINGS_PATH, next);
+    await writeJsonFile(settingsPath(), next);
     return next;
   }
 }
@@ -87,26 +110,30 @@ export function mergeSettingsPatch(current: AppSettings, patch: SettingsPatch): 
   };
 }
 
-function normalizeSettings(saved: Partial<AppSettings>): AppSettings {
+export function normalizeSettings(saved: Partial<AppSettings>, defaults = runtimeDefaultSettings()): AppSettings {
   const provider = AI_PROVIDERS.includes(saved.aiProvider as AiProviderId) ? (saved.aiProvider as AiProviderId) : "ollama";
   const visionProvider = AI_PROVIDERS.includes(saved.visionProvider as AiProviderId) ? (saved.visionProvider as AiProviderId) : provider;
-  const theme = THEME_MODES.includes(saved.theme as AppSettings["theme"]) ? (saved.theme as AppSettings["theme"]) : defaultSettings.theme;
+  const theme = THEME_MODES.includes(saved.theme as AppSettings["theme"]) ? (saved.theme as AppSettings["theme"]) : defaults.theme;
   const chatSubmitShortcut = CHAT_SUBMIT_SHORTCUTS.includes(saved.chatSubmitShortcut as ChatSubmitShortcut)
     ? (saved.chatSubmitShortcut as ChatSubmitShortcut)
-    : defaultSettings.chatSubmitShortcut;
+    : defaults.chatSubmitShortcut;
   const sourceImportMinChars = SOURCE_IMPORT_MIN_CHARS.includes(Number(saved.sourceImportMinChars))
     ? (Number(saved.sourceImportMinChars) as SourceImportMinChars)
-    : defaultSettings.sourceImportMinChars;
+    : defaults.sourceImportMinChars;
   const savedProviders = saved.providers || {};
   const providers = AI_PROVIDERS.reduce((acc, id) => {
     acc[id] = {
-      ...DEFAULT_PROVIDERS[id],
+      ...defaults.providers[id],
       ...(savedProviders as Partial<AppSettings["providers"]>)[id],
     };
     return acc;
   }, {} as AppSettings["providers"]);
+  const savedOllamaBaseUrl = typeof saved.ollamaBaseUrl === "string" ? saved.ollamaBaseUrl.trim() : "";
+  const savedOllamaProvider = (savedProviders as Partial<AppSettings["providers"]>).ollama;
+  if (savedOllamaBaseUrl && !savedOllamaProvider?.baseUrl) {
+    providers.ollama.baseUrl = savedOllamaBaseUrl;
+  }
 
-  providers.ollama.baseUrl = DEFAULT_PROVIDERS.ollama.baseUrl;
   if (saved.selectedModel && !providers[provider].selectedModel) providers[provider].selectedModel = saved.selectedModel;
   const legacyVisionModel = providers[visionProvider].selectedModel;
   if (!providers[visionProvider].selectedVisionModel && modelSupportsVision(visionProvider, legacyVisionModel)) {
@@ -114,7 +141,7 @@ function normalizeSettings(saved: Partial<AppSettings>): AppSettings {
   }
 
   return {
-    ...defaultSettings,
+    ...defaults,
     ...saved,
     theme,
     aiProvider: provider,

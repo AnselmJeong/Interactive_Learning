@@ -115,6 +115,7 @@ export type MaterialAnnotation = {
   sourceMeta: LookupSourceMeta[];
   createdAt: number;
   updatedAt: number;
+  syncWarning?: string;
 };
 
 export type Concept = {

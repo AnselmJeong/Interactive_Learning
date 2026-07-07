@@ -1259,6 +1259,7 @@ export function App({ request }: { request: RpcRequest }) {
         annotations: [annotation, ...(current.annotations || []).filter((item) => item.id !== annotation.id)],
       };
     });
+    if (annotation.syncWarning) setStatus(annotation.syncWarning);
   }, []);
   const handleAnnotationDeleted = useCallback((annotationId: string) => {
     setArtifacts((current) => current ? {
@@ -1270,7 +1271,8 @@ export function App({ request }: { request: RpcRequest }) {
     const previous = artifacts;
     handleAnnotationDeleted(annotationId);
     try {
-      await request("annotations.delete", { annotationId });
+      const result = (await request("annotations.delete", { annotationId })) as { deleted: boolean; syncWarning?: string };
+      if (result.syncWarning) setStatus(result.syncWarning);
     } catch (error) {
       setArtifacts(previous);
       setStatus(`Annotation 삭제 실패: ${(error as Error).message}`);

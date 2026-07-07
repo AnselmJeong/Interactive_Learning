@@ -51,6 +51,17 @@ type UpdateNoteInput = {
   note: string;
 };
 
+async function writeAnnotationsSnapshotRecoverable(materialId: string) {
+  try {
+    await writeMaterialAnnotationsSnapshot(materialId);
+    return undefined;
+  } catch (error) {
+    const message = `Annotation change was saved in the database, but the project bundle snapshot could not be updated: ${(error as Error).message}`;
+    console.warn(`[annotations] ${message}`);
+    return message;
+  }
+}
+
 type WikipediaSummary = {
   title?: string;
   extract?: string;
@@ -782,8 +793,8 @@ export class AnnotationService {
       result: input.result,
       sourceMeta: input.sourceMeta,
     });
-    await writeMaterialAnnotationsSnapshot(saved.materialId);
-    return saved;
+    const syncWarning = await writeAnnotationsSnapshotRecoverable(saved.materialId);
+    return syncWarning ? { ...saved, syncWarning } : saved;
   }
 
   async updateNote(input: UpdateNoteInput) {
@@ -792,17 +803,18 @@ export class AnnotationService {
     if (existing.kind !== "note") throw new Error("Only note annotations can be edited");
     const updated = updateMaterialAnnotationResult(input.annotationId, { kind: "note", note: input.note.slice(0, 5000) });
     if (!updated) throw new Error("Annotation update failed");
-    await writeMaterialAnnotationsSnapshot(updated.materialId);
-    return updated;
+    const syncWarning = await writeAnnotationsSnapshotRecoverable(updated.materialId);
+    return syncWarning ? { ...updated, syncWarning } : updated;
   }
 
   async delete(annotationId: string) {
     const existing = getMaterialAnnotation(annotationId);
     const deleted = deleteMaterialAnnotation(annotationId);
     if (existing) {
-      await writeMaterialAnnotationsSnapshot(existing.materialId);
+      const syncWarning = await writeAnnotationsSnapshotRecoverable(existing.materialId);
+      return { deleted, syncWarning };
     }
-    return deleted;
+    return { deleted };
   }
 
   private async aiLookup(

@@ -48,7 +48,7 @@ from preppy.models import (
     SourceLocator,
 )
 from preppy.paths import asset_relpath, chapter_relpath, markdown_asset_link
-from preppy.split.classify import classify_kind, is_chapter_like, normalize_title
+from preppy.split.classify import classify_kind, compile_boundary_pattern, is_chapter_like, normalize_title
 from preppy.split.plan import SplitCandidate, SplitPlan, apply_matter_flags, demote_nested_headings
 from preppy.split.slug import slugify
 
@@ -83,13 +83,14 @@ def build_plan(
     ocr: bool = False,
     table_structure: bool = True,
 ) -> SplitPlan:
+    compiled_boundary_pattern = compile_boundary_pattern(boundary_pattern)
     result = _run_docling(
         pdf_path, ocr=ocr, table_structure=table_structure, extract_figures=False, images_scale=1.0
     )
     doc = result.document
     flat_items = _flatten(doc)
     running_header_refs = _running_heading_refs(flat_items, doc)
-    candidates = _detect_candidates(flat_items, boundary_pattern, pdf_path, doc, running_header_refs)
+    candidates = _detect_candidates(flat_items, compiled_boundary_pattern, pdf_path, doc, running_header_refs)
     return SplitPlan(
         source_path=str(pdf_path),
         source_type="pdf",
@@ -115,6 +116,7 @@ def convert(
     min_chapter_chars: int = 1000,
 ) -> PreppyDocument:
     start_time = time.monotonic()
+    compiled_boundary_pattern = compile_boundary_pattern(boundary_pattern)
 
     try:
         result = _run_docling(
@@ -144,7 +146,7 @@ def convert(
     flat_items = _flatten(doc)
     running_header_refs = _running_heading_refs(flat_items, doc)
     candidates = plan.candidates if plan is not None else _detect_candidates(
-        flat_items, boundary_pattern, pdf_path, doc, running_header_refs
+        flat_items, compiled_boundary_pattern, pdf_path, doc, running_header_refs
     )
 
     source = SourceInfo(
@@ -424,12 +426,12 @@ def _flatten(doc: DoclingDocument) -> list[_FlatItem]:
 
 def _detect_candidates(
     flat_items: list[_FlatItem],
-    boundary_pattern: str | None,
+    boundary_pattern: re.Pattern[str] | None,
     pdf_path: Path,
     doc: DoclingDocument,
     running_header_refs: set[str] | None = None,
 ) -> list[SplitCandidate]:
-    pattern = re.compile(boundary_pattern, re.IGNORECASE) if boundary_pattern else None
+    pattern = boundary_pattern
     running_header_refs = running_header_refs or set()
     candidates: list[SplitCandidate] = []
 

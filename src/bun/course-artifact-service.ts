@@ -72,6 +72,14 @@ export function canReuseMaterialForGeneration(status: MaterialRow["status"]) {
   return status === "ready";
 }
 
+export function materialGenerationKey(projectId: string, sourceIds: string[]) {
+  return `${projectId}:${[...new Set(sourceIds)].sort().join("\u0000")}`;
+}
+
+function uniqueSourceIds(sourceIds: string[]) {
+  return [...new Set(sourceIds.filter(Boolean))];
+}
+
 function sentences(text: string) {
   return text
     .split(/(?<=[.!?。！？다요죠음함됨])\s+/)
@@ -284,6 +292,7 @@ function buildCriticReport(materialId: string, lecturePlan: LecturePlan, visuals
 export class CourseArtifactService {
   private readonly sources = new SourceService();
   private readonly artifactCache = new Map<string, ArtifactCacheEntry>();
+  private readonly generationPromises = new Map<string, Promise<MaterialSummary>>();
 
   private projectRoot(projectId: string) {
     const row = getDb().query<{ root_path: string | null }, [string]>("SELECT root_path FROM projects WHERE id = ?").get(projectId);
@@ -295,7 +304,21 @@ export class CourseArtifactService {
   }
 
   async generate(projectId: string, sourceIds: string[]) {
-    if (!sourceIds.length) throw new Error("At least one source is required");
+    const normalizedSourceIds = uniqueSourceIds(sourceIds);
+    if (!normalizedSourceIds.length) throw new Error("At least one source is required");
+    const key = materialGenerationKey(projectId, normalizedSourceIds);
+    const active = this.generationPromises.get(key);
+    if (active) return active;
+    const generation = this.generateUncached(projectId, normalizedSourceIds);
+    this.generationPromises.set(key, generation);
+    try {
+      return await generation;
+    } finally {
+      if (this.generationPromises.get(key) === generation) this.generationPromises.delete(key);
+    }
+  }
+
+  private async generateUncached(projectId: string, sourceIds: string[]) {
     const existing = this.findBySourceSet(projectId, sourceIds).find((material) => canReuseMaterialForGeneration(material.status));
     if (existing) return existing;
 

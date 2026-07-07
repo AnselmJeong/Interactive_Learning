@@ -759,19 +759,21 @@ export class SourceService {
     );
 
     const imported: SourceSummary[] = [];
+    let createdCount = 0;
     for (const copiedFile of textFiles) {
       const manifestPath = relativePortable(importedRoot, copiedFile);
       const originalPath = await sourceChildPath(originalSourcePath, manifestPath);
       const title = preppyManifest.chapterTitleByPath.get(manifestPath) || titleForPath(copiedFile);
-      imported.push(
-        await this.importTextFileFromCopiedFolder(projectId, originalPath, copiedFile, title, {
-          importedRoot,
-          manifestPath,
-          chapterIndex: preppyManifest.chapterIndexByPath.get(manifestPath),
-          figures: preppyFigures,
-        })
-      );
+      const result = await this.importTextFileFromCopiedFolder(projectId, originalPath, copiedFile, title, {
+        importedRoot,
+        manifestPath,
+        chapterIndex: preppyManifest.chapterIndexByPath.get(manifestPath),
+        figures: preppyFigures,
+      });
+      imported.push(result.source);
+      if (result.created) createdCount += 1;
     }
+    if (createdCount === 0) await rm(folderDir, { recursive: true, force: true });
     return imported;
   }
 
@@ -811,7 +813,7 @@ export class SourceService {
     const existing = getDb()
       .query<SourceRow, [string, string]>("SELECT * FROM project_sources WHERE project_id = ? AND content_hash = ?")
       .get(projectId, digest);
-    if (existing) return toSource(existing);
+    if (existing) return { source: toSource(existing), created: false };
 
     const id = crypto.randomUUID();
     const type = sourceTypeForPath(importedPath);
@@ -826,7 +828,7 @@ export class SourceService {
           chunks,
         })
       : [];
-    return this.persistSource({
+    const source = await this.persistSource({
       id,
       projectId,
       title,
@@ -841,6 +843,7 @@ export class SourceService {
       status: chunks.length ? "good" : "poor",
       warnings: [],
     });
+    return { source, created: true };
   }
 
   private async persistSource(input: {

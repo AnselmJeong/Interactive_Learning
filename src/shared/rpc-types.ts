@@ -155,7 +155,7 @@ export type AppRPC = {
         response: MaterialAnnotation;
       };
       "annotations.updateNote": { params: { annotationId: string; note: string }; response: MaterialAnnotation };
-      "annotations.delete": { params: { annotationId: string }; response: boolean };
+      "annotations.delete": { params: { annotationId: string }; response: { deleted: boolean; syncWarning?: string } };
       "sessions.list": { params: { materialId: string }; response: SessionSummary[] };
       "sessions.start": { params: { materialId: string; mode: "new" | "continue"; sessionId?: string }; response: { session: SessionSnapshot; context: TutorContext; firstTurn?: TutorTurnOutput } };
       "sessions.load": { params: { sessionId: string }; response: { session: SessionSnapshot; context: TutorContext } };

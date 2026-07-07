@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { prefetchConsumeWaitMs, repairedCurrentChunkId, repairedModuleCurrentChunkId, tutorLanguageInstruction } from "./tutor-service";
+import { SessionMutationQueue, prefetchConsumeWaitMs, repairedCurrentChunkId, repairedModuleCurrentChunkId, tutorLanguageInstruction } from "./tutor-service";
 
 describe("prefetch consume wait policy", () => {
   test("does not wait the full consume window when provider timeout is nearly exhausted", () => {
@@ -8,6 +8,33 @@ describe("prefetch consume wait policy", () => {
 
   test("uses the consume cap for a fresh prefetch", () => {
     expect(prefetchConsumeWaitMs(0, 1_000, 100_000, 120_000)).toBe(100_000);
+  });
+});
+
+describe("session mutation queue", () => {
+  test("serializes mutations for the same session while allowing queued callers to resolve", async () => {
+    const queue = new SessionMutationQueue();
+    const events: string[] = [];
+    let releaseFirst: () => void = () => undefined;
+
+    const first = queue.run("session-a", async () => {
+      events.push("first-start");
+      await new Promise<void>((resolve) => {
+        releaseFirst = resolve;
+      });
+      events.push("first-end");
+      return 1;
+    });
+    const second = queue.run("session-a", async () => {
+      events.push("second-start");
+      return 2;
+    });
+
+    await Promise.resolve();
+    expect(events).toEqual(["first-start"]);
+    releaseFirst();
+    expect(await Promise.all([first, second])).toEqual([1, 2]);
+    expect(events).toEqual(["first-start", "first-end", "second-start"]);
   });
 });
 

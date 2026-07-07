@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { defaultSettings, mergeSettingsPatch } from "./settings-service";
+import { defaultSettings, mergeSettingsPatch, normalizeSettings } from "./settings-service";
 
 describe("settings provider merge", () => {
   test("defaults imported chapter auto-selection to 1000 characters", () => {
@@ -26,5 +26,24 @@ describe("settings provider merge", () => {
     });
     expect(merged.providers?.openai.selectedModel).toBe("gpt-5");
     expect(merged.providers?.gemini.selectedModel).toBe("gemini-2.5-pro");
+  });
+
+  test("preserves configured Ollama provider base URL", () => {
+    const normalized = normalizeSettings({
+      providers: {
+        ...defaultSettings.providers,
+        ollama: { baseUrl: "http://localhost:11434/v1", selectedModel: "llama3.2", selectedVisionModel: "" },
+      },
+    }, defaultSettings);
+
+    expect(normalized.providers.ollama.baseUrl).toBe("http://localhost:11434/v1");
+    expect(normalized.ollamaBaseUrl).toBe("http://localhost:11434/v1");
+  });
+
+  test("preserves legacy top-level Ollama base URL when provider settings are absent", () => {
+    const normalized = normalizeSettings({ ollamaBaseUrl: "https://ollama.com/v1" }, defaultSettings);
+
+    expect(normalized.providers.ollama.baseUrl).toBe("https://ollama.com/v1");
+    expect(normalized.ollamaBaseUrl).toBe("https://ollama.com/v1");
   });
 });

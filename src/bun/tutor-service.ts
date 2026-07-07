@@ -17,6 +17,15 @@ import type { SessionSnapshot, SessionSummary, SourceRef, TutorContentBlock, Tut
 // "next_chunk": continue to the next source chunk within the same module. "return_to_progress":
 // resume after a detour on the next active source chunk. "user_message": the learner replied.
 type TurnPayload = { event: "start_module" | "continue_chunk" | "next_chunk" | "return_to_progress" | "user_message"; userText?: string };
+type SessionCommitGuard = {
+  status: SessionSnapshot["status"];
+  currentModuleId: string | null;
+  currentChunkId: string | null;
+  completedModuleIds: string[];
+  coveredChunkIds: string[];
+  messageCount: number;
+  lastMessageId: string | null;
+};
 
 const VALID_INTENTS: TutorIntent[] = ["start", "answer", "question", "off_topic", "deeper", "meta_complaint", "satisfied"];
 const DIGRESSION_INTENTS = new Set<TutorIntent>(["question", "off_topic", "deeper", "meta_complaint"]);
@@ -34,6 +43,27 @@ const TERM_RENDERING_RULE = [
   "On first mention in Korean, write the Korean gloss/transliteration plus the original in parentheses whenever the original is known, e.g. 보에티우스(Boethius), 포르투나(Fortune), 알마문(al-Ma'mun), 무타질라(Mu'tazila), 이성('aql).",
   "For people, schools, movements, book titles, Arabic/Islamic terms, philosophical terms, and other identity-bearing names, keep the original form visible; if the Korean rendering would be awkward or obscure, use the original form directly.",
 ].join(" ");
+
+export class SessionMutationQueue {
+  private readonly queues = new Map<string, Promise<void>>();
+
+  async run<T>(sessionId: string, action: () => Promise<T> | T): Promise<T> {
+    const previous = this.queues.get(sessionId) || Promise.resolve();
+    let release: () => void = () => undefined;
+    const current = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const queued = previous.then(() => current);
+    this.queues.set(sessionId, queued);
+    await previous;
+    try {
+      return await action();
+    } finally {
+      release();
+      if (this.queues.get(sessionId) === queued) this.queues.delete(sessionId);
+    }
+  }
+}
 
 export function tutorLanguageInstruction(tutorLanguage: string) {
   if (tutorLanguage === "ko") {
@@ -641,6 +671,7 @@ export class TutorService {
   private readonly secrets = new AiProviderSettingsService();
   private readonly activePrefetches = new Map<string, string>();
   private readonly chunkModuleMaps = new WeakMap<MaterialArtifacts["coursePlan"], Map<string, CourseModule>>();
+  private readonly sessionMutations = new SessionMutationQueue();
 
   constructor(private readonly emitPrefetchStatus?: TutorPrefetchEmitter) {}
 
@@ -671,8 +702,10 @@ export class TutorService {
     if (input.mode === "continue") {
       const target = input.sessionId || this.latestSessionId(materialId);
       if (target) {
-        await this.repairSessionCursorForSession(target, { persistSnapshot: true, stalePrefetches: true });
-        return { session: this.snapshot(target), context: await this.context(target) };
+        return this.sessionMutations.run(target, async () => {
+          await this.repairSessionCursorForSession(target, { persistSnapshot: true, stalePrefetches: true });
+          return { session: this.snapshot(target), context: await this.context(target) };
+        });
       }
       throw new Error("No active session is available for this material. Start fresh to create a new session.");
     }
@@ -701,6 +734,10 @@ export class TutorService {
   }
 
   async load(sessionId: string) {
+    return this.sessionMutations.run(sessionId, () => this.loadUnlocked(sessionId));
+  }
+
+  private async loadUnlocked(sessionId: string) {
     await this.repairSessionCursorForSession(sessionId, { persistSnapshot: true, stalePrefetches: true });
     this.scheduleDefaultContinue(sessionId, "session_loaded");
     return { session: this.snapshot(sessionId), context: await this.context(sessionId) };
@@ -711,6 +748,10 @@ export class TutorService {
   }
 
   async deleteSession(sessionId: string) {
+    return this.sessionMutations.run(sessionId, () => this.deleteSessionUnlocked(sessionId));
+  }
+
+  private async deleteSessionUnlocked(sessionId: string) {
     const row = this.getSessionRow(sessionId);
     this.markPrefetchesStale(sessionId);
     const deleted = getDb().query("DELETE FROM learning_sessions WHERE id = ?").run(sessionId).changes > 0;
@@ -721,13 +762,17 @@ export class TutorService {
   }
 
   async sendTurn(sessionId: string, userText: string) {
+    return this.sessionMutations.run(sessionId, () => this.sendTurnUnlocked(sessionId, userText));
+  }
+
+  private async sendTurnUnlocked(sessionId: string, userText: string) {
     const text = userText.trim();
     if (!text) throw new Error("Answer is empty");
     await this.repairSessionCursorForSession(sessionId, { persistSnapshot: true, stalePrefetches: true });
     const typedProgressionCommand = classifyProgressionCommand(text);
     if (typedProgressionCommand) {
-      if (typedProgressionCommand === "return_to_progress") return this.returnToProgress(sessionId);
-      return this.advance(sessionId, "paragraph");
+      if (typedProgressionCommand === "return_to_progress") return this.returnToProgressUnlocked(sessionId);
+      return this.advanceUnlocked(sessionId, "paragraph");
     }
     const session = this.snapshotHeader(sessionId);
     const inserted = this.insertMessage({
@@ -753,6 +798,10 @@ export class TutorService {
   }
 
   async advance(sessionId: string, mode: "chunk" | "paragraph" | "module") {
+    return this.sessionMutations.run(sessionId, () => this.advanceUnlocked(sessionId, mode));
+  }
+
+  private async advanceUnlocked(sessionId: string, mode: "chunk" | "paragraph" | "module") {
     let session = this.snapshotForPlanning(sessionId);
     if (session.status !== "active") throw new Error("This session is not active");
     const artifacts = await this.artifacts.getArtifacts(session.materialId);
@@ -786,6 +835,10 @@ export class TutorService {
   }
 
   async returnToProgress(sessionId: string) {
+    return this.sessionMutations.run(sessionId, () => this.returnToProgressUnlocked(sessionId));
+  }
+
+  private async returnToProgressUnlocked(sessionId: string) {
     let session = this.snapshotForPlanning(sessionId);
     if (session.status !== "active") throw new Error("This session is not active");
     const artifacts = await this.artifacts.getArtifacts(session.materialId);
@@ -808,6 +861,10 @@ export class TutorService {
   }
 
   async selectModule(sessionId: string, moduleId: string) {
+    return this.sessionMutations.run(sessionId, () => this.selectModuleUnlocked(sessionId, moduleId));
+  }
+
+  private async selectModuleUnlocked(sessionId: string, moduleId: string) {
     const session = this.snapshotHeader(sessionId);
     if (session.status !== "active") throw new Error("This session is not active");
     const artifacts = await this.artifacts.getArtifacts(session.materialId);
@@ -822,6 +879,10 @@ export class TutorService {
   }
 
   async openModule(sessionId: string, moduleId: string) {
+    return this.sessionMutations.run(sessionId, () => this.openModuleUnlocked(sessionId, moduleId));
+  }
+
+  private async openModuleUnlocked(sessionId: string, moduleId: string) {
     const session = this.snapshotHeader(sessionId);
     if (session.status !== "active") throw new Error("This session is not active");
     const artifacts = await this.artifacts.getArtifacts(session.materialId);
@@ -966,6 +1027,35 @@ export class TutorService {
     return { count: row?.count || 0, lastMessageId: row?.last_message_id || null };
   }
 
+  private sessionCommitGuard(session: SessionSnapshot): SessionCommitGuard {
+    const stats = this.messageStats(session.id);
+    return {
+      status: session.status,
+      currentModuleId: session.currentModuleId,
+      currentChunkId: session.currentChunkId,
+      completedModuleIds: session.completedModuleIds,
+      coveredChunkIds: session.coveredChunkIds,
+      messageCount: stats.count,
+      lastMessageId: stats.lastMessageId,
+    };
+  }
+
+  private assertSessionCommitGuard(sessionId: string, guard: SessionCommitGuard) {
+    const current = this.snapshotHeader(sessionId);
+    const stats = this.messageStats(sessionId);
+    const changed =
+      current.status !== guard.status ||
+      current.currentModuleId !== guard.currentModuleId ||
+      current.currentChunkId !== guard.currentChunkId ||
+      !sameStringSet(current.completedModuleIds, guard.completedModuleIds) ||
+      !sameStringSet(current.coveredChunkIds, guard.coveredChunkIds) ||
+      stats.count !== guard.messageCount ||
+      stats.lastMessageId !== guard.lastMessageId;
+    if (changed) {
+      throw new Error("Session changed while the tutor response was generating. Please retry the action.");
+    }
+  }
+
   private summary(row: SessionListRow, moduleTitles: Map<string, string>, totalModuleCount: number): SessionSummary {
     const completedModuleIds = jsonArray(row.completed_module_ids_json);
     return {
@@ -1071,6 +1161,7 @@ export class TutorService {
 
   private async createTutorTurn(sessionId: string, payload: TurnPayload): Promise<TutorTurnOutput> {
     const session = this.snapshotForPlanning(sessionId);
+    const guard = this.sessionCommitGuard(session);
     const artifacts = await this.artifacts.getArtifacts(session.materialId);
     const curriculum = this.orderedCurriculum(artifacts);
     const totalChunks = curriculum.length;
@@ -1082,6 +1173,7 @@ export class TutorService {
     // Completion gate: the session never auto-completes. Only an EXPLICIT "yes, let's finish"
     // confirmation ends it.
     if (allComplete && payload.event === "user_message" && isFinishConfirmation(payload.userText || "")) {
+      this.assertSessionCommitGuard(sessionId, guard);
       getDb().query("UPDATE learning_sessions SET status = 'completed', updated_at = ? WHERE id = ?").run(Date.now(), sessionId);
       const farewell: TutorTurnOutput = {
         message: "원문의 모든 대목을 다뤘습니다. 학습을 마칩니다. 수고하셨습니다!",
@@ -1119,6 +1211,7 @@ export class TutorService {
     }
 
     const sanitized = await this.generateTutorTurnDraft(session, artifacts, payload);
+    this.assertSessionCommitGuard(sessionId, guard);
     this.insertAssistantTurn(sessionId, sanitized);
     return sanitized;
   }

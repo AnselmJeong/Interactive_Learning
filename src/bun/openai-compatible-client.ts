@@ -43,14 +43,27 @@ export class OpenAICompatibleClient implements AiChatClient {
   }
 
   private headers() {
-    return {
-      authorization: `Bearer ${this.settings.apiKey}`,
+    const headers: Record<string, string> = {
       "content-type": "application/json",
     };
+    if (this.settings.apiKey) {
+      headers.authorization = `Bearer ${this.settings.apiKey}`;
+    }
+    return headers;
+  }
+
+  private requiresApiKey() {
+    return !(this.providerId() === "ollama" && isLoopbackHttpUrl(this.settings.baseUrl));
+  }
+
+  private assertApiKey(model?: string) {
+    if (this.requiresApiKey() && !this.settings.apiKey) {
+      throw providerConfigurationError(this.providerName(), model, `${this.providerName()} API key is not configured`);
+    }
   }
 
   async listModels(): Promise<ProviderModel[]> {
-    if (!this.settings.apiKey) throw providerConfigurationError(this.providerName(), undefined, `${this.providerName()} API key is not configured`);
+    this.assertApiKey();
     const response = await fetch(this.url("/models"), { headers: this.headers() });
     if (!response.ok) {
       throw await providerHttpError(response, this.providerName(), undefined, "Model list failed");
@@ -99,7 +112,7 @@ export class OpenAICompatibleClient implements AiChatClient {
     timeoutMs?: number;
   }) {
     const model = params.model || this.settings.model;
-    if (!this.settings.apiKey) throw providerConfigurationError(this.providerName(), model, `${this.providerName()} API key is not configured`);
+    this.assertApiKey(model);
     if (!model) throw providerConfigurationError(this.providerName(), model, "Model is not selected");
 
     const messages: Array<Record<string, unknown>> = [];
@@ -157,7 +170,7 @@ export class OpenAICompatibleClient implements AiChatClient {
     responseFormat?: { type: "json_object" }
   ) {
     const model = params.model || this.settings.model;
-    if (!this.settings.apiKey) throw providerConfigurationError(this.providerName(), model, `${this.providerName()} API key is not configured`);
+    this.assertApiKey(model);
     if (!model) throw providerConfigurationError(this.providerName(), model, "Model is not selected");
 
     const body: Record<string, unknown> = {
@@ -228,6 +241,17 @@ export class OpenAICompatibleClient implements AiChatClient {
       return;
     }
     body.thinking = { type: thinking };
+  }
+}
+
+function isLoopbackHttpUrl(value: string) {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== "http:") return false;
+    const hostname = url.hostname.toLowerCase();
+    return hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1" || hostname === "[::1]";
+  } catch {
+    return false;
   }
 }
 
