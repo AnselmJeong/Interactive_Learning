@@ -17,6 +17,7 @@ import { SourceImportModal } from "./components/SourceImportModal";
 import { AboutModal } from "./components/AboutModal";
 import { SourceFigureCard } from "./components/SourceFigureCard";
 import { LearningBuddy } from "./components/LearningBuddy";
+import { figureIdForExplanationAnnotation } from "./figure-annotations";
 import { stripFigureMarkdown } from "./figure-text";
 import { placeAnnotationsForMessages } from "./annotation-placement";
 import { playAnswerReadySound, primeAnswerReadySound } from "./notification-sound";
@@ -201,7 +202,33 @@ function cleanLocator(locator: string) {
   return locator.replace(/^before\s+/i, "").replace(/^document$/i, "").trim();
 }
 
-function AnswerSourceRefs({ refs, materialId, request }: { refs: SourceRef[]; materialId: string; request: RpcRequest }) {
+function groupFigureExplanationAnnotations(annotations: MaterialAnnotation[]) {
+  const groups = new Map<string, MaterialAnnotation[]>();
+  for (const annotation of annotations) {
+    const figureId = figureIdForExplanationAnnotation(annotation);
+    if (!figureId) continue;
+    const group = groups.get(figureId) || [];
+    group.push(annotation);
+    groups.set(figureId, group);
+  }
+  return groups;
+}
+
+function AnswerSourceRefs({
+  refs,
+  materialId,
+  request,
+  figureAnnotationsById,
+  onAnnotationSaved,
+  onAnnotationDeleted,
+}: {
+  refs: SourceRef[];
+  materialId: string;
+  request: RpcRequest;
+  figureAnnotationsById: Map<string, MaterialAnnotation[]>;
+  onAnnotationSaved?: (annotation: MaterialAnnotation) => void;
+  onAnnotationDeleted?: (annotationId: string) => void;
+}) {
   if (!refs.length) return null;
   return (
     <div className="answer-source-list">
@@ -213,7 +240,17 @@ function AnswerSourceRefs({ refs, materialId, request }: { refs: SourceRef[]; ma
           {ref.figures?.length ? (
             <div className="answer-source-figures">
               {ref.figures.map((figure) => (
-                <SourceFigureCard key={figure.id} figure={figure} materialId={materialId} request={request} compact contextChunkIds={[ref.chunkId]} />
+                <SourceFigureCard
+                  key={figure.id}
+                  figure={figure}
+                  materialId={materialId}
+                  request={request}
+                  compact
+                  contextChunkIds={[ref.chunkId]}
+                  savedAnnotations={figureAnnotationsById.get(figure.id) || []}
+                  onAnnotationSaved={onAnnotationSaved}
+                  onAnnotationDeleted={onAnnotationDeleted}
+                />
               ))}
             </div>
           ) : null}
@@ -317,6 +354,7 @@ const ChatLog = memo(function ChatLog({
   annotations,
   request,
   onToggleSource,
+  onAnnotationSaved,
   onDeleteAnnotation,
 }: {
   messages: TutorMessage[];
@@ -327,9 +365,11 @@ const ChatLog = memo(function ChatLog({
   annotations: MaterialAnnotation[];
   request: RpcRequest;
   onToggleSource: (messageId: string) => void;
+  onAnnotationSaved?: (annotation: MaterialAnnotation) => void;
   onDeleteAnnotation: (annotationId: string) => void;
 }) {
   const annotationPlacement = useMemo(() => placeAnnotationsForMessages(annotations, messages), [annotations, messages]);
+  const figureAnnotationsById = useMemo(() => groupFigureExplanationAnnotations(annotations), [annotations]);
 
   return (
     <div className="chat-log">
@@ -353,6 +393,9 @@ const ChatLog = memo(function ChatLog({
                 materialId={materialId}
                 request={request}
                 messageId={message.id}
+                figureAnnotationsById={figureAnnotationsById}
+                onAnnotationSaved={onAnnotationSaved}
+                onAnnotationDeleted={onDeleteAnnotation}
                 renderBlockAfter={(blockId) => {
                   const blockAnnotations = annotationPlacement.blockGroups.get(blockId) || [];
                   return blockAnnotations.length ? (
@@ -377,6 +420,9 @@ const ChatLog = memo(function ChatLog({
                     refs={message.sourceRefs.map((id) => sourceRefById.get(id)).filter((ref): ref is SourceRef => Boolean(ref))}
                     materialId={materialId}
                     request={request}
+                    figureAnnotationsById={figureAnnotationsById}
+                    onAnnotationSaved={onAnnotationSaved}
+                    onAnnotationDeleted={onDeleteAnnotation}
                   />
                 ) : null}
               </div>
@@ -1603,6 +1649,7 @@ export function App({ request }: { request: RpcRequest }) {
                 annotations={artifacts?.annotations || []}
                 request={request}
                 onToggleSource={toggleSourceMessage}
+                onAnnotationSaved={handleAnnotationSaved}
                 onDeleteAnnotation={(annotationId) => void deleteSavedAnnotation(annotationId)}
               />
               {visibleVisual ? <VisualRenderer visual={visibleVisual} /> : null}

@@ -1,4 +1,5 @@
 import { memo, useState, type ReactNode } from "react";
+import type { MaterialAnnotation } from "../../../shared/artifact-types";
 import type { SourceRef, TutorContentBlock } from "../../../shared/tutor-types";
 import { plainDisplayText } from "../../../shared/display-title";
 import { MarkdownContent } from "./MarkdownContent";
@@ -232,6 +233,9 @@ export const TutorBlockRenderer = memo(function TutorBlockRenderer({
   request,
   messageId,
   renderBlockAfter,
+  figureAnnotationsById,
+  onAnnotationSaved,
+  onAnnotationDeleted,
 }: {
   blocks: TutorContentBlock[];
   sourceRefById?: Map<string, SourceRef>;
@@ -240,6 +244,9 @@ export const TutorBlockRenderer = memo(function TutorBlockRenderer({
   request?: RpcRequest;
   messageId?: string;
   renderBlockAfter?: (blockId: string) => ReactNode;
+  figureAnnotationsById?: Map<string, MaterialAnnotation[]>;
+  onAnnotationSaved?: (annotation: MaterialAnnotation) => void;
+  onAnnotationDeleted?: (annotationId: string) => void;
 }) {
   const visibleBlocks = blocks.filter((block) => block.type !== "source_quote" || block.showToLearner);
   if (!visibleBlocks.length) return null;
@@ -284,7 +291,17 @@ export const TutorBlockRenderer = memo(function TutorBlockRenderer({
             {figures.length && materialId && request ? (
               <div className="tutor-inline-figures">
                 {figures.map((figure) => (
-                  <SourceFigureCard key={figure.id} figure={figure} materialId={materialId} request={request} compact contextChunkIds={lookupChunkId ? [lookupChunkId] : []} />
+                  <SourceFigureCard
+                    key={figure.id}
+                    figure={figure}
+                    materialId={materialId}
+                    request={request}
+                    compact
+                    contextChunkIds={lookupChunkId ? [lookupChunkId] : []}
+                    savedAnnotations={figureAnnotationsById?.get(figure.id) || []}
+                    onAnnotationSaved={onAnnotationSaved}
+                    onAnnotationDeleted={onAnnotationDeleted}
+                  />
                 ))}
               </div>
             ) : null}
@@ -297,7 +314,17 @@ export const TutorBlockRenderer = memo(function TutorBlockRenderer({
         return figures.length && materialId && request ? (
           <div className="tutor-inline-figures">
             {figures.map((figure) => (
-              <SourceFigureCard key={figure.id} figure={figure} materialId={materialId} request={request} compact contextChunkIds={fallbackSourceRefs.map((ref) => ref.chunkId)} />
+              <SourceFigureCard
+                key={figure.id}
+                figure={figure}
+                materialId={materialId}
+                request={request}
+                compact
+                contextChunkIds={fallbackSourceRefs.map((ref) => ref.chunkId)}
+                savedAnnotations={figureAnnotationsById?.get(figure.id) || []}
+                onAnnotationSaved={onAnnotationSaved}
+                onAnnotationDeleted={onAnnotationDeleted}
+              />
             ))}
           </div>
         ) : null;

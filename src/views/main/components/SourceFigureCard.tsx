@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { Image as ImageIcon, Loader2, Sparkles } from "lucide-react";
-import type { SourceFigure } from "../../../shared/artifact-types";
+import { Check, Image as ImageIcon, Loader2, Save, Sparkles, Trash2 } from "lucide-react";
+import type { MaterialAnnotation, SourceFigure } from "../../../shared/artifact-types";
+import { figureExplanationLookupResult } from "../figure-annotations";
 import { MarkdownContent } from "./MarkdownContent";
 
 type RpcRequest = (method: string, params: unknown) => Promise<unknown>;
@@ -11,6 +12,9 @@ type SourceFigureCardProps = {
   request: RpcRequest;
   compact?: boolean;
   contextChunkIds?: string[];
+  savedAnnotations?: MaterialAnnotation[];
+  onAnnotationSaved?: (annotation: MaterialAnnotation) => void;
+  onAnnotationDeleted?: (annotationId: string) => void;
 };
 
 function userFacingFigureError(message: string) {
@@ -27,11 +31,23 @@ function captionFor(figure: SourceFigure) {
 
 const figureDataUrlCache = new Map<string, string>();
 
-export function SourceFigureCard({ figure, materialId, request, compact = false, contextChunkIds = [] }: SourceFigureCardProps) {
+export function SourceFigureCard({
+  figure,
+  materialId,
+  request,
+  compact = false,
+  contextChunkIds = [],
+  savedAnnotations = [],
+  onAnnotationSaved,
+  onAnnotationDeleted,
+}: SourceFigureCardProps) {
   const [busy, setBusy] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [imageSrc, setImageSrc] = useState(figure.assetUrl);
   const [imageError, setImageError] = useState("");
   const [explanation, setExplanation] = useState("");
+  const [explanationModel, setExplanationModel] = useState<string | undefined>();
+  const [saveState, setSaveState] = useState<"idle" | "saved">("idle");
   const [error, setError] = useState("");
   const fallbackAttemptedRef = useRef(false);
   const mountedRef = useRef(false);
@@ -93,6 +109,8 @@ export function SourceFigureCard({ figure, materialId, request, compact = false,
     try {
       const result = (await request("figures.explain", { materialId, figureId: figure.id, contextChunkIds })) as { explanation: string; model: string };
       setExplanation(result.explanation);
+      setExplanationModel(result.model);
+      setSaveState("idle");
     } catch (err) {
       const message = (err as Error).message || String(err);
       setError(
@@ -104,6 +122,35 @@ export function SourceFigureCard({ figure, materialId, request, compact = false,
       setBusy(false);
     }
   }
+
+  async function saveExplanation() {
+    const body = explanation.trim();
+    const chunkId = contextChunkIds[0] || figure.sourceChunkIds[0];
+    if (!body || !chunkId || saving || saveState === "saved" || savedAnnotations.length) return;
+    setSaving(true);
+    setError("");
+    try {
+      const result = figureExplanationLookupResult(figure, body, explanationModel);
+      const saved = (await request("annotations.save", {
+        materialId,
+        chunkId,
+        surface: "source",
+        kind: result.kind,
+        selectedText: result.query,
+        result,
+        sourceMeta: result.sourceMeta,
+      })) as MaterialAnnotation;
+      setSaveState("saved");
+      onAnnotationSaved?.(saved);
+    } catch (err) {
+      const message = (err as Error).message || String(err);
+      setError(`설명 저장 실패: ${message}`);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  const canSaveExplanation = Boolean(explanation.trim() && (contextChunkIds[0] || figure.sourceChunkIds[0]) && !savedAnnotations.length && saveState !== "saved");
 
   return (
     <figure className={`source-figure-card ${compact ? "compact" : ""}`}>
@@ -137,7 +184,35 @@ export function SourceFigureCard({ figure, materialId, request, compact = false,
       {error ? <p className="source-figure-error">{error}</p> : null}
       {explanation ? (
         <div className="source-figure-explanation">
+          <div className="source-figure-explanation-actions">
+            <span>그림 설명</span>
+            <button type="button" onClick={saveExplanation} disabled={!canSaveExplanation || saving} title="annotation으로 저장">
+              {saving ? <Loader2 size={14} className="spin" /> : saveState === "saved" || savedAnnotations.length ? <Check size={14} /> : <Save size={14} />}
+              {saveState === "saved" || savedAnnotations.length ? "저장됨" : "저장"}
+            </button>
+          </div>
           <MarkdownContent content={explanation} compact />
+        </div>
+      ) : null}
+      {savedAnnotations.length && !explanation ? (
+        <div className="source-figure-saved-explanations">
+          {savedAnnotations.map((annotation) => (
+            annotation.result.kind === "lookup" ? (
+              <div key={annotation.id} className="source-figure-explanation saved">
+                <div className="source-figure-explanation-actions">
+                  <span>저장된 그림 설명</span>
+                  {onAnnotationDeleted ? (
+                    <button type="button" onClick={() => onAnnotationDeleted(annotation.id)} title="삭제" aria-label="저장된 그림 설명 삭제">
+                      <Trash2 size={14} />
+                    </button>
+                  ) : (
+                    <Check size={14} />
+                  )}
+                </div>
+                <MarkdownContent content={annotation.result.body} compact />
+              </div>
+            ) : null
+          ))}
         </div>
       ) : null}
     </figure>

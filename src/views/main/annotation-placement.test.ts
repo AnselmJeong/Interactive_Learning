@@ -97,4 +97,23 @@ describe("annotation placement", () => {
     expect(shouldRenderSourceAnnotationCard(chatLookup)).toBe(false);
     expect(shouldRenderSourceAnnotationCard(highlight)).toBe(false);
   });
+
+  test("keeps saved figure explanations with the figure instead of the generic source annotation list", () => {
+    const figureExplanation = annotation("figure-explanation", "chunk-1", {
+      surface: "source",
+      sourceMeta: [{ title: "fig-0001", provider: "learnie.figure-explanation" }],
+      result: {
+        kind: "lookup",
+        title: "그림 설명",
+        body: "The image explanation",
+        query: "Figure from source",
+        provider: "ai",
+        model: "test",
+        retrievedAt: "2026-01-01T00:00:00.000Z",
+        sourceMeta: [{ title: "fig-0001", provider: "learnie.figure-explanation" }],
+      },
+    });
+
+    expect(shouldRenderSourceAnnotationCard(figureExplanation)).toBe(false);
+  });
 });

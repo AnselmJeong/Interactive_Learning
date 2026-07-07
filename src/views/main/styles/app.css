@@ -1936,6 +1936,43 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   border: 1px solid rgba(49, 112, 92, 0.22);
   background: rgba(49, 112, 92, 0.08);
 }
+.source-figure-explanation.saved {
+  background: rgba(37, 111, 104, 0.06);
+}
+.source-figure-saved-explanations {
+  display: grid;
+  gap: 8px;
+}
+.source-figure-explanation-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 7px;
+}
+.source-figure-explanation-actions span {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 760;
+}
+.source-figure-explanation-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  border: 1px solid rgba(49, 112, 92, 0.28);
+  border-radius: 7px;
+  background: var(--field-bg);
+  color: var(--accent);
+  padding: 5px 8px;
+  font-size: 0.78rem;
+  font-weight: 760;
+  cursor: pointer;
+}
+.source-figure-explanation-actions button:disabled {
+  cursor: default;
+  opacity: 0.68;
+}
 .source-figure-explanation .markdown-content,
 .source-figure-explanation .markdown-content p,
 .source-figure-explanation .markdown-content ul,

@@ -1,5 +1,6 @@
 import type { MaterialAnnotation } from "../../shared/artifact-types";
 import type { TutorMessage } from "../../shared/tutor-types";
+import { isFigureExplanationAnnotation } from "./figure-annotations";
 
 export type AnnotationPlacement = {
   groups: Map<string, MaterialAnnotation[]>;
@@ -17,6 +18,7 @@ function isChatAnnotation(annotation: MaterialAnnotation) {
 
 export function shouldRenderSourceAnnotationCard(annotation: MaterialAnnotation) {
   if (annotation.kind === "highlight" || annotation.kind === "note") return false;
+  if (isFigureExplanationAnnotation(annotation)) return false;
   return annotation.surface === "source" && !annotationHasAnchor(annotation);
 }
 

@@ -3,6 +3,7 @@ import { Bookmark, Highlighter, Image as ImageIcon, Loader2, MessageSquare, Save
 import type { ImageLookupResult, LookupResult, MaterialAnnotation, MaterialArtifacts } from "../../../shared/artifact-types";
 import type { ChatSubmitShortcut } from "../../../shared/settings-types";
 import { shouldRenderSourceAnnotationCard } from "../annotation-placement";
+import { figureIdForExplanationAnnotation } from "../figure-annotations";
 import { stripFigureMarkdown } from "../figure-text";
 import { shouldSubmitTextArea } from "../submit-shortcut";
 import { MarkdownContent } from "./MarkdownContent";
@@ -193,6 +194,17 @@ export function ImmersiveSourceView({
       const group = groups.get(annotation.chunkId) || [];
       group.push(annotation);
       groups.set(annotation.chunkId, group);
+    }
+    return groups;
+  }, [annotations]);
+  const figureExplanationAnnotations = useMemo(() => {
+    const groups = new Map<string, MaterialAnnotation[]>();
+    for (const annotation of annotations) {
+      const figureId = figureIdForExplanationAnnotation(annotation);
+      if (!figureId) continue;
+      const group = groups.get(figureId) || [];
+      group.push(annotation);
+      groups.set(figureId, group);
     }
     return groups;
   }, [annotations]);
@@ -669,7 +681,19 @@ export function ImmersiveSourceView({
                 {displayFigures.length ? (
                   <div className="source-figure-list">
                     {displayFigures.map((figure) => (
-                      <SourceFigureCard key={figure.id} figure={figure} materialId={artifacts.manifest.id} request={request} contextChunkIds={[chunk.id]} />
+                      <SourceFigureCard
+                        key={figure.id}
+                        figure={figure}
+                        materialId={artifacts.manifest.id}
+                        request={request}
+                        contextChunkIds={[chunk.id]}
+                        savedAnnotations={figureExplanationAnnotations.get(figure.id) || []}
+                        onAnnotationSaved={(annotation) => {
+                          setAnnotations((current) => [annotation, ...current.filter((item) => item.id !== annotation.id)]);
+                          onAnnotationSaved?.(annotation);
+                        }}
+                        onAnnotationDeleted={(annotationId) => void removeAnnotation(annotationId)}
+                      />
                     ))}
                   </div>
                 ) : null}
