@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Check, FileText, Loader2, Plus, X } from "lucide-react";
 import type { PreparedSourceImport, ProjectSummary, SourceSummary } from "../../../shared/rpc-types";
+import { LEARNING_LEVEL_OPTIONS, type LearningLevel } from "../../../shared/learning-levels";
 import { SourceImportModal } from "./SourceImportModal";
 
 type RpcRequest = (method: string, params: unknown) => Promise<unknown>;
@@ -19,6 +20,7 @@ export function NewProjectModal({
   onCreated: (project: ProjectSummary) => Promise<void>;
 }) {
   const [projectName, setProjectName] = useState("");
+  const [learningLevel, setLearningLevel] = useState<LearningLevel>("medium");
   const [project, setProject] = useState<ProjectSummary | null>(null);
   const [sources, setSources] = useState<SourceSummary[]>([]);
   const [preparedImport, setPreparedImport] = useState<PreparedSourceImport | null>(null);
@@ -33,7 +35,7 @@ export function NewProjectModal({
     setBusy(true);
     setNotice("");
     try {
-      const result = (await request("projects.create", { title })) as ProjectSummary;
+      const result = (await request("projects.create", { title, learningLevel })) as ProjectSummary;
       setProject(result);
     } catch (error) {
       setNotice((error as Error).message);
@@ -124,6 +126,24 @@ export function NewProjectModal({
               ) : null}
             </div>
           </label>
+
+          <fieldset className="np-level-control" disabled={created || busy}>
+            <legend>학습 강도</legend>
+            <div className="np-level-grid">
+              {LEARNING_LEVEL_OPTIONS.map((option) => (
+                <button
+                  key={option.value}
+                  type="button"
+                  className={`np-level-option ${learningLevel === option.value ? "active" : ""}`}
+                  onClick={() => setLearningLevel(option.value)}
+                  disabled={created || busy}
+                >
+                  <span>{option.label}</span>
+                  <small>{option.description}</small>
+                </button>
+              ))}
+            </div>
+          </fieldset>
 
           <div className={`np-sources-section ${created ? "" : "locked"}`}>
             <div className="np-sources-heading">

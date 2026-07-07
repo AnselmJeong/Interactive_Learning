@@ -15,6 +15,7 @@ import type {
 } from "./artifact-types";
 import type { AiProviderId, AiProviderStatus, AppSettings, ProviderModel, PublicAiProviderUpdate } from "./settings-types";
 import type { LearningMessageBatchStatus, SessionSnapshot, SessionSummary, TutorContext, TutorPrefetchStatus, TutorTurnOutput } from "./tutor-types";
+import type { LearningLevel } from "./learning-levels";
 
 export type ProjectSummary = {
   id: string;
@@ -25,6 +26,7 @@ export type ProjectSummary = {
   updatedAt: number;
   lastOpenedAt: number | null;
   archivedAt: number | null;
+  learningLevel: LearningLevel;
 };
 
 export type SourceSummary = {
@@ -116,7 +118,7 @@ export type BuddyMessageInput = {
 export type AppRPC = {
   bun: RPCSchema<{
     requests: {
-      "projects.create": { params: { title: string; description?: string }; response: ProjectSummary };
+      "projects.create": { params: { title: string; description?: string; learningLevel?: LearningLevel }; response: ProjectSummary };
       "projects.list": { params: {}; response: ProjectSummary[] };
       "projects.open": { params: { projectId: string }; response: ProjectSummary };
       "projects.archive": { params: { projectId: string }; response: boolean };

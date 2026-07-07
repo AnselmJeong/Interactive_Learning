@@ -7,8 +7,9 @@ import { listMaterialAnnotations, replaceMaterialAnnotations } from "./annotatio
 import type { MaterialAnnotation, MaterialManifest, QualityStatus, SourceManifest, SourceType } from "../shared/artifact-types";
 import type { ProjectSummary } from "../shared/rpc-types";
 import type { SessionSnapshot, TutorMessage } from "../shared/tutor-types";
+import { normalizeLearningLevel, type LearningLevel } from "../shared/learning-levels";
 
-const PROJECT_BUNDLE_SCHEMA_VERSION = 1;
+const PROJECT_BUNDLE_SCHEMA_VERSION = 2;
 
 type ProjectBundleManifest = {
   schemaVersion: number;
@@ -18,6 +19,7 @@ type ProjectBundleManifest = {
   createdAt: number;
   updatedAt: number;
   archivedAt: number | null;
+  learningLevel?: LearningLevel;
 };
 
 type ProjectBundleMarker = {
@@ -230,6 +232,7 @@ export async function recoverProjectManifestIfPossible(rootPath: string, project
     createdAt,
     updatedAt,
     archivedAt: null,
+    learningLevel: "medium",
   };
   await writeJson(manifestPath, manifest);
   return { recovered: true, markerCount: markers.length, manifest };
@@ -323,6 +326,7 @@ export function projectManifestFromSummary(project: ProjectSummary): ProjectBund
     createdAt: project.createdAt,
     updatedAt: project.updatedAt,
     archivedAt: project.archivedAt,
+    learningLevel: normalizeLearningLevel(project.learningLevel),
   };
 }
 
@@ -342,19 +346,21 @@ async function importProject(rootPath: string, projectId: string) {
   const archivedAt = manifest?.archivedAt ? timestamp(manifest.archivedAt, 0) : null;
   const title = manifest?.title?.trim() || projectId;
   const description = typeof manifest?.description === "string" ? manifest.description : null;
+  const learningLevel = normalizeLearningLevel(manifest.learningLevel);
 
   getDb()
     .query(
-      `INSERT INTO projects (id, title, description, root_path, created_at, updated_at, archived_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO projects (id, title, description, root_path, learning_level, created_at, updated_at, archived_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          title = excluded.title,
          description = excluded.description,
          root_path = excluded.root_path,
+         learning_level = excluded.learning_level,
          updated_at = max(projects.updated_at, excluded.updated_at),
          archived_at = excluded.archived_at`
     )
-    .run(projectId, title, description, rootPath, createdAt, updatedAt, archivedAt);
+    .run(projectId, title, description, rootPath, learningLevel, createdAt, updatedAt, archivedAt);
 
   await importSources(projectDir, projectId);
   await importMaterials(projectDir, projectId);

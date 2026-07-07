@@ -8,6 +8,7 @@ import { CourseArtifactService } from "./course-artifact-service";
 import type { MaterialArtifacts } from "../shared/artifact-types";
 import type { ProjectArchiveExport, ProjectSummary } from "../shared/rpc-types";
 import type { TutorContentBlock } from "../shared/tutor-types";
+import { normalizeLearningLevel, type LearningLevel } from "../shared/learning-levels";
 import { SettingsService } from "./settings-service";
 import { writeProjectManifest } from "./project-bundle-sync";
 import { writeZipFromDirectory } from "./archive-writer";
@@ -21,6 +22,7 @@ type ProjectRow = {
   updated_at: number;
   last_opened_at: number | null;
   archived_at: number | null;
+  learning_level: string | null;
 };
 
 type SourceRow = {
@@ -86,6 +88,7 @@ function toProject(row: ProjectRow): ProjectSummary {
     updatedAt: row.updated_at,
     lastOpenedAt: row.last_opened_at,
     archivedAt: row.archived_at,
+    learningLevel: normalizeLearningLevel(row.learning_level),
   };
 }
 
@@ -210,7 +213,7 @@ export class ProjectService {
   private readonly settings = new SettingsService();
   private readonly artifacts = new CourseArtifactService();
 
-  async create(input: { title: string; description?: string }) {
+  async create(input: { title: string; description?: string; learningLevel?: LearningLevel }) {
     const title = input.title.trim();
     if (!title) throw new Error("Project title is required");
 
@@ -218,13 +221,14 @@ export class ProjectService {
     const now = Date.now();
     const appSettings = await this.settings.get();
     const rootPath = appSettings.projectRootFolder || dataPath("projects");
+    const learningLevel = normalizeLearningLevel(input.learningLevel);
     await mkdir(projectDirAt(rootPath, id), { recursive: true });
     getDb()
       .query(
-        `INSERT INTO projects (id, title, description, root_path, created_at, updated_at, last_opened_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO projects (id, title, description, root_path, learning_level, created_at, updated_at, last_opened_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
       )
-      .run(id, title, input.description?.trim() || null, rootPath, now, now, now);
+      .run(id, title, input.description?.trim() || null, rootPath, learningLevel, now, now, now);
     const project = this.open(id);
     await writeProjectManifest(project);
     return project;

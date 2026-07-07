@@ -2712,6 +2712,65 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
 .np-name-row input { padding: 15px 18px; font-size: 16px; }
 .np-name-row .icon-button { width: 44px; min-height: 100%; }
 
+.np-level-control {
+  min-width: 0;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+.np-level-control legend {
+  padding: 0;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 620;
+  letter-spacing: 0.02em;
+}
+.np-level-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+.np-level-option {
+  min-width: 0;
+  min-height: 72px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--field-bg);
+  color: var(--ink);
+  display: grid;
+  align-content: center;
+  gap: 4px;
+  padding: 10px 8px;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 160ms ease, background 160ms ease, box-shadow 160ms ease;
+}
+.np-level-option:hover:not(:disabled) {
+  border-color: rgba(167, 125, 18, 0.42);
+  background: var(--surface-raised);
+}
+.np-level-option.active {
+  border-color: rgba(167, 125, 18, 0.72);
+  background: var(--surface-hover);
+  box-shadow: 0 0 0 3px rgba(167, 125, 18, 0.1);
+}
+.np-level-option span {
+  min-width: 0;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 760;
+  overflow-wrap: anywhere;
+}
+.np-level-option small {
+  min-width: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
 .np-sources-section { display: grid; gap: 12px; }
 .np-sources-section.locked { opacity: 0.5; }
 .np-sources-heading {

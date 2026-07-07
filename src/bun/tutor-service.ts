@@ -11,6 +11,7 @@ import { classifyProgressionCommand } from "../shared/progression-command";
 import { plainDisplayText } from "../shared/display-title";
 import type { CourseModule, LectureModulePlan, MaterialArtifacts, PresentationModulePlan, SourceChunk, VisualSpec } from "../shared/artifact-types";
 import type { LearningMessageBatchStatus, SessionSnapshot, SessionSummary, SourceRef, TutorContentBlock, TutorContext, TutorIntent, TutorMessage, TutorPrefetchStatus, TutorStateUpdate, TutorTurnOutput } from "../shared/tutor-types";
+import { normalizeLearningLevel, tutorLevelInstruction, type LearningLevel } from "../shared/learning-levels";
 
 // "start_module": open the first source chunk of a (new) module with a content summary.
 // "continue_chunk": keep the cursor on the current source chunk and continue teaching it.
@@ -31,7 +32,7 @@ const VALID_INTENTS: TutorIntent[] = ["start", "answer", "question", "off_topic"
 const DIGRESSION_INTENTS = new Set<TutorIntent>(["question", "off_topic", "deeper", "meta_complaint"]);
 const MAX_HISTORY_TURNS = 8;
 const MAX_HISTORY_CHARS = 1200;
-const PREFETCH_PROMPT_VERSION = "tutor-default-continue-v2-language";
+const PREFETCH_PROMPT_VERSION = "tutor-default-continue-v3-learning-level";
 const MESSAGE_BATCH_PROMPT_VERSION = PREFETCH_PROMPT_VERSION;
 const PREFETCH_TTL_MS = 20 * 60 * 1000;
 const PREFETCH_PROVIDER_TIMEOUT_MS = 120 * 1000;
@@ -1691,37 +1692,51 @@ export class TutorService {
       .run(moduleId, currentChunkId, JSON.stringify([...covered]), JSON.stringify(completedModuleIds), Date.now(), sessionId);
   }
 
-  private async learningRuntimeFingerprint(artifacts: MaterialArtifacts, options: { requirePrefetchEnabled: boolean; requireApiKey: boolean }) {
+  private projectLearningLevel(projectId: string): LearningLevel {
+    const row = getDb()
+      .query<{ learning_level: string | null }, [string]>("SELECT learning_level FROM projects WHERE id = ?")
+      .get(projectId);
+    return normalizeLearningLevel(row?.learning_level);
+  }
+
+  private async learningRuntimeFingerprint(
+    session: SessionSnapshot,
+    artifacts: MaterialArtifacts,
+    options: { requirePrefetchEnabled: boolean; requireApiKey: boolean }
+  ) {
     const settings = await this.settings.get();
     if (options.requirePrefetchEnabled && !settings.tutorPrefetchEnabled) return null;
     const provider = settings.aiProvider;
     const model = settings.providers[provider].selectedModel;
     const key = options.requireApiKey ? await this.secrets.getApiKey(provider) : null;
     if (!model || (options.requireApiKey && !key?.value)) return null;
+    const learningLevel = this.projectLearningLevel(session.projectId);
     const settingsFingerprint = stableHash({
       provider,
       model,
       baseUrl: settings.providers[provider].baseUrl,
       tutorLanguage: settings.tutorLanguage,
+      learningLevel,
     });
     return {
       provider,
       model,
+      learningLevel,
       settingsFingerprint,
       materialFingerprint: this.materialFingerprint(artifacts),
     };
   }
 
-  private async prefetchRuntimeFingerprint(artifacts: MaterialArtifacts) {
-    return this.learningRuntimeFingerprint(artifacts, { requirePrefetchEnabled: true, requireApiKey: true });
+  private async prefetchRuntimeFingerprint(session: SessionSnapshot, artifacts: MaterialArtifacts) {
+    return this.learningRuntimeFingerprint(session, artifacts, { requirePrefetchEnabled: true, requireApiKey: true });
   }
 
-  private async batchRuntimeFingerprint(artifacts: MaterialArtifacts) {
-    return this.learningRuntimeFingerprint(artifacts, { requirePrefetchEnabled: false, requireApiKey: true });
+  private async batchRuntimeFingerprint(session: SessionSnapshot, artifacts: MaterialArtifacts) {
+    return this.learningRuntimeFingerprint(session, artifacts, { requirePrefetchEnabled: false, requireApiKey: true });
   }
 
-  private async batchRevealFingerprint(artifacts: MaterialArtifacts) {
-    return this.learningRuntimeFingerprint(artifacts, { requirePrefetchEnabled: false, requireApiKey: false });
+  private async batchRevealFingerprint(session: SessionSnapshot, artifacts: MaterialArtifacts) {
+    return this.learningRuntimeFingerprint(session, artifacts, { requirePrefetchEnabled: false, requireApiKey: false });
   }
 
   private materialFingerprint(artifacts: MaterialArtifacts) {
@@ -1847,7 +1862,7 @@ export class TutorService {
     if (!force && (current.status === "ready" || current.status === "partial") && current.preparedCount > 0) return current;
 
     const artifacts = await this.artifacts.getArtifacts(materialId);
-    const runtime = await this.batchRuntimeFingerprint(artifacts);
+    const runtime = await this.batchRuntimeFingerprint(session, artifacts);
     if (!runtime) throw new Error("AI provider is not configured");
 
     const previousActiveRunId = this.activeBatchRuns.get(sessionId);
@@ -2112,8 +2127,9 @@ export class TutorService {
       return null;
     }
 
+    const session = this.snapshotHeader(sessionId);
     const artifacts = await this.artifacts.getArtifacts(run.material_id);
-    const runtime = await this.batchRevealFingerprint(artifacts);
+    const runtime = await this.batchRevealFingerprint(session, artifacts);
     if (!runtime || run.prompt_version !== MESSAGE_BATCH_PROMPT_VERSION || run.settings_fingerprint !== runtime.settingsFingerprint || run.material_fingerprint !== runtime.materialFingerprint) {
       this.discardPreparedFuture(sessionId);
       return null;
@@ -2121,7 +2137,6 @@ export class TutorService {
 
     const cursorBefore = JSON.parse(row.cursor_before_json) as PreparedMessageCursor;
     const cursorAfter = JSON.parse(row.cursor_after_json) as PreparedMessageCursor;
-    const session = this.snapshotHeader(sessionId);
     if (!this.preparedCursorMatches(session, cursorBefore)) {
       this.discardPreparedFuture(sessionId);
       return null;
@@ -2184,7 +2199,7 @@ export class TutorService {
     if (session.status !== "active") return;
     const artifacts = await this.artifacts.getArtifacts(session.materialId);
     if (artifacts.sourceChunks.length > 0 && session.coveredChunkIds.length >= artifacts.sourceChunks.length) return;
-    const runtime = await this.prefetchRuntimeFingerprint(artifacts);
+    const runtime = await this.prefetchRuntimeFingerprint(session, artifacts);
     if (!runtime) return;
     const plan = this.planDefaultContinue(session, artifacts);
     const baseSessionFingerprint = this.sessionFingerprint(session, plan, runtime);
@@ -2280,7 +2295,7 @@ export class TutorService {
     const session = this.snapshotForPlanning(sessionId);
     if (session.status !== "active") return null;
     const artifacts = await this.artifacts.getArtifacts(session.materialId);
-    const runtime = await this.prefetchRuntimeFingerprint(artifacts);
+    const runtime = await this.prefetchRuntimeFingerprint(session, artifacts);
     if (!runtime) return null;
     let row = getDb()
       .query<TutorPrefetchRow, [string]>(
@@ -2432,6 +2447,7 @@ export class TutorService {
     const originalTermLine = originalTerms.length
       ? `Original terms visible in the current context. Preserve these spellings when mentioning them, or add them in parentheses after a Korean gloss/transliteration: ${originalTerms.join(", ")}`
       : "";
+    const levelInstruction = tutorLevelInstruction(this.projectLearningLevel(session.projectId));
     const intent = classifyIntent(payload.userText || "", payload.event);
     const allComplete = artifacts.sourceChunks.length > 0 && session.coveredChunkIds.length >= artifacts.sourceChunks.length;
     const instruction = allComplete
@@ -2473,6 +2489,8 @@ ${languageInstruction}
 Invariant: assume the learner has not read the source. Teach it well enough that they feel a good teacher read it with them.
 ${TERM_RENDERING_RULE}
 ${originalTermLine}
+
+${levelInstruction}
 
 ANSWER THE LEARNER. This is the most important rule. When the learner asks a question, raises a tangent, or says you are dodging, you MUST answer their actual question this turn. Never deflect with "let's move on", "that is a good starting point", or a transition to the next topic instead of answering. Dodging a direct question is a failure.
 
@@ -2571,6 +2589,7 @@ Output schema: {"message":"plain text fallback summary","blocks":[/* 2-4 blocks 
     const originalTermLine = originalTerms.length
       ? `Original terms visible in the current context. Preserve these spellings when mentioning them, or add them in parentheses after a Korean gloss/transliteration: ${originalTerms.join(", ")}`
       : "";
+    const levelInstruction = tutorLevelInstruction(this.projectLearningLevel(session.projectId));
     const intent = classifyIntent(payload.userText || "", payload.event);
     const isDigression = DIGRESSION_INTENTS.has(intent);
     const ready = payload.event === "user_message" && intent === "satisfied";
@@ -2585,6 +2604,7 @@ ${languageInstruction}
 The structured JSON call failed, so this is a repair call. Return plain tutor text only.
 ${TERM_RENDERING_RULE}
 ${originalTermLine}
+${levelInstruction}
 Answer the learner's actual latest turn. Do not grade, do not say to stick closer to the source, and do not repeat a canned fallback.
 Use the source chunks as primary context, but use your own knowledge when it helps. Be concise and scannable, not discursive. The goal is to understand without reading a wall of text.
 For repair text, use plain short sentences or simple bullet points. Do not simulate flows or tables with pipe characters, markdown tables, mermaid, or numbered pseudo-diagrams.

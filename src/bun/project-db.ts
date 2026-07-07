@@ -15,6 +15,7 @@ export function getDb() {
       title TEXT NOT NULL,
       description TEXT,
       root_path TEXT,
+      learning_level TEXT NOT NULL DEFAULT 'medium' CHECK (learning_level IN ('casual', 'medium', 'hard')),
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL,
       last_opened_at INTEGER,
@@ -210,6 +211,9 @@ export function getDb() {
   const projectColumns = db.query<{ name: string }, []>("PRAGMA table_info(projects)").all().map((column) => column.name);
   if (!projectColumns.includes("root_path")) {
     db.exec("ALTER TABLE projects ADD COLUMN root_path TEXT;");
+  }
+  if (!projectColumns.includes("learning_level")) {
+    db.exec("ALTER TABLE projects ADD COLUMN learning_level TEXT NOT NULL DEFAULT 'medium';");
   }
   const messageColumns = db.query<{ name: string }, []>("PRAGMA table_info(learning_messages)").all().map((column) => column.name);
   if (!messageColumns.includes("choices_json")) {

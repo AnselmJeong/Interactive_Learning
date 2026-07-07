@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { recoverProjectManifestIfPossible, shouldImportSessionSnapshot, shouldPurgeProjectsMissingFromRoot } from "./project-bundle-sync";
+import { projectManifestFromSummary, recoverProjectManifestIfPossible, shouldImportSessionSnapshot, shouldPurgeProjectsMissingFromRoot } from "./project-bundle-sync";
 
 describe("project root purge safety", () => {
   test("does not purge cached projects when a root has no project manifests", () => {
@@ -48,6 +48,8 @@ describe("project manifest recovery", () => {
       expect(manifest.id).toBe("project-a");
       expect(manifest.title).toBe("Drive Synced Course");
       expect(manifest.archivedAt).toBe(null);
+      expect(manifest.schemaVersion).toBe(2);
+      expect(manifest.learningLevel).toBe("medium");
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -63,6 +65,25 @@ describe("project manifest recovery", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  });
+});
+
+describe("project manifest learning level", () => {
+  test("writes normalized learning level to project manifests", () => {
+    const manifest = projectManifestFromSummary({
+      id: "project-hard",
+      title: "Hard Project",
+      description: null,
+      rootPath: "/tmp/projects",
+      createdAt: 1,
+      updatedAt: 2,
+      lastOpenedAt: null,
+      archivedAt: null,
+      learningLevel: "hard",
+    });
+
+    expect(manifest.schemaVersion).toBe(2);
+    expect(manifest.learningLevel).toBe("hard");
   });
 });
 
