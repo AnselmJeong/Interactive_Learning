@@ -92,6 +92,32 @@ export type ProjectArchiveExport = {
   sessionCount: number;
 };
 
+export type ProjectSyncIssue = {
+  folderName?: string;
+  path: string;
+  reason: "root_unavailable" | "missing_manifest" | "invalid_manifest" | "import_failed";
+  message: string;
+  recoverable: boolean;
+};
+
+export type ProjectSyncReport = {
+  rootPath: string;
+  available: boolean;
+  scannedAt: number;
+  scannedFolderCount: number;
+  foundProjectCount: number;
+  importedProjectCount: number;
+  recoveredProjectCount: number;
+  skippedFolderCount: number;
+  removedCacheCount: number;
+  issues: ProjectSyncIssue[];
+};
+
+export type ProjectRescanResult = {
+  projects: ProjectSummary[];
+  sync: ProjectSyncReport;
+};
+
 export type AiProviderConnectionInput = {
   settings?: AppSettings;
   apiKeys?: Partial<Record<AiProviderId, string>>;
@@ -117,6 +143,7 @@ export type AppRPC = {
     requests: {
       "projects.create": { params: { title: string; description?: string }; response: ProjectSummary };
       "projects.list": { params: {}; response: ProjectSummary[] };
+      "projects.rescan": { params: {}; response: ProjectRescanResult };
       "projects.open": { params: { projectId: string }; response: ProjectSummary };
       "projects.archive": { params: { projectId: string }; response: boolean };
       "projects.exportArchive": { params: { projectId: string; destinationFolder?: string }; response: ProjectArchiveExport };

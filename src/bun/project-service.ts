@@ -6,7 +6,7 @@ import { getDb } from "./project-db";
 import { dataPath, projectDirAt } from "./paths";
 import { CourseArtifactService } from "./course-artifact-service";
 import type { MaterialArtifacts } from "../shared/artifact-types";
-import type { ProjectArchiveExport, ProjectSummary } from "../shared/rpc-types";
+import type { ProjectArchiveExport, ProjectRescanResult, ProjectSummary } from "../shared/rpc-types";
 import type { TutorContentBlock } from "../shared/tutor-types";
 import { SettingsService } from "./settings-service";
 import { syncProjectRootToDb, writeProjectManifest } from "./project-bundle-sync";
@@ -234,6 +234,17 @@ export class ProjectService {
     const appSettings = await this.settings.get();
     const rootPath = appSettings.projectRootFolder || dataPath("projects");
     await syncProjectRootToDb(rootPath);
+    return this.listFromRoot(rootPath);
+  }
+
+  async rescan(): Promise<ProjectRescanResult> {
+    const appSettings = await this.settings.get();
+    const rootPath = appSettings.projectRootFolder || dataPath("projects");
+    const sync = await syncProjectRootToDb(rootPath);
+    return { projects: this.listFromRoot(rootPath), sync };
+  }
+
+  private listFromRoot(rootPath: string) {
     const rows = getDb()
       .query<ProjectRow, [string]>(
         `SELECT * FROM projects

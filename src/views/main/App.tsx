@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { Archive, BookOpen, Check, Info, Loader2, MessageSquare, Moon, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Play, Send, Settings, Sun, Trash2, Upload } from "lucide-react";
-import type { MaterialSummary, PreparedSourceImport, ProjectArchiveExport, ProjectSummary, SourceSummary } from "../../shared/rpc-types";
+import type { MaterialSummary, PreparedSourceImport, ProjectArchiveExport, ProjectRescanResult, ProjectSummary, SourceSummary } from "../../shared/rpc-types";
 import type { AppSettings, AiProviderStatus, ChatSubmitShortcut, ProviderModel } from "../../shared/settings-types";
 import type { MaterialAnnotation, MaterialArtifacts } from "../../shared/artifact-types";
 import type { SessionSnapshot, SessionSummary, SourceRef, TutorContext, TutorMessage, TutorPrefetchStatus } from "../../shared/tutor-types";
@@ -77,6 +77,20 @@ function prefetchTargetLabel(status: TutorPrefetchStatus | null) {
   if (status.targetEvent === "start_module") return "다음 모듈";
   if (status.targetEvent === "finish_prompt") return "마무리";
   return "";
+}
+
+function plural(count: number, singular: string, pluralValue = `${singular}s`) {
+  return `${count} ${count === 1 ? singular : pluralValue}`;
+}
+
+function projectRescanStatus(result: ProjectRescanResult) {
+  const { sync } = result;
+  if (!sync.available) return "Project folder unavailable. Check Google Drive sync and try again.";
+  const parts = [`Scanned ${plural(result.projects.length, "project")}`];
+  if (sync.recoveredProjectCount) parts.push(`recovered ${plural(sync.recoveredProjectCount, "manifest")}`);
+  if (sync.skippedFolderCount) parts.push(`${plural(sync.skippedFolderCount, "folder")} waiting for complete Drive sync`);
+  if (sync.removedCacheCount) parts.push(`removed ${plural(sync.removedCacheCount, "stale cache entry", "stale cache entries")}`);
+  return parts.join("; ");
 }
 
 function continueButtonTitle(status: TutorPrefetchStatus | null) {
@@ -532,6 +546,36 @@ export function App({ request }: { request: RpcRequest }) {
     const [nextSettings, nextStatus] = await Promise.all([request("settings.getPublic", {}), request("aiProvider.status", {})]);
     setSettings(nextSettings as AppSettings);
     setProviderStatus(nextStatus as AiProviderStatus);
+  }
+
+  async function rescanProjects() {
+    setBusy(true);
+    setStatus("Scanning project folder");
+    try {
+      const result = (await request("projects.rescan", {})) as ProjectRescanResult;
+      const projects = result.projects;
+      setState((current) => ({ ...current, projects }));
+      const currentProject = activeProject ? projects.find((project) => project.id === activeProject.id) : null;
+      if (currentProject) {
+        await openProject(currentProject);
+      } else if (projects[0]) {
+        await openProject(projects[0]);
+      } else {
+        setActiveProject(null);
+        setActiveMaterial(null);
+        setArtifacts(null);
+        setSession(null);
+        setContext(null);
+        setPrefetchStatus(null);
+        setSelectedModuleId(null);
+        setState((current) => ({ ...current, projects, sources: [], materials: [], sessions: [] }));
+      }
+      setStatus(projectRescanStatus(result));
+    } catch (error) {
+      setStatus(`Project rescan failed: ${(error as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
   }
 
   const refreshPrefetchStatus = useCallback(async (sessionId: string) => {
@@ -1304,6 +1348,7 @@ export function App({ request }: { request: RpcRequest }) {
               busy={busy}
               onSelect={(project) => void openProject(project)}
               onCreate={() => setNewProjectOpen(true)}
+              onRefresh={() => void rescanProjects()}
             />
           </section>
 

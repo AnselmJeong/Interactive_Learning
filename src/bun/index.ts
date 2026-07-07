@@ -290,6 +290,7 @@ const rpc = BrowserView.defineRPC<AppRPC>({
     requests: {
       "projects.create": (params) => projects.create(params),
       "projects.list": () => projects.list(),
+      "projects.rescan": () => projects.rescan(),
       "projects.open": ({ projectId }) => projects.open(projectId),
       "projects.archive": ({ projectId }) => projects.archive(projectId),
       "projects.exportArchive": ({ projectId, destinationFolder }) => projects.exportArchive(projectId, destinationFolder),
