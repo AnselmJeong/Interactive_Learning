@@ -129,9 +129,6 @@ export function getDb() {
     CREATE INDEX IF NOT EXISTS idx_learning_message_batch_runs_session_status
       ON learning_message_batch_runs(session_id, status, updated_at DESC);
 
-    CREATE INDEX IF NOT EXISTS idx_learning_messages_prepared_batch
-      ON learning_messages(session_id, delivery_state, ordinal ASC);
-
     CREATE TABLE IF NOT EXISTS tutor_prefetches (
       id TEXT PRIMARY KEY,
       session_id TEXT NOT NULL REFERENCES learning_sessions(id) ON DELETE CASCADE,
