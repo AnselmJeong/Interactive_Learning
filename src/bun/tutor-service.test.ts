@@ -1,5 +1,10 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { closeDbForTests, getDb } from "./project-db";
 import { SessionMutationQueue, prefetchConsumeWaitMs, repairedCurrentChunkId, repairedModuleCurrentChunkId, tutorLanguageInstruction } from "./tutor-service";
+import { TutorService } from "./tutor-service";
 
 describe("prefetch consume wait policy", () => {
   test("does not wait the full consume window when provider timeout is nearly exhausted", () => {
@@ -86,5 +91,91 @@ describe("module cursor repair", () => {
 
   test("falls back to the first uncovered module chunk when the module has no prior turns", () => {
     expect(repairedModuleCurrentChunkId("chunk-004", ["chunk-001"], moduleChunks)).toBe("chunk-002");
+  });
+});
+
+describe("prepared learning messages", () => {
+  let tempRoot = "";
+
+  beforeEach(async () => {
+    tempRoot = await mkdtemp(join(tmpdir(), "learnie-prepared-messages-test-"));
+    process.env.LEARNIE_APP_DATA_ROOT = tempRoot;
+    closeDbForTests();
+  });
+
+  afterEach(async () => {
+    closeDbForTests();
+    delete process.env.LEARNIE_APP_DATA_ROOT;
+    if (tempRoot) await rm(tempRoot, { recursive: true, force: true });
+    tempRoot = "";
+  });
+
+  function insertSession() {
+    const now = Date.now();
+    getDb()
+      .query("INSERT INTO projects (id, title, created_at, updated_at) VALUES ('project-1', 'Project', ?, ?)")
+      .run(now, now);
+    getDb()
+      .query("INSERT INTO learning_materials (id, project_id, title, status, created_at, updated_at) VALUES ('material-1', 'project-1', 'Material', 'ready', ?, ?)")
+      .run(now, now);
+    getDb()
+      .query(
+        `INSERT INTO learning_sessions
+         (id, project_id, material_id, title, status, current_module_id, completed_module_ids_json,
+          current_chunk_id, covered_chunk_ids_json, created_at, updated_at)
+         VALUES ('session-1', 'project-1', 'material-1', 'Session', 'active', 'module-1', '[]', 'chunk-1', '[]', ?, ?)`
+      )
+      .run(now, now);
+    return "session-1";
+  }
+
+  test("hides prepared rows from normal snapshots and session counts", async () => {
+    const sessionId = insertSession();
+    const now = Date.now();
+    getDb()
+      .query(
+        `INSERT INTO learning_messages
+         (id, session_id, role, content, source_refs_json, choices_json, blocks_json, delivery_state, created_at, ordinal)
+         VALUES
+         ('visible-1', ?, 'assistant', 'Visible', '[]', '[]', '[]', 'visible', ?, 0),
+         ('prepared-1', ?, 'assistant', 'Prepared', '[]', '[]', '[]', 'prepared', ?, 1)`
+      )
+      .run(sessionId, now, sessionId, now);
+
+    const service = new TutorService();
+    const snapshot = (service as unknown as { snapshot: (id: string) => { messages: Array<{ content: string }> } }).snapshot(sessionId);
+    const summaries = await service.listSessions("material-1");
+
+    expect(snapshot.messages.map((message) => message.content)).toEqual(["Visible"]);
+    expect(summaries[0]?.messageCount).toBe(1);
+  });
+
+  test("inserting a visible detour shifts prepared future messages behind it", () => {
+    const sessionId = insertSession();
+    const now = Date.now();
+    getDb()
+      .query(
+        `INSERT INTO learning_messages
+         (id, session_id, role, content, source_refs_json, choices_json, blocks_json, delivery_state, created_at, ordinal)
+         VALUES
+         ('visible-1', ?, 'assistant', 'Visible', '[]', '[]', '[]', 'visible', ?, 0),
+         ('prepared-1', ?, 'assistant', 'Prepared', '[]', '[]', '[]', 'prepared', ?, 1)`
+      )
+      .run(sessionId, now, sessionId, now);
+
+    const service = new TutorService();
+    (service as unknown as {
+      insertMessage: (input: { sessionId: string; role: "user"; content: string; sourceRefs: string[] }) => void;
+    }).insertMessage({ sessionId, role: "user", content: "Question", sourceRefs: [] });
+
+    const rows = getDb()
+      .query<{ id: string; delivery_state: string; ordinal: number }, []>("SELECT id, delivery_state, ordinal FROM learning_messages ORDER BY ordinal ASC")
+      .all();
+
+    expect(rows).toEqual([
+      { id: "visible-1", delivery_state: "visible", ordinal: 0 },
+      { id: expect.any(String), delivery_state: "visible", ordinal: 1 },
+      { id: "prepared-1", delivery_state: "prepared", ordinal: 2 },
+    ]);
   });
 });

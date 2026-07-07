@@ -3,7 +3,7 @@ import { Archive, BookOpen, Check, Info, Loader2, MessageSquare, Moon, PanelLeft
 import type { MaterialSummary, PreparedSourceImport, ProjectArchiveExport, ProjectSummary, SourceSummary } from "../../shared/rpc-types";
 import type { AppSettings, AiProviderStatus, ChatSubmitShortcut, ProviderModel } from "../../shared/settings-types";
 import type { MaterialAnnotation, MaterialArtifacts } from "../../shared/artifact-types";
-import type { SessionSnapshot, SessionSummary, SourceRef, TutorContext, TutorMessage, TutorPrefetchStatus } from "../../shared/tutor-types";
+import type { LearningMessageBatchStatus, SessionSnapshot, SessionSummary, SourceRef, TutorContext, TutorMessage, TutorPrefetchStatus } from "../../shared/tutor-types";
 import { displayableCourseTitle, displayableHeadingPath, displayableOutlineTitle } from "../../shared/display-title";
 import { SettingsModal } from "./components/SettingsModal";
 import { VisualRenderer } from "./components/VisualRenderer";
@@ -93,6 +93,22 @@ function continueButtonTitle(status: TutorPrefetchStatus | null) {
   if (status?.status === "ready") return target ? `${target}이 준비되었습니다.` : "이어질 설명이 준비되었습니다.";
   if (status?.status === "failed") return "미리 준비하지 못했습니다. 누르면 바로 새로 요청합니다.";
   return "계속 진행";
+}
+
+function batchStatusLabel(status: LearningMessageBatchStatus | null) {
+  if (!status || status.status === "idle") return "전체 메시지 미리 만들기";
+  const progress = status.totalSteps > 0 ? `${status.completedSteps}/${status.totalSteps}` : `${status.completedSteps}`;
+  if (status.status === "generating" || status.status === "queued") return `메시지 생성 중 ${progress}`;
+  if (status.status === "partial") return status.preparedCount > 0 ? `일부 메시지 준비됨 ${status.preparedCount}` : "생성 중지됨";
+  if (status.status === "ready") return "전체 메시지 준비됨";
+  if (status.status === "failed") return "메시지 생성 실패";
+  if (status.status === "cancelled") return "생성 중지됨";
+  return "다시 만들기";
+}
+
+function batchPreparedLabel(status: LearningMessageBatchStatus | null) {
+  if (!status?.visiblePreparedRemaining) return "";
+  return `${status.visiblePreparedRemaining}개 메시지 준비됨`;
 }
 
 function displayableLearningGoal(module: CoursePlanModule) {
@@ -540,10 +556,12 @@ export function App({ request }: { request: RpcRequest }) {
   const [preparedImport, setPreparedImport] = useState<PreparedSourceImport | null>(null);
   const [expandedSourceMessages, setExpandedSourceMessages] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
+  const [batchActionBusy, setBatchActionBusy] = useState(false);
   const [confirmationBusy, setConfirmationBusy] = useState(false);
   const [destructiveConfirmation, setDestructiveConfirmation] = useState<DestructiveConfirmation | null>(null);
   const [tutorThinking, setTutorThinking] = useState(false);
   const [prefetchStatus, setPrefetchStatus] = useState<TutorPrefetchStatus | null>(null);
+  const [batchStatus, setBatchStatus] = useState<LearningMessageBatchStatus | null>(null);
   const [status, setStatus] = useState(READY_STATUS);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
@@ -612,6 +630,7 @@ export function App({ request }: { request: RpcRequest }) {
       setSession(null);
       setContext(null);
       setPrefetchStatus(null);
+      setBatchStatus(null);
       setSelectedModuleId(null);
       setState((current) => ({ ...current, projects, sources: [], materials: [], sessions: [] }));
       setStatus(READY_STATUS);
@@ -631,6 +650,7 @@ export function App({ request }: { request: RpcRequest }) {
     setSession(null);
     setContext(null);
     setPrefetchStatus(null);
+    setBatchStatus(null);
     setSelectedModuleId(null);
     setStatus(READY_STATUS);
   }
@@ -699,6 +719,7 @@ export function App({ request }: { request: RpcRequest }) {
           setSession(null);
           setContext(null);
           setPrefetchStatus(null);
+          setBatchStatus(null);
           setSelectedModuleId(null);
           setState((current) => ({ ...current, projects, sources: [], materials: [], sessions: [] }));
         }
@@ -718,6 +739,15 @@ export function App({ request }: { request: RpcRequest }) {
       setPrefetchStatus(next);
     } catch {
       setPrefetchStatus(null);
+    }
+  }, [request]);
+
+  const refreshBatchStatus = useCallback(async (materialId: string, sessionId?: string | null) => {
+    try {
+      const next = (await request("sessions.batchMessagesStatus", { materialId, sessionId: sessionId || undefined })) as LearningMessageBatchStatus;
+      setBatchStatus(next);
+    } catch {
+      setBatchStatus(null);
     }
   }, [request]);
 
@@ -761,6 +791,13 @@ export function App({ request }: { request: RpcRequest }) {
       const detail = (event as CustomEvent<TutorPrefetchStatus>).detail;
       setPrefetchStatus((current) => nextPrefetchStatusForSession(current, detail, session?.id));
     };
+    const onBatchStatus = (event: Event) => {
+      const detail = (event as CustomEvent<LearningMessageBatchStatus>).detail;
+      setBatchStatus((current) => {
+        if (session?.id) return detail.sessionId === session.id ? detail : current;
+        return detail.materialId === activeMaterial?.id ? detail : current;
+      });
+    };
     const onOpenAbout = () => setAboutOpen(true);
     window.addEventListener("generation-progress", onGeneration);
     window.addEventListener("ingestion-progress", onIngestion);
@@ -768,6 +805,7 @@ export function App({ request }: { request: RpcRequest }) {
     window.addEventListener("tutor-completed", onTutorDone);
     window.addEventListener("tutor-error", onTutorError);
     window.addEventListener("tutor-prefetch-status", onPrefetchStatus);
+    window.addEventListener("session-batch-status", onBatchStatus);
     window.addEventListener("app-open-about", onOpenAbout);
     return () => {
       window.removeEventListener("generation-progress", onGeneration);
@@ -776,9 +814,10 @@ export function App({ request }: { request: RpcRequest }) {
       window.removeEventListener("tutor-completed", onTutorDone);
       window.removeEventListener("tutor-error", onTutorError);
       window.removeEventListener("tutor-prefetch-status", onPrefetchStatus);
+      window.removeEventListener("session-batch-status", onBatchStatus);
       window.removeEventListener("app-open-about", onOpenAbout);
     };
-  }, [session?.id]);
+  }, [activeMaterial?.id, session?.id]);
 
   useEffect(() => {
     if (!session?.id) {
@@ -787,6 +826,14 @@ export function App({ request }: { request: RpcRequest }) {
     }
     void refreshPrefetchStatus(session.id);
   }, [refreshPrefetchStatus, session?.id, session?.updatedAt]);
+
+  useEffect(() => {
+    if (!activeMaterial?.id) {
+      setBatchStatus(null);
+      return;
+    }
+    void refreshBatchStatus(activeMaterial.id, session?.id || null);
+  }, [activeMaterial?.id, refreshBatchStatus, session?.id, session?.updatedAt]);
 
   async function chooseAndImportSources() {
     if (!activeProject) return;
@@ -878,6 +925,7 @@ export function App({ request }: { request: RpcRequest }) {
         setSession(null);
         setContext(null);
         setPrefetchStatus(null);
+        setBatchStatus(null);
         setSelectedModuleId(null);
       }
       setSourceNotice(`Deleted ${sourceName}`);
@@ -912,6 +960,7 @@ export function App({ request }: { request: RpcRequest }) {
     setState((current) => ({ ...current, sessions }));
     setSession(null);
     setContext(null);
+    setBatchStatus(null);
     setSelectedModuleId(null);
     setInspectorTab("sessions");
     setExpandedSourceMessages(new Set());
@@ -950,6 +999,62 @@ export function App({ request }: { request: RpcRequest }) {
     setBusy(true);
     await beginSession(activeMaterial.id, mode);
     setBusy(false);
+  }
+
+  async function startBatchMessages(force = false) {
+    if (!activeMaterial || batchActionBusy) return;
+    let shouldForce = force;
+    if ((batchStatus?.status === "ready" || batchStatus?.status === "partial") && batchStatus.preparedCount > 0 && !force) {
+      const confirmed = window.confirm("이미 준비된 메시지가 있습니다. 현재 준비분을 버리고 다시 만들까요?");
+      if (!confirmed) return;
+      shouldForce = true;
+    }
+
+    const startsNewSession = !session?.id;
+    if (startsNewSession) {
+      queueAnswerReadySound();
+      setTutorThinking(true);
+      setStatus(TUTOR_THINKING_STATUS);
+    } else {
+      setStatus("전체 메시지 생성 시작");
+    }
+    setBatchActionBusy(true);
+    try {
+      const result = (await request("sessions.batchMessagesStart", {
+        materialId: activeMaterial.id,
+        sessionId: session?.id,
+        force: shouldForce,
+      })) as { session: SessionSnapshot; context: TutorContext; batch: LearningMessageBatchStatus };
+      await refreshMaterialArtifacts(result.session.materialId);
+      setSession(result.session);
+      setContext(result.context);
+      setBatchStatus(result.batch);
+      setSelectedModuleId(result.session.currentModuleId);
+      setInspectorTab("modules");
+      await Promise.all([refreshSessions(result.session.materialId), refreshSources(result.session.projectId)]);
+      void refreshPrefetchStatus(result.session.id);
+      setStatus(READY_STATUS);
+    } catch (error) {
+      cancelAnswerReadySound();
+      setStatus(`전체 메시지 생성 실패: ${(error as Error).message}`);
+    } finally {
+      setBatchActionBusy(false);
+      if (startsNewSession) setTutorThinking(false);
+    }
+  }
+
+  async function cancelBatchMessages() {
+    if (!session?.id || batchActionBusy) return;
+    setBatchActionBusy(true);
+    try {
+      const next = (await request("sessions.batchMessagesCancel", { sessionId: session.id })) as LearningMessageBatchStatus;
+      setBatchStatus(next);
+      setStatus(READY_STATUS);
+    } catch (error) {
+      setStatus(`생성 중지 실패: ${(error as Error).message}`);
+    } finally {
+      setBatchActionBusy(false);
+    }
   }
 
   async function loadSession(sessionId: string) {
@@ -995,6 +1100,7 @@ export function App({ request }: { request: RpcRequest }) {
         setSelectedModuleId(null);
         setExpandedSourceMessages(new Set());
         setPrefetchStatus(null);
+        setBatchStatus(null);
       }
       setStatus(READY_STATUS);
     } catch (error) {
@@ -1259,6 +1365,7 @@ export function App({ request }: { request: RpcRequest }) {
   const currentChunkId = context?.session.currentChunkId || null;
   const reachedChunks = coveredChunks + (currentChunkId && !context?.session.coveredChunkIds.includes(currentChunkId) ? 1 : 0);
   const progressText = artifacts ? `${reachedChunks}/${totalChunks}` : "0/0";
+  const preparedMessagesText = batchPreparedLabel(batchStatus);
   const activeModule = context?.moduleOutline.find((item) => item.status === "in_progress");
   const activeModuleTitle = activeModule ? displayModuleTitle(activeModule) : "";
   const buddyModuleTitle = activeModuleTitle || selectedModuleTitle;
@@ -1266,9 +1373,12 @@ export function App({ request }: { request: RpcRequest }) {
   const latestAssistant = [...currentMessages].reverse().find((message) => message.role === "assistant");
   const latestAssistantId = latestAssistant?.id || null;
   const canReturnToProgress = !selectedModuleWaiting && (latestAssistant?.stateUpdate?.conversationMode === "detour" || latestAssistant?.stateUpdate?.turnMode === "digress");
+  const batchPreparedReady = Boolean(batchStatus?.visiblePreparedRemaining && batchStatus.sessionId === session?.id);
   const continuePrefetchState =
     prefetchStatus?.status === "generating" || prefetchStatus?.status === "ready" || prefetchStatus?.status === "failed"
       ? prefetchStatus.status
+      : batchPreparedReady
+      ? "ready"
       : "idle";
   const continueButtonClass = `continue-button prefetch-${continuePrefetchState}`;
   const useReadyReturnButton = canReturnToProgress && continuePrefetchState === "ready";
@@ -1277,7 +1387,7 @@ export function App({ request }: { request: RpcRequest }) {
     : useReadyReturnButton
       ? "진도로 돌아가기, 이어질 설명 준비됨"
       : continuePrefetchState === "ready"
-      ? "계속해줘, 이어질 설명 준비됨"
+      ? batchPreparedReady && prefetchStatus?.status !== "ready" ? "계속해줘, 미리 만든 메시지 준비됨" : "계속해줘, 이어질 설명 준비됨"
       : "계속해줘";
 
   useEffect(() => {
@@ -1455,6 +1565,21 @@ export function App({ request }: { request: RpcRequest }) {
     return { total, reached, coveredCount, percent: total ? Math.round((reached / total) * 100) : 0, statusFor, firstCurrentIndex };
   }, [artifacts, session?.coveredChunkIds, session?.currentChunkId]);
   const defaultLookupChunkId = latestAssistant?.sourceRefs[0] || currentChunkId || artifacts?.sourceChunks[0]?.id || null;
+  const batchGenerating = batchStatus?.status === "generating" || batchStatus?.status === "queued";
+  const learningModelReady = Boolean(providerStatus?.hasApiKey && providerStatus.selectedModel);
+  const batchButtonLabel = batchGenerating ? "중지" : batchStatusLabel(batchStatus);
+  const batchButtonDisabled = Boolean(
+    !activeMaterial ||
+      activeMaterial.status !== "ready" ||
+      batchActionBusy ||
+      (!batchGenerating && !learningModelReady) ||
+      (batchGenerating && !session?.id)
+  );
+  const batchButtonTitle = batchGenerating
+    ? "현재 생성 중인 나머지 메시지 생성을 중지합니다."
+    : !learningModelReady
+    ? "Settings에서 learning model과 API key를 먼저 설정하세요."
+    : "현재 session 진행 위치부터 남은 tutor 메시지를 미리 만듭니다.";
 
   const importedSourceLabel = `${state.sources.length} source${state.sources.length === 1 ? "" : "s"} imported`;
   const shellClassName = [
@@ -1605,6 +1730,7 @@ export function App({ request }: { request: RpcRequest }) {
               </div>
               <div className="course-progress">
                 <span>Progress · {progressText} 대목 ({progressPercent}%)</span>
+                {preparedMessagesText ? <small>{preparedMessagesText}</small> : null}
                 <div className="lesson-bar">
                   <i style={{ width: `${progressPercent}%` }} />
                 </div>
@@ -1619,6 +1745,15 @@ export function App({ request }: { request: RpcRequest }) {
                   Chat
                 </button>
               </div>
+              <button
+                className={`wide-button topbar-button batch-button ${batchGenerating ? "generating" : batchStatus?.status || "idle"}`}
+                onClick={() => void (batchGenerating ? cancelBatchMessages() : startBatchMessages())}
+                disabled={batchButtonDisabled}
+                title={batchButtonTitle}
+              >
+                {batchActionBusy || batchGenerating ? <Loader2 size={16} className="spin" /> : <MessageSquare size={16} />}
+                {batchButtonLabel}
+              </button>
               <button className="wide-button topbar-button primary" onClick={() => startSession("new")} disabled={busy}>
                 <MessageSquare size={16} /> Start
               </button>
@@ -1698,7 +1833,13 @@ export function App({ request }: { request: RpcRequest }) {
                         className={continueButtonClass}
                         onClick={() => (useReadyReturnButton ? returnToProgress() : advanceLearning("paragraph"))}
                         disabled={busy || selectedModuleWaiting}
-                        title={useReadyReturnButton ? "원래 진도로 돌아갈 설명이 준비되었습니다." : continueButtonTitle(prefetchStatus)}
+                        title={
+                          useReadyReturnButton
+                            ? "원래 진도로 돌아갈 설명이 준비되었습니다."
+                            : batchPreparedReady && prefetchStatus?.status !== "ready"
+                            ? "미리 만들어 둔 다음 메시지를 바로 보여줍니다."
+                            : continueButtonTitle(prefetchStatus)
+                        }
                         aria-label={continueButtonAria}
                       >
                         {continuePrefetchState === "generating" ? <Loader2 size={14} className="spin" aria-hidden="true" /> : null}

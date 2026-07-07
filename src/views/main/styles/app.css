@@ -427,6 +427,12 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   border-left: 1px solid var(--line);
 }
 .course-strip .course-progress span { font-size: 13px; white-space: nowrap; }
+.course-strip .course-progress small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.2;
+  white-space: nowrap;
+}
 .course-strip .course-progress .lesson-bar { width: 100%; height: 6px; border-radius: 999px; background: #e8e4dc; overflow: hidden; }
 .course-strip .course-progress .lesson-bar i { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width 220ms ease; }
 .course-strip-actions {
@@ -447,6 +453,23 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   gap: 28px;
   flex: none;
   font-family: var(--learning-pane-font);
+}
+.batch-button {
+  max-width: 220px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.batch-button.generating {
+  border-color: rgba(166, 73, 57, 0.3);
+  background: rgba(166, 73, 57, 0.08);
+  color: #a64939;
+}
+.batch-button.ready,
+.batch-button.partial {
+  border-color: rgba(47, 125, 83, 0.32);
+  background: rgba(47, 125, 83, 0.1);
+  color: #3d7a58;
 }
 .segmented-control button {
   position: relative;
@@ -3639,6 +3662,17 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   border-color: rgba(214, 172, 79, 0.3);
 }
 :root[data-theme="dark"] .progress-actions .continue-button.prefetch-ready {
+  background: rgba(86, 151, 112, 0.12);
+  border-color: rgba(86, 151, 112, 0.3);
+  color: #86d19f;
+}
+:root[data-theme="dark"] .batch-button.generating {
+  background: rgba(201, 94, 76, 0.12);
+  border-color: rgba(201, 94, 76, 0.32);
+  color: #e19a8e;
+}
+:root[data-theme="dark"] .batch-button.ready,
+:root[data-theme="dark"] .batch-button.partial {
   background: rgba(86, 151, 112, 0.12);
   border-color: rgba(86, 151, 112, 0.3);
   color: #86d19f;

@@ -96,12 +96,40 @@ export function getDb() {
       blocks_json TEXT NOT NULL DEFAULT '[]',
       visual_id TEXT,
       state_update_json TEXT,
+      delivery_state TEXT NOT NULL DEFAULT 'visible' CHECK (delivery_state IN ('visible', 'prepared', 'discarded')),
+      batch_run_id TEXT,
+      cursor_before_json TEXT,
+      cursor_after_json TEXT,
       created_at INTEGER NOT NULL,
       ordinal INTEGER NOT NULL
     );
 
     CREATE INDEX IF NOT EXISTS idx_learning_messages_session_ordinal
       ON learning_messages(session_id, ordinal ASC);
+
+    CREATE TABLE IF NOT EXISTS learning_message_batch_runs (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL REFERENCES learning_sessions(id) ON DELETE CASCADE,
+      material_id TEXT NOT NULL REFERENCES learning_materials(id) ON DELETE CASCADE,
+      status TEXT NOT NULL CHECK (status IN ('queued', 'generating', 'ready', 'partial', 'failed', 'cancelled', 'stale')),
+      route_kind TEXT NOT NULL CHECK (route_kind IN ('default_continue')),
+      provider TEXT NOT NULL,
+      model TEXT NOT NULL,
+      settings_fingerprint TEXT NOT NULL,
+      material_fingerprint TEXT NOT NULL,
+      prompt_version TEXT NOT NULL,
+      total_steps INTEGER NOT NULL DEFAULT 0,
+      completed_steps INTEGER NOT NULL DEFAULT 0,
+      error TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_learning_message_batch_runs_session_status
+      ON learning_message_batch_runs(session_id, status, updated_at DESC);
+
+    CREATE INDEX IF NOT EXISTS idx_learning_messages_prepared_batch
+      ON learning_messages(session_id, delivery_state, ordinal ASC);
 
     CREATE TABLE IF NOT EXISTS tutor_prefetches (
       id TEXT PRIMARY KEY,
@@ -190,6 +218,18 @@ export function getDb() {
   if (!messageColumns.includes("blocks_json")) {
     db.exec("ALTER TABLE learning_messages ADD COLUMN blocks_json TEXT NOT NULL DEFAULT '[]';");
   }
+  if (!messageColumns.includes("delivery_state")) {
+    db.exec("ALTER TABLE learning_messages ADD COLUMN delivery_state TEXT NOT NULL DEFAULT 'visible';");
+  }
+  if (!messageColumns.includes("batch_run_id")) {
+    db.exec("ALTER TABLE learning_messages ADD COLUMN batch_run_id TEXT;");
+  }
+  if (!messageColumns.includes("cursor_before_json")) {
+    db.exec("ALTER TABLE learning_messages ADD COLUMN cursor_before_json TEXT;");
+  }
+  if (!messageColumns.includes("cursor_after_json")) {
+    db.exec("ALTER TABLE learning_messages ADD COLUMN cursor_after_json TEXT;");
+  }
   const sessionColumns = db.query<{ name: string }, []>("PRAGMA table_info(learning_sessions)").all().map((column) => column.name);
   if (!sessionColumns.includes("current_chunk_id")) {
     db.exec("ALTER TABLE learning_sessions ADD COLUMN current_chunk_id TEXT;");
@@ -228,6 +268,35 @@ export function getDb() {
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_material_annotations_material_chunk
       ON material_annotations(material_id, chunk_id, created_at ASC);
+
+    CREATE TABLE IF NOT EXISTS learning_message_batch_runs (
+      id TEXT PRIMARY KEY,
+      session_id TEXT NOT NULL REFERENCES learning_sessions(id) ON DELETE CASCADE,
+      material_id TEXT NOT NULL REFERENCES learning_materials(id) ON DELETE CASCADE,
+      status TEXT NOT NULL CHECK (status IN ('queued', 'generating', 'ready', 'partial', 'failed', 'cancelled', 'stale')),
+      route_kind TEXT NOT NULL CHECK (route_kind IN ('default_continue')),
+      provider TEXT NOT NULL,
+      model TEXT NOT NULL,
+      settings_fingerprint TEXT NOT NULL,
+      material_fingerprint TEXT NOT NULL,
+      prompt_version TEXT NOT NULL,
+      total_steps INTEGER NOT NULL DEFAULT 0,
+      completed_steps INTEGER NOT NULL DEFAULT 0,
+      error TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_learning_message_batch_runs_session_status
+      ON learning_message_batch_runs(session_id, status, updated_at DESC);
+
+    CREATE INDEX IF NOT EXISTS idx_learning_messages_prepared_batch
+      ON learning_messages(session_id, delivery_state, ordinal ASC);
+
+    UPDATE learning_message_batch_runs
+      SET status = CASE WHEN completed_steps > 0 THEN 'partial' ELSE 'cancelled' END,
+          updated_at = strftime('%s', 'now') * 1000
+      WHERE status = 'generating';
   `);
   normalizeMessageOrdinals(db);
   db.exec(`

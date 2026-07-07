@@ -14,7 +14,7 @@ import type {
   SourceType,
 } from "./artifact-types";
 import type { AiProviderId, AiProviderStatus, AppSettings, ProviderModel, PublicAiProviderUpdate } from "./settings-types";
-import type { SessionSnapshot, SessionSummary, TutorContext, TutorPrefetchStatus, TutorTurnOutput } from "./tutor-types";
+import type { LearningMessageBatchStatus, SessionSnapshot, SessionSummary, TutorContext, TutorPrefetchStatus, TutorTurnOutput } from "./tutor-types";
 
 export type ProjectSummary = {
   id: string;
@@ -163,6 +163,12 @@ export type AppRPC = {
       "sessions.advance": { params: { sessionId: string; mode: "chunk" | "paragraph" | "module" }; response: { session: SessionSnapshot; context: TutorContext; output: TutorTurnOutput } };
       "sessions.returnToProgress": { params: { sessionId: string }; response: { session: SessionSnapshot; context: TutorContext; output: TutorTurnOutput } };
       "sessions.prefetchStatus": { params: { sessionId: string }; response: TutorPrefetchStatus };
+      "sessions.batchMessagesStart": {
+        params: { materialId: string; sessionId?: string; force?: boolean };
+        response: { session: SessionSnapshot; context: TutorContext; batch: LearningMessageBatchStatus };
+      };
+      "sessions.batchMessagesCancel": { params: { sessionId: string }; response: LearningMessageBatchStatus };
+      "sessions.batchMessagesStatus": { params: { materialId: string; sessionId?: string }; response: LearningMessageBatchStatus };
       "sessions.delete": { params: { sessionId: string }; response: boolean };
       "sessions.selectModule": { params: { sessionId: string; moduleId: string }; response: { session: SessionSnapshot; context: TutorContext } };
       "sessions.openModule": { params: { sessionId: string; moduleId: string }; response: { session: SessionSnapshot; context: TutorContext; output: TutorTurnOutput } };
@@ -190,6 +196,7 @@ export type AppRPC = {
       "tutor.turnCompleted": { sessionId: string; output: TutorTurnOutput };
       "tutor.turnError": { sessionId: string; error: string };
       "tutor.prefetchStatus": TutorPrefetchStatus;
+      "sessions.batchMessagesStatus": LearningMessageBatchStatus;
       "app.openAbout": {};
     };
   }>;

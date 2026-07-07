@@ -333,7 +333,7 @@ export class ProjectService {
         for (const [sessionIndex, session] of materialSessions.entries()) {
           const fileName = `${stamp(new Date(session.created_at))}-${String(sessionIndex + 1).padStart(2, "0")}-${safeFilePart(session.title, "session")}.md`;
           const messages = getDb()
-            .query<MessageRow, [string]>("SELECT * FROM learning_messages WHERE session_id = ? ORDER BY ordinal ASC")
+            .query<MessageRow, [string]>("SELECT * FROM learning_messages WHERE session_id = ? AND delivery_state = 'visible' ORDER BY ordinal ASC")
             .all(session.id);
           const markdown = this.sessionMarkdown(project, material, session, messages, artifacts);
           await writeFile(join(sessionsDir, fileName), markdown, "utf8");

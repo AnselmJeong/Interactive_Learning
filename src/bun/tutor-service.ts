@@ -10,7 +10,7 @@ import { deleteSessionSnapshot, writeSessionSnapshot } from "./project-bundle-sy
 import { classifyProgressionCommand } from "../shared/progression-command";
 import { plainDisplayText } from "../shared/display-title";
 import type { CourseModule, LectureModulePlan, MaterialArtifacts, PresentationModulePlan, SourceChunk, VisualSpec } from "../shared/artifact-types";
-import type { SessionSnapshot, SessionSummary, SourceRef, TutorContentBlock, TutorContext, TutorIntent, TutorMessage, TutorPrefetchStatus, TutorStateUpdate, TutorTurnOutput } from "../shared/tutor-types";
+import type { LearningMessageBatchStatus, SessionSnapshot, SessionSummary, SourceRef, TutorContentBlock, TutorContext, TutorIntent, TutorMessage, TutorPrefetchStatus, TutorStateUpdate, TutorTurnOutput } from "../shared/tutor-types";
 
 // "start_module": open the first source chunk of a (new) module with a content summary.
 // "continue_chunk": keep the cursor on the current source chunk and continue teaching it.
@@ -32,10 +32,12 @@ const DIGRESSION_INTENTS = new Set<TutorIntent>(["question", "off_topic", "deepe
 const MAX_HISTORY_TURNS = 8;
 const MAX_HISTORY_CHARS = 1200;
 const PREFETCH_PROMPT_VERSION = "tutor-default-continue-v2-language";
+const MESSAGE_BATCH_PROMPT_VERSION = PREFETCH_PROMPT_VERSION;
 const PREFETCH_TTL_MS = 20 * 60 * 1000;
 const PREFETCH_PROVIDER_TIMEOUT_MS = 120 * 1000;
 const PREFETCH_CONSUME_MAX_WAIT_MS = 100 * 1000;
 const MAX_ACTIVE_PREFETCH_JOBS = 2;
+const MAX_BATCH_STEPS = 160;
 const TERM_RENDERING_RULE = [
   "TERM RENDERING RULE:",
   "When teaching in Korean, never replace foreign proper nouns or culturally specific technical terms with Korean-only transliterations.",
@@ -166,6 +168,10 @@ type MessageRow = {
   blocks_json: string;
   visual_id: string | null;
   state_update_json: string | null;
+  delivery_state: "visible" | "prepared" | "discarded";
+  batch_run_id: string | null;
+  cursor_before_json: string | null;
+  cursor_after_json: string | null;
   created_at: number;
   ordinal: number;
 };
@@ -197,6 +203,24 @@ type TutorPrefetchRow = {
   expires_at: number;
 };
 
+type LearningMessageBatchRunRow = {
+  id: string;
+  session_id: string;
+  material_id: string;
+  status: "queued" | "generating" | "ready" | "partial" | "failed" | "cancelled" | "stale";
+  route_kind: "default_continue";
+  provider: string;
+  model: string;
+  settings_fingerprint: string;
+  material_fingerprint: string;
+  prompt_version: string;
+  total_steps: number;
+  completed_steps: number;
+  error: string | null;
+  created_at: number;
+  updated_at: number;
+};
+
 type PlannedProgressTurn = {
   kind: "default_continue";
   targetEvent: "continue_chunk" | "next_chunk" | "start_module" | "return_to_progress" | "finish_prompt";
@@ -213,6 +237,8 @@ type PlannedProgressTurn = {
     completedModuleIds: string[];
   };
 };
+
+type PreparedMessageCursor = PlannedProgressTurn["cursorAfter"];
 
 export function repairedCurrentChunkId(currentChunkId: string | null, coveredChunkIds: string[], curriculumChunkIds: string[]) {
   if (!curriculumChunkIds.length) return null;
@@ -664,23 +690,29 @@ function isProgressTurnEvent(event: TurnPayload["event"]) {
 }
 
 type TutorPrefetchEmitter = (status: TutorPrefetchStatus) => void;
+type LearningMessageBatchEmitter = (status: LearningMessageBatchStatus) => void;
 
 export class TutorService {
   private readonly artifacts = new CourseArtifactService();
   private readonly settings = new SettingsService();
   private readonly secrets = new AiProviderSettingsService();
   private readonly activePrefetches = new Map<string, string>();
+  private readonly activeBatchRuns = new Map<string, string>();
+  private readonly cancelledBatchRuns = new Set<string>();
   private readonly chunkModuleMaps = new WeakMap<MaterialArtifacts["coursePlan"], Map<string, CourseModule>>();
   private readonly sessionMutations = new SessionMutationQueue();
 
-  constructor(private readonly emitPrefetchStatus?: TutorPrefetchEmitter) {}
+  constructor(
+    private readonly emitPrefetchStatus?: TutorPrefetchEmitter,
+    private readonly emitBatchStatus?: LearningMessageBatchEmitter
+  ) {}
 
   async listSessions(materialId: string): Promise<SessionSummary[]> {
     const rows = getDb()
       .query<SessionListRow, [string]>(
         `SELECT s.*, COUNT(m.id) AS message_count
          FROM learning_sessions s
-         LEFT JOIN learning_messages m ON m.session_id = s.id
+         LEFT JOIN learning_messages m ON m.session_id = s.id AND m.delivery_state = 'visible'
          WHERE s.material_id = ?
          GROUP BY s.id
          ORDER BY s.updated_at DESC`
@@ -747,6 +779,29 @@ export class TutorService {
     return this.currentPrefetchStatus(sessionId);
   }
 
+  async batchMessagesStatus(materialId: string, sessionId?: string): Promise<LearningMessageBatchStatus> {
+    if (!sessionId) return this.idleBatchStatus(materialId, null);
+    return this.currentBatchStatus(sessionId, materialId);
+  }
+
+  async batchMessagesStart(materialId: string, input: { sessionId?: string; force?: boolean } = {}) {
+    let targetSessionId = input.sessionId || null;
+    if (!targetSessionId) {
+      const started = await this.start(materialId, { mode: "new" });
+      targetSessionId = started.session.id;
+    }
+    const sessionId = targetSessionId;
+    const batch = await this.sessionMutations.run(sessionId, async () => {
+      await this.repairSessionCursorForSession(sessionId, { persistSnapshot: true, stalePrefetches: true });
+      return this.startBatchMessagesUnlocked(materialId, sessionId, Boolean(input.force));
+    });
+    return { session: this.snapshot(sessionId), context: await this.context(sessionId), batch };
+  }
+
+  async batchMessagesCancel(sessionId: string): Promise<LearningMessageBatchStatus> {
+    return this.sessionMutations.run(sessionId, () => this.cancelBatchMessagesUnlocked(sessionId));
+  }
+
   async deleteSession(sessionId: string) {
     return this.sessionMutations.run(sessionId, () => this.deleteSessionUnlocked(sessionId));
   }
@@ -810,11 +865,17 @@ export class TutorService {
     }
 
     if (mode === "paragraph") {
-      const consumed = await this.tryConsumeDefaultContinue(sessionId);
+      const consumed = await this.tryConsumeDefaultContinue(sessionId, { waitForGenerating: !this.hasPreparedMessages(sessionId) });
       if (consumed) {
         await this.persistSessionSnapshot(sessionId);
         this.scheduleDefaultContinue(sessionId, "assistant_turn");
         return { session: this.snapshot(sessionId), context: await this.context(sessionId), output: consumed };
+      }
+      const revealed = await this.tryRevealNextPreparedMessage(sessionId);
+      if (revealed) {
+        await this.persistSessionSnapshot(sessionId);
+        this.scheduleDefaultContinue(sessionId, "assistant_turn");
+        return { session: this.snapshot(sessionId), context: await this.context(sessionId), output: revealed };
       }
       this.markPrefetchesStale(sessionId);
       const plan = this.planDefaultContinue(session, artifacts);
@@ -826,6 +887,7 @@ export class TutorService {
     }
 
     this.markPrefetchesStale(sessionId);
+    this.discardPreparedFuture(sessionId);
     const plan = this.planExplicitProgress(session, artifacts, mode);
     const output = await this.generatePlannedProgressTurn(session, artifacts, plan);
     this.commitPlannedTutorTurn(sessionId, artifacts, plan, output);
@@ -845,11 +907,17 @@ export class TutorService {
     if (await this.repairSessionCursor(sessionId, artifacts, { persistSnapshot: true, stalePrefetches: true })) {
       session = this.snapshotForPlanning(sessionId);
     }
-    const consumed = await this.tryConsumeDefaultContinue(sessionId, { returning: true });
+    const consumed = await this.tryConsumeDefaultContinue(sessionId, { returning: true, waitForGenerating: !this.hasPreparedMessages(sessionId) });
     if (consumed) {
       await this.persistSessionSnapshot(sessionId);
       this.scheduleDefaultContinue(sessionId, "assistant_turn");
       return { session: this.snapshot(sessionId), context: await this.context(sessionId), output: consumed };
+    }
+    const revealed = await this.tryRevealNextPreparedMessage(sessionId, { returning: true });
+    if (revealed) {
+      await this.persistSessionSnapshot(sessionId);
+      this.scheduleDefaultContinue(sessionId, "assistant_turn");
+      return { session: this.snapshot(sessionId), context: await this.context(sessionId), output: revealed };
     }
     this.markPrefetchesStale(sessionId);
     const plan = this.planExplicitProgress(session, artifacts, "return_to_progress");
@@ -872,6 +940,7 @@ export class TutorService {
     await this.repairSessionCursor(sessionId, artifacts, { persistSnapshot: true, stalePrefetches: true });
     const repairedSession = this.snapshotHeader(sessionId);
     if (!repairedSession.completedModuleIds.includes(module.id)) {
+      this.discardPreparedFuture(sessionId);
       this.activateModuleCursor(sessionId, artifacts, module, repairedSession);
       await this.persistSessionSnapshot(sessionId);
     }
@@ -890,6 +959,7 @@ export class TutorService {
     const firstChunk = this.firstChunkOfModule(artifacts, module);
     if (!firstChunk) throw new Error("This module has no source chunk");
     this.markPrefetchesStale(sessionId);
+    this.discardPreparedFuture(sessionId);
     this.persistCursor(sessionId, artifacts, firstChunk.id, session.coveredChunkIds);
     const output = await this.createTutorTurn(sessionId, { event: "start_module" });
     await this.persistSessionSnapshot(sessionId);
@@ -997,7 +1067,7 @@ export class TutorService {
 
   private messagesForSession(sessionId: string) {
     return getDb()
-      .query<MessageRow, [string]>("SELECT * FROM learning_messages WHERE session_id = ? ORDER BY ordinal ASC")
+      .query<MessageRow, [string]>("SELECT * FROM learning_messages WHERE session_id = ? AND delivery_state = 'visible' ORDER BY ordinal ASC")
       .all(sessionId)
       .map(toMessage);
   }
@@ -1006,7 +1076,7 @@ export class TutorService {
     return getDb()
       .query<MessageRow, [string, number]>(
         `SELECT * FROM learning_messages
-         WHERE session_id = ?
+         WHERE session_id = ? AND delivery_state = 'visible'
          ORDER BY ordinal DESC
          LIMIT ?`
       )
@@ -1019,9 +1089,9 @@ export class TutorService {
     const row = getDb()
       .query<{ count: number; last_message_id: string | null }, [string, string]>(
         `SELECT COUNT(*) AS count,
-                (SELECT id FROM learning_messages WHERE session_id = ? ORDER BY ordinal DESC LIMIT 1) AS last_message_id
+                (SELECT id FROM learning_messages WHERE session_id = ? AND delivery_state = 'visible' ORDER BY ordinal DESC LIMIT 1) AS last_message_id
          FROM learning_messages
-         WHERE session_id = ?`
+         WHERE session_id = ? AND delivery_state = 'visible'`
       )
       .get(sessionId, sessionId);
     return { count: row?.count || 0, lastMessageId: row?.last_message_id || null };
@@ -1091,17 +1161,46 @@ export class TutorService {
     choices?: string[];
     visualId?: string | null;
     stateUpdate?: TutorTurnOutput["stateUpdate"];
+    deliveryState?: "visible" | "prepared";
+    batchRunId?: string | null;
+    cursorBefore?: PreparedMessageCursor;
+    cursorAfter?: PreparedMessageCursor;
+  }) {
+    return getDb().transaction(() => this.insertMessageRow(input))();
+  }
+
+  private insertMessageRow(input: {
+    sessionId: string;
+    role: "user" | "assistant" | "system";
+    content: string;
+    blocks?: TutorContentBlock[];
+    moduleId?: string;
+    sourceRefs: string[];
+    choices?: string[];
+    visualId?: string | null;
+    stateUpdate?: TutorTurnOutput["stateUpdate"];
+    deliveryState?: "visible" | "prepared";
+    batchRunId?: string | null;
+    cursorBefore?: PreparedMessageCursor;
+    cursorAfter?: PreparedMessageCursor;
   }) {
     const now = Date.now();
     const id = crypto.randomUUID();
-    const ordinal = getDb()
+    const deliveryState = input.deliveryState || "visible";
+    const visibleOrdinal = getDb()
+      .query<{ ordinal: number }, [string]>("SELECT COALESCE(MAX(ordinal) + 1, 0) AS ordinal FROM learning_messages WHERE session_id = ? AND delivery_state = 'visible'")
+      .get(input.sessionId)?.ordinal || 0;
+    const allOrdinal = getDb()
       .query<{ ordinal: number }, [string]>("SELECT COALESCE(MAX(ordinal) + 1, 0) AS ordinal FROM learning_messages WHERE session_id = ?")
       .get(input.sessionId)?.ordinal || 0;
+    const ordinal = deliveryState === "prepared" ? allOrdinal : visibleOrdinal;
+    if (deliveryState === "visible") this.shiftPreparedMessages(input.sessionId, ordinal, 1);
     getDb()
       .query(
         `INSERT INTO learning_messages
-         (id, session_id, role, content, blocks_json, module_id, source_refs_json, choices_json, visual_id, state_update_json, created_at, ordinal)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         (id, session_id, role, content, blocks_json, module_id, source_refs_json, choices_json, visual_id, state_update_json,
+          delivery_state, batch_run_id, cursor_before_json, cursor_after_json, created_at, ordinal)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         id,
@@ -1114,11 +1213,28 @@ export class TutorService {
         JSON.stringify(input.choices || []),
         input.visualId || null,
         input.stateUpdate ? JSON.stringify(input.stateUpdate) : null,
+        deliveryState,
+        input.batchRunId || null,
+        input.cursorBefore ? JSON.stringify(input.cursorBefore) : null,
+        input.cursorAfter ? JSON.stringify(input.cursorAfter) : null,
         now,
         ordinal
       );
     getDb().query("UPDATE learning_sessions SET updated_at = ? WHERE id = ?").run(now, input.sessionId);
     return { id, ordinal };
+  }
+
+  private shiftPreparedMessages(sessionId: string, fromOrdinal: number, by: number) {
+    if (by <= 0) return;
+    const rows = getDb()
+      .query<{ id: string; ordinal: number }, [string, number]>(
+        `SELECT id, ordinal FROM learning_messages
+         WHERE session_id = ? AND delivery_state = 'prepared' AND ordinal >= ?
+         ORDER BY ordinal DESC`
+      )
+      .all(sessionId, fromOrdinal);
+    const update = getDb().query("UPDATE learning_messages SET ordinal = ? WHERE id = ?");
+    for (const row of rows) update.run(row.ordinal + by, row.id);
   }
 
   private insertAssistantTurn(sessionId: string, output: TutorTurnOutput) {
@@ -1482,7 +1598,7 @@ export class TutorService {
   private currentChunkTeachingTurnCount(session: SessionSnapshot, chunkId: string, curriculum: SourceChunk[]): number {
     const curriculumIds = new Set(curriculum.map((chunk) => chunk.id));
     const persistedTeachingMessages = this.persistedAssistantTeachingMessages(session.id);
-    const messages = persistedTeachingMessages.length ? persistedTeachingMessages : session.messages;
+    const messages = session.messages.length > persistedTeachingMessages.length ? session.messages : persistedTeachingMessages.length ? persistedTeachingMessages : session.messages;
     let count = 0;
     for (let index = messages.length - 1; index >= 0; index -= 1) {
       const message = messages[index]!;
@@ -1503,7 +1619,7 @@ export class TutorService {
     return getDb()
       .query<MessageRow, [string]>(
         `SELECT * FROM learning_messages
-         WHERE session_id = ? AND role = 'assistant'
+         WHERE session_id = ? AND role = 'assistant' AND delivery_state = 'visible'
          ORDER BY ordinal ASC`
       )
       .all(sessionId)
@@ -1575,13 +1691,13 @@ export class TutorService {
       .run(moduleId, currentChunkId, JSON.stringify([...covered]), JSON.stringify(completedModuleIds), Date.now(), sessionId);
   }
 
-  private async prefetchRuntimeFingerprint(artifacts: MaterialArtifacts) {
+  private async learningRuntimeFingerprint(artifacts: MaterialArtifacts, options: { requirePrefetchEnabled: boolean; requireApiKey: boolean }) {
     const settings = await this.settings.get();
-    if (!settings.tutorPrefetchEnabled) return null;
+    if (options.requirePrefetchEnabled && !settings.tutorPrefetchEnabled) return null;
     const provider = settings.aiProvider;
     const model = settings.providers[provider].selectedModel;
-    const key = await this.secrets.getApiKey(provider);
-    if (!model || !key.value) return null;
+    const key = options.requireApiKey ? await this.secrets.getApiKey(provider) : null;
+    if (!model || (options.requireApiKey && !key?.value)) return null;
     const settingsFingerprint = stableHash({
       provider,
       model,
@@ -1594,6 +1710,18 @@ export class TutorService {
       settingsFingerprint,
       materialFingerprint: this.materialFingerprint(artifacts),
     };
+  }
+
+  private async prefetchRuntimeFingerprint(artifacts: MaterialArtifacts) {
+    return this.learningRuntimeFingerprint(artifacts, { requirePrefetchEnabled: true, requireApiKey: true });
+  }
+
+  private async batchRuntimeFingerprint(artifacts: MaterialArtifacts) {
+    return this.learningRuntimeFingerprint(artifacts, { requirePrefetchEnabled: false, requireApiKey: true });
+  }
+
+  private async batchRevealFingerprint(artifacts: MaterialArtifacts) {
+    return this.learningRuntimeFingerprint(artifacts, { requirePrefetchEnabled: false, requireApiKey: false });
   }
 
   private materialFingerprint(artifacts: MaterialArtifacts) {
@@ -1646,6 +1774,389 @@ export class TutorService {
       updatedAt: row.updated_at,
       error: row.error,
     };
+  }
+
+  private idleBatchStatus(materialId: string, sessionId: string | null): LearningMessageBatchStatus {
+    return {
+      sessionId,
+      materialId,
+      runId: null,
+      status: "idle",
+      preparedCount: 0,
+      visiblePreparedRemaining: 0,
+      completedSteps: 0,
+      totalSteps: 0,
+      updatedAt: null,
+      error: null,
+    };
+  }
+
+  private preparedMessageCount(sessionId: string) {
+    return getDb()
+      .query<{ count: number }, [string]>("SELECT COUNT(*) AS count FROM learning_messages WHERE session_id = ? AND delivery_state = 'prepared'")
+      .get(sessionId)?.count || 0;
+  }
+
+  private currentBatchStatus(sessionId: string, materialIdHint?: string): LearningMessageBatchStatus {
+    const run = getDb()
+      .query<LearningMessageBatchRunRow, [string]>(
+        `SELECT * FROM learning_message_batch_runs
+         WHERE session_id = ?
+         ORDER BY updated_at DESC, created_at DESC
+         LIMIT 1`
+      )
+      .get(sessionId);
+    const materialId = run?.material_id || materialIdHint || this.getSessionRow(sessionId).material_id;
+    if (!run) return this.idleBatchStatus(materialId, sessionId);
+
+    const preparedCount = this.preparedMessageCount(sessionId);
+    const isSpentRun = preparedCount === 0 && (run.status === "ready" || run.status === "partial" || run.status === "stale");
+    return {
+      sessionId,
+      materialId,
+      runId: isSpentRun ? null : run.id,
+      status: isSpentRun ? "idle" : run.status,
+      preparedCount,
+      visiblePreparedRemaining: preparedCount,
+      completedSteps: isSpentRun ? 0 : run.completed_steps,
+      totalSteps: isSpentRun ? 0 : run.total_steps,
+      updatedAt: isSpentRun ? null : run.updated_at,
+      error: isSpentRun ? null : run.error,
+    };
+  }
+
+  private emitBatch(sessionId: string, materialId?: string) {
+    try {
+      this.emitBatchStatus?.(this.currentBatchStatus(sessionId, materialId));
+    } catch {
+      /* status pushes are best-effort */
+    }
+  }
+
+  private hasPreparedMessages(sessionId: string) {
+    return this.preparedMessageCount(sessionId) > 0;
+  }
+
+  private async startBatchMessagesUnlocked(materialId: string, sessionId: string, force: boolean): Promise<LearningMessageBatchStatus> {
+    const session = this.snapshot(sessionId);
+    if (session.materialId !== materialId) throw new Error("Session does not belong to this material");
+    if (session.status !== "active") throw new Error("This session is not active");
+
+    const current = this.currentBatchStatus(sessionId, materialId);
+    if (!force && current.status === "generating") return current;
+    if (!force && (current.status === "ready" || current.status === "partial") && current.preparedCount > 0) return current;
+
+    const artifacts = await this.artifacts.getArtifacts(materialId);
+    const runtime = await this.batchRuntimeFingerprint(artifacts);
+    if (!runtime) throw new Error("AI provider is not configured");
+
+    const previousActiveRunId = this.activeBatchRuns.get(sessionId);
+    if (previousActiveRunId) this.cancelledBatchRuns.add(previousActiveRunId);
+    this.markPrefetchesStale(sessionId);
+    this.discardPreparedFuture(sessionId, { emit: false });
+
+    const totalSteps = this.estimateDefaultContinueSteps(session, artifacts);
+    const runId = crypto.randomUUID();
+    const now = Date.now();
+    getDb()
+      .query(
+        `INSERT INTO learning_message_batch_runs
+         (id, session_id, material_id, status, route_kind, provider, model, settings_fingerprint, material_fingerprint,
+          prompt_version, total_steps, completed_steps, created_at, updated_at)
+         VALUES (?, ?, ?, 'generating', 'default_continue', ?, ?, ?, ?, ?, ?, 0, ?, ?)`
+      )
+      .run(
+        runId,
+        sessionId,
+        materialId,
+        runtime.provider,
+        runtime.model,
+        runtime.settingsFingerprint,
+        runtime.materialFingerprint,
+        MESSAGE_BATCH_PROMPT_VERSION,
+        totalSteps,
+        now,
+        now
+      );
+
+    this.activeBatchRuns.set(sessionId, runId);
+    this.cancelledBatchRuns.delete(runId);
+    this.emitBatch(sessionId, materialId);
+    void this.generateBatchMessages(sessionId, runId).catch((error) => {
+      console.warn(`[tutor-batch] background generation failed for ${sessionId}: ${compactError(error)}`);
+    });
+    return this.currentBatchStatus(sessionId, materialId);
+  }
+
+  private cancelBatchMessagesUnlocked(sessionId: string): LearningMessageBatchStatus {
+    const row = getDb()
+      .query<LearningMessageBatchRunRow, [string]>(
+        `SELECT * FROM learning_message_batch_runs
+         WHERE session_id = ? AND status = 'generating'
+         ORDER BY updated_at DESC LIMIT 1`
+      )
+      .get(sessionId);
+    if (!row) return this.currentBatchStatus(sessionId);
+    this.cancelledBatchRuns.add(row.id);
+    const preparedCount = this.preparedMessageCount(sessionId);
+    const nextStatus = preparedCount > 0 || row.completed_steps > 0 ? "partial" : "cancelled";
+    getDb()
+      .query("UPDATE learning_message_batch_runs SET status = ?, updated_at = ? WHERE id = ? AND status = 'generating'")
+      .run(nextStatus, Date.now(), row.id);
+    this.emitBatch(sessionId, row.material_id);
+    return this.currentBatchStatus(sessionId, row.material_id);
+  }
+
+  private estimateDefaultContinueSteps(session: SessionSnapshot, artifacts: MaterialArtifacts) {
+    let virtualSession = { ...session, messages: [...session.messages] };
+    let count = 0;
+    while (count < MAX_BATCH_STEPS) {
+      const plan = this.planDefaultContinue(virtualSession, artifacts);
+      count += 1;
+      virtualSession = this.virtualSessionAfterOutput(virtualSession, plan, this.virtualOutputForPlan(plan));
+      if (plan.targetEvent === "finish_prompt") break;
+    }
+    return count;
+  }
+
+  private async generateBatchMessages(sessionId: string, runId: string) {
+    let run = getDb().query<LearningMessageBatchRunRow, [string]>("SELECT * FROM learning_message_batch_runs WHERE id = ?").get(runId);
+    if (!run || run.status !== "generating") return;
+    let completedSteps = run.completed_steps;
+    let sawFinishPrompt = false;
+    try {
+      const artifacts = await this.artifacts.getArtifacts(run.material_id);
+      let virtualSession = this.snapshot(sessionId);
+      while (completedSteps < MAX_BATCH_STEPS) {
+        if (this.cancelledBatchRuns.has(runId)) break;
+        run = getDb().query<LearningMessageBatchRunRow, [string]>("SELECT * FROM learning_message_batch_runs WHERE id = ?").get(runId);
+        if (!run || run.status !== "generating") break;
+
+        const cursorBefore = this.cursorFromSession(virtualSession);
+        const plan = this.planDefaultContinue(virtualSession, artifacts);
+        const output = await this.generatePlannedProgressTurn(virtualSession, artifacts, plan);
+        if (this.cancelledBatchRuns.has(runId)) break;
+
+        const inserted = getDb().transaction(() => {
+          const currentRun = getDb().query<LearningMessageBatchRunRow, [string]>("SELECT * FROM learning_message_batch_runs WHERE id = ?").get(runId);
+          if (!currentRun || currentRun.status !== "generating") return false;
+          this.insertMessageRow({
+            sessionId,
+            role: "assistant",
+            content: output.message,
+            blocks: output.blocks,
+            moduleId: output.moduleId,
+            sourceRefs: output.sourceRefs,
+            choices: output.choices,
+            visualId: output.diagram,
+            stateUpdate: output.stateUpdate,
+            deliveryState: "prepared",
+            batchRunId: runId,
+            cursorBefore,
+            cursorAfter: plan.cursorAfter,
+          });
+          completedSteps += 1;
+          getDb()
+            .query("UPDATE learning_message_batch_runs SET completed_steps = ?, updated_at = ? WHERE id = ?")
+            .run(completedSteps, Date.now(), runId);
+          return true;
+        })();
+        if (!inserted) break;
+
+        virtualSession = this.virtualSessionAfterOutput(virtualSession, plan, output);
+        this.emitBatch(sessionId, run.material_id);
+        if (plan.targetEvent === "finish_prompt") {
+          sawFinishPrompt = true;
+          break;
+        }
+      }
+
+      const latest = getDb().query<LearningMessageBatchRunRow, [string]>("SELECT * FROM learning_message_batch_runs WHERE id = ?").get(runId);
+      if (latest?.status === "generating") {
+        const status = sawFinishPrompt ? "ready" : "partial";
+        const error = sawFinishPrompt ? null : this.cancelledBatchRuns.has(runId) ? "Generation stopped." : "Batch generation stopped before the finish prompt.";
+        getDb()
+          .query("UPDATE learning_message_batch_runs SET status = ?, error = ?, updated_at = ? WHERE id = ?")
+          .run(status, error, Date.now(), runId);
+      }
+    } catch (error) {
+      const latest = getDb().query<LearningMessageBatchRunRow, [string]>("SELECT * FROM learning_message_batch_runs WHERE id = ?").get(runId);
+      if (latest?.status === "generating") {
+        const preparedCount = this.preparedMessageCount(sessionId);
+        getDb()
+          .query("UPDATE learning_message_batch_runs SET status = ?, error = ?, updated_at = ? WHERE id = ?")
+          .run(preparedCount > 0 ? "partial" : "failed", compactError(error), Date.now(), runId);
+      }
+    } finally {
+      if (this.activeBatchRuns.get(sessionId) === runId) this.activeBatchRuns.delete(sessionId);
+      this.cancelledBatchRuns.delete(runId);
+      const finalRun = getDb().query<LearningMessageBatchRunRow, [string]>("SELECT * FROM learning_message_batch_runs WHERE id = ?").get(runId);
+      this.emitBatch(sessionId, finalRun?.material_id);
+    }
+  }
+
+  private cursorFromSession(session: SessionSnapshot): PreparedMessageCursor {
+    return {
+      currentModuleId: session.currentModuleId,
+      currentChunkId: session.currentChunkId,
+      coveredChunkIds: [...session.coveredChunkIds],
+      completedModuleIds: [...session.completedModuleIds],
+    };
+  }
+
+  private virtualOutputForPlan(plan: PlannedProgressTurn): TutorTurnOutput {
+    return {
+      message: "",
+      blocks: [],
+      diagram: null,
+      visualPlacement: null,
+      choices: [],
+      progress: 0,
+      moduleId: plan.moduleId,
+      sourceRefs: plan.targetChunkId ? [plan.targetChunkId] : [],
+      stateUpdate: {
+        nextPhase: plan.targetEvent === "finish_prompt" ? "complete" : "explain",
+        readyToContinue: plan.targetEvent !== "finish_prompt",
+        nextSuggestedStep: plan.targetEvent === "finish_prompt" ? "stay" : "continue",
+        detectedConfusion: null,
+        criticWarning: null,
+        checkpointPassed: false,
+        advanceModule: false,
+        userIntent: "start",
+        turnMode: plan.targetEvent === "finish_prompt" ? "synthesize" : "teach",
+      },
+    };
+  }
+
+  private virtualSessionAfterOutput(session: SessionSnapshot, plan: PlannedProgressTurn, output: TutorTurnOutput): SessionSnapshot {
+    const next = this.plannedSession(session, plan);
+    const sourceRefs = plan.targetChunkId && !output.sourceRefs.includes(plan.targetChunkId)
+      ? [plan.targetChunkId, ...output.sourceRefs]
+      : output.sourceRefs;
+    const message: TutorMessage = {
+      id: `virtual-${session.id}-${session.messages.length + 1}`,
+      role: "assistant",
+      content: output.message,
+      blocks: output.blocks,
+      moduleId: output.moduleId,
+      sourceRefs,
+      choices: output.choices,
+      visualId: output.diagram,
+      stateUpdate: output.stateUpdate,
+      createdAt: Date.now(),
+      ordinal: session.messages.length,
+    };
+    return { ...next, messages: [...session.messages, message] };
+  }
+
+  private discardPreparedFuture(sessionId: string, options: { emit?: boolean } = {}) {
+    const activeRunId = this.activeBatchRuns.get(sessionId);
+    if (activeRunId) this.cancelledBatchRuns.add(activeRunId);
+    const materialId = getDb().query<{ material_id: string }, [string]>("SELECT material_id FROM learning_sessions WHERE id = ?").get(sessionId)?.material_id;
+    const now = Date.now();
+    getDb()
+      .query("UPDATE learning_messages SET delivery_state = 'discarded' WHERE session_id = ? AND delivery_state = 'prepared'")
+      .run(sessionId);
+    getDb()
+      .query(
+        `UPDATE learning_message_batch_runs
+         SET status = 'stale', updated_at = ?
+         WHERE session_id = ? AND status IN ('queued', 'generating', 'ready', 'partial')`
+      )
+      .run(now, sessionId);
+    if (options.emit !== false && materialId) this.emitBatch(sessionId, materialId);
+  }
+
+  private messageOutputFromRow(row: MessageRow): TutorTurnOutput {
+    return {
+      message: row.content,
+      blocks: jsonBlocks(row.blocks_json),
+      diagram: row.visual_id,
+      visualPlacement: null,
+      choices: jsonArray(row.choices_json),
+      progress: 0,
+      moduleId: row.module_id || "",
+      sourceRefs: jsonArray(row.source_refs_json),
+      stateUpdate: row.state_update_json ? JSON.parse(row.state_update_json) : {
+        nextPhase: "explain",
+        readyToContinue: true,
+        nextSuggestedStep: "continue",
+        detectedConfusion: null,
+      },
+    };
+  }
+
+  private preparedCursorMatches(session: SessionSnapshot, cursor: PreparedMessageCursor) {
+    return (
+      session.currentModuleId === cursor.currentModuleId &&
+      session.currentChunkId === cursor.currentChunkId &&
+      sameStringSet(session.coveredChunkIds, cursor.coveredChunkIds) &&
+      sameStringSet(session.completedModuleIds, cursor.completedModuleIds)
+    );
+  }
+
+  private async tryRevealNextPreparedMessage(sessionId: string, options: { returning?: boolean } = {}): Promise<TutorTurnOutput | null> {
+    const row = getDb()
+      .query<MessageRow, [string]>(
+        `SELECT * FROM learning_messages
+         WHERE session_id = ? AND delivery_state = 'prepared'
+         ORDER BY ordinal ASC
+         LIMIT 1`
+      )
+      .get(sessionId);
+    if (!row?.batch_run_id || !row.cursor_before_json || !row.cursor_after_json) return null;
+
+    const run = getDb().query<LearningMessageBatchRunRow, [string]>("SELECT * FROM learning_message_batch_runs WHERE id = ?").get(row.batch_run_id);
+    if (!run || run.status === "stale" || run.status === "cancelled" || run.status === "failed") {
+      this.discardPreparedFuture(sessionId);
+      return null;
+    }
+
+    const artifacts = await this.artifacts.getArtifacts(run.material_id);
+    const runtime = await this.batchRevealFingerprint(artifacts);
+    if (!runtime || run.prompt_version !== MESSAGE_BATCH_PROMPT_VERSION || run.settings_fingerprint !== runtime.settingsFingerprint || run.material_fingerprint !== runtime.materialFingerprint) {
+      this.discardPreparedFuture(sessionId);
+      return null;
+    }
+
+    const cursorBefore = JSON.parse(row.cursor_before_json) as PreparedMessageCursor;
+    const cursorAfter = JSON.parse(row.cursor_after_json) as PreparedMessageCursor;
+    const session = this.snapshotHeader(sessionId);
+    if (!this.preparedCursorMatches(session, cursorBefore)) {
+      this.discardPreparedFuture(sessionId);
+      return null;
+    }
+
+    let output = this.messageOutputFromRow(row);
+    if (options.returning) output = this.withReturningBridge(output);
+
+    getDb().transaction(() => {
+      const current = this.snapshotHeader(sessionId);
+      if (!this.preparedCursorMatches(current, cursorBefore)) throw new Error("Prepared tutor turn no longer matches the session cursor");
+      getDb()
+        .query(
+          `UPDATE learning_messages
+           SET delivery_state = 'visible', content = ?, blocks_json = ?, state_update_json = ?
+           WHERE id = ? AND delivery_state = 'prepared'`
+        )
+        .run(output.message, JSON.stringify(output.blocks || []), output.stateUpdate ? JSON.stringify(output.stateUpdate) : null, row.id);
+      getDb()
+        .query(
+          `UPDATE learning_sessions
+           SET current_module_id = ?, current_chunk_id = ?, covered_chunk_ids_json = ?, completed_module_ids_json = ?, status = 'active', updated_at = ?
+           WHERE id = ?`
+        )
+        .run(
+          cursorAfter.currentModuleId,
+          cursorAfter.currentChunkId,
+          JSON.stringify(cursorAfter.coveredChunkIds),
+          JSON.stringify(cursorAfter.completedModuleIds),
+          Date.now(),
+          sessionId
+        );
+    })();
+    this.emitBatch(sessionId, run.material_id);
+    return output;
   }
 
   private sessionFingerprint(session: SessionSnapshot, plan: PlannedProgressTurn, runtime: { settingsFingerprint: string; materialFingerprint: string }) {
@@ -1764,7 +2275,7 @@ export class TutorService {
     this.emitPrefetch(this.currentPrefetchStatus(sessionId));
   }
 
-  private async tryConsumeDefaultContinue(sessionId: string, options: { returning?: boolean } = {}): Promise<TutorTurnOutput | null> {
+  private async tryConsumeDefaultContinue(sessionId: string, options: { returning?: boolean; waitForGenerating?: boolean } = {}): Promise<TutorTurnOutput | null> {
     this.cleanupExpiredPrefetches();
     const session = this.snapshotForPlanning(sessionId);
     if (session.status !== "active") return null;
@@ -1778,7 +2289,7 @@ export class TutorService {
          ORDER BY updated_at DESC LIMIT 1`
       )
       .get(sessionId);
-    if (row && (row.status === "generating" || row.status === "queued")) {
+    if (row && (row.status === "generating" || row.status === "queued") && options.waitForGenerating !== false) {
       row = await this.waitForPrefetchCompletion(row.id, prefetchConsumeWaitMs(row.created_at));
     }
     if (!row || !row.output_json) return null;
@@ -1862,10 +2373,15 @@ export class TutorService {
 
   private commitPlannedTutorTurn(sessionId: string, _artifacts: MaterialArtifacts, plan: PlannedProgressTurn, output: TutorTurnOutput, prefetchId?: string) {
     const db = getDb();
+    let batchMaterialId: string | null = null;
     const commit = db.transaction(() => {
       const current = this.snapshotHeader(sessionId);
       if (current.status !== "active") throw new Error("This session is not active");
       if (!this.cursorMatchesPlan(current, plan)) throw new Error("Planned tutor turn no longer matches the session cursor");
+      if (prefetchId) {
+        batchMaterialId = current.materialId;
+        this.discardPreparedFuture(sessionId, { emit: false });
+      }
       db.query(
         `UPDATE learning_sessions
          SET current_module_id = ?, current_chunk_id = ?, covered_chunk_ids_json = ?, completed_module_ids_json = ?, status = 'active', updated_at = ?
@@ -1878,7 +2394,7 @@ export class TutorService {
         Date.now(),
         sessionId
       );
-      this.insertMessage({
+      this.insertMessageRow({
         sessionId,
         role: "assistant",
         content: output.message,
@@ -1894,6 +2410,7 @@ export class TutorService {
       }
     });
     commit();
+    if (batchMaterialId) this.emitBatch(sessionId, batchMaterialId);
   }
 
   private async aiTutorOutput(

@@ -26,7 +26,10 @@ const secrets = new AiProviderSettingsService();
 const sources = new SourceService();
 const materials = new CourseArtifactService();
 const annotations = new AnnotationService(materials, providerClient);
-const tutor = new TutorService((status) => sendToView("tutor.prefetchStatus", status));
+const tutor = new TutorService(
+  (status) => sendToView("tutor.prefetchStatus", status),
+  (status) => sendToView("sessions.batchMessagesStatus", status)
+);
 const MAX_FIGURE_VISION_IMAGE_BYTES = 6_000_000;
 
 void settings.get().then((current) => projects.migrateUnsetProjectRoots(current.projectRootFolder)).catch((error) => {
@@ -348,6 +351,9 @@ const rpc = BrowserView.defineRPC<AppRPC>({
       "sessions.advance": ({ sessionId, mode }) => tutor.advance(sessionId, mode),
       "sessions.returnToProgress": ({ sessionId }) => tutor.returnToProgress(sessionId),
       "sessions.prefetchStatus": ({ sessionId }) => tutor.prefetchStatus(sessionId),
+      "sessions.batchMessagesStart": ({ materialId, sessionId, force }) => tutor.batchMessagesStart(materialId, { sessionId, force }),
+      "sessions.batchMessagesCancel": ({ sessionId }) => tutor.batchMessagesCancel(sessionId),
+      "sessions.batchMessagesStatus": ({ materialId, sessionId }) => tutor.batchMessagesStatus(materialId, sessionId),
       "sessions.delete": ({ sessionId }) => tutor.deleteSession(sessionId),
       "sessions.selectModule": ({ sessionId, moduleId }) => tutor.selectModule(sessionId, moduleId),
       "sessions.openModule": ({ sessionId, moduleId }) => tutor.openModule(sessionId, moduleId),

@@ -76,6 +76,19 @@ export type TutorPrefetchStatus = {
   error?: string | null;
 };
 
+export type LearningMessageBatchStatus = {
+  sessionId: string | null;
+  materialId: string;
+  runId: string | null;
+  status: "idle" | "queued" | "generating" | "partial" | "ready" | "failed" | "cancelled" | "stale";
+  preparedCount: number;
+  visiblePreparedRemaining: number;
+  completedSteps: number;
+  totalSteps: number;
+  updatedAt: number | null;
+  error?: string | null;
+};
+
 export type TutorMessage = {
   id: string;
   role: "user" | "assistant" | "system";
