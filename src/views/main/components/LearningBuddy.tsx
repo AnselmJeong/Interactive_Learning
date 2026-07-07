@@ -3,6 +3,7 @@ import type { BuddyMessageInput, BuddyMessageMood } from "../../../shared/rpc-ty
 
 type PrefetchState = "idle" | "generating" | "ready" | "failed";
 type RpcRequest = (method: string, params: unknown) => Promise<unknown>;
+type BuddyScreenSide = "left" | "right";
 const botanBuddySrc = "views://main/assets/botan-kamiina-sharpened.webp";
 
 function clickFailureMessage(error: unknown) {
@@ -11,11 +12,29 @@ function clickFailureMessage(error: unknown) {
   return `지금은 새 한마디를 만들지 못했어요. ${detail.slice(0, 120)}`;
 }
 
+export function resolveLearningBuddyLayout({
+  viewMode,
+  leftPaneOpen,
+  rightPaneOpen,
+}: {
+  viewMode: "chat" | "source";
+  leftPaneOpen: boolean;
+  rightPaneOpen: boolean;
+}): { screenSide: BuddyScreenSide; bubbleSide: BuddyScreenSide } {
+  const screenSide = viewMode === "source" ? "right" : "left";
+  const bubbleSide = screenSide === "right"
+    ? (rightPaneOpen ? "right" : "left")
+    : (leftPaneOpen ? "left" : "right");
+  return { screenSide, bubbleSide };
+}
+
 export function LearningBuddy({
   enabled,
   active,
   request,
   viewMode,
+  leftPaneOpen,
+  rightPaneOpen,
   thinking,
   prefetchState,
   progressPercent,
@@ -27,6 +46,8 @@ export function LearningBuddy({
   active: boolean;
   request: RpcRequest;
   viewMode: "chat" | "source";
+  leftPaneOpen: boolean;
+  rightPaneOpen: boolean;
   thinking: boolean;
   prefetchState: PrefetchState;
   progressPercent: number;
@@ -124,8 +145,10 @@ export function LearningBuddy({
 
   if (!enabled || !active) return null;
 
+  const { screenSide, bubbleSide } = resolveLearningBuddyLayout({ viewMode, leftPaneOpen, rightPaneOpen });
+
   return (
-    <div className="learning-buddy" data-mood={mood} data-side={viewMode === "source" ? "right" : "left"}>
+    <div className="learning-buddy" data-mood={mood} data-side={screenSide} data-bubble-side={bubbleSide}>
       {message ? (
         <div
           className="learning-buddy-message chat"

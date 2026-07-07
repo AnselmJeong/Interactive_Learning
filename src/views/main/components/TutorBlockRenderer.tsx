@@ -3,6 +3,7 @@ import type { SourceRef, TutorContentBlock } from "../../../shared/tutor-types";
 import { plainDisplayText } from "../../../shared/display-title";
 import { MarkdownContent } from "./MarkdownContent";
 import { SourceFigureCard } from "./SourceFigureCard";
+import { shouldAutoRenderSourceFigure } from "../source-figure-filter";
 
 type RpcRequest = (method: string, params: unknown) => Promise<unknown>;
 
@@ -248,6 +249,7 @@ export const TutorBlockRenderer = memo(function TutorBlockRenderer({
     if (!refId || !sourceRefById || !materialId || !request) return [];
     const figures = sourceRefById.get(refId)?.figures || [];
     return figures.filter((figure) => {
+      if (!shouldAutoRenderSourceFigure(figure)) return false;
       if (renderedFigureIds.has(figure.id)) return false;
       renderedFigureIds.add(figure.id);
       return true;
@@ -257,6 +259,7 @@ export const TutorBlockRenderer = memo(function TutorBlockRenderer({
   function fallbackFigures() {
     if (!materialId || !request) return [];
     return fallbackSourceRefs.flatMap((ref) => ref.figures || []).filter((figure) => {
+      if (!shouldAutoRenderSourceFigure(figure)) return false;
       if (renderedFigureIds.has(figure.id)) return false;
       renderedFigureIds.add(figure.id);
       return true;

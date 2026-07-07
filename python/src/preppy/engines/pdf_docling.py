@@ -24,6 +24,7 @@ from docling_core.types.doc.document import DoclingDocument, PictureItem, TableI
 
 from preppy.figures.captions import clean_caption_text
 from preppy.figures.export import FigureExporter
+from preppy.figures.filters import is_too_small_figure
 from preppy.hashing import sha256_file
 from preppy.markdown.render import render_chapter_markdown
 from preppy.models import (
@@ -47,7 +48,7 @@ from preppy.models import (
     SourceLocator,
 )
 from preppy.paths import asset_relpath, chapter_relpath, markdown_asset_link
-from preppy.split.classify import classify_kind, is_chapter_like, normalize_title
+from preppy.split.classify import classify_kind, compile_boundary_pattern, is_chapter_like, normalize_title
 from preppy.split.plan import SplitCandidate, SplitPlan, apply_matter_flags, demote_nested_headings
 from preppy.split.slug import slugify
 
@@ -82,13 +83,14 @@ def build_plan(
     ocr: bool = False,
     table_structure: bool = True,
 ) -> SplitPlan:
+    compiled_boundary_pattern = compile_boundary_pattern(boundary_pattern)
     result = _run_docling(
         pdf_path, ocr=ocr, table_structure=table_structure, extract_figures=False, images_scale=1.0
     )
     doc = result.document
     flat_items = _flatten(doc)
     running_header_refs = _running_heading_refs(flat_items, doc)
-    candidates = _detect_candidates(flat_items, boundary_pattern, pdf_path, doc, running_header_refs)
+    candidates = _detect_candidates(flat_items, compiled_boundary_pattern, pdf_path, doc, running_header_refs)
     return SplitPlan(
         source_path=str(pdf_path),
         source_type="pdf",
@@ -114,6 +116,7 @@ def convert(
     min_chapter_chars: int = 1000,
 ) -> PreppyDocument:
     start_time = time.monotonic()
+    compiled_boundary_pattern = compile_boundary_pattern(boundary_pattern)
 
     try:
         result = _run_docling(
@@ -143,7 +146,7 @@ def convert(
     flat_items = _flatten(doc)
     running_header_refs = _running_heading_refs(flat_items, doc)
     candidates = plan.candidates if plan is not None else _detect_candidates(
-        flat_items, boundary_pattern, pdf_path, doc, running_header_refs
+        flat_items, compiled_boundary_pattern, pdf_path, doc, running_header_refs
     )
 
     source = SourceInfo(
@@ -423,12 +426,12 @@ def _flatten(doc: DoclingDocument) -> list[_FlatItem]:
 
 def _detect_candidates(
     flat_items: list[_FlatItem],
-    boundary_pattern: str | None,
+    boundary_pattern: re.Pattern[str] | None,
     pdf_path: Path,
     doc: DoclingDocument,
     running_header_refs: set[str] | None = None,
 ) -> list[SplitCandidate]:
-    pattern = re.compile(boundary_pattern, re.IGNORECASE) if boundary_pattern else None
+    pattern = boundary_pattern
     running_header_refs = running_header_refs or set()
     candidates: list[SplitCandidate] = []
 
@@ -611,6 +614,13 @@ def _handle_picture(
     if pil_image is None:
         return _PictureOutcome(kind="skipped")
 
+    prov = getattr(picture_item, "prov", None) or []
+    page = prov[0].page_no if prov else None
+    bbox = _bbox_to_list(prov[0].bbox) if prov and getattr(prov[0], "bbox", None) else None
+    page_size = _page_size(doc, page)
+    if is_too_small_figure(pil_image.width, pil_image.height, bbox=bbox, page_size=page_size):
+        return _PictureOutcome(kind="skipped")
+
     save_format = "JPEG" if pil_image.mode not in ("RGBA", "P", "LA") and pil_image.format == "JPEG" else "PNG"
     buffer = io.BytesIO()
     try:
@@ -637,10 +647,6 @@ def _handle_picture(
 
     if not exported.is_new:
         return _PictureOutcome(kind="duplicate", figure_id=exported.figure_id, markdown=markdown_line)
-
-    prov = getattr(picture_item, "prov", None) or []
-    page = prov[0].page_no if prov else None
-    bbox = _bbox_to_list(prov[0].bbox) if prov and getattr(prov[0], "bbox", None) else None
 
     figure_meta = Figure(
         id=exported.figure_id,
@@ -671,6 +677,19 @@ def _render_table(table_item: TableItem, doc: DoclingDocument) -> tuple[str, boo
 def _bbox_to_list(bbox: object) -> list[float] | None:
     try:
         return [float(bbox.l), float(bbox.t), float(bbox.r), float(bbox.b)]
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _page_size(doc: DoclingDocument, page_no: int | None) -> tuple[float, float] | None:
+    if page_no is None:
+        return None
+    pages = getattr(doc, "pages", {}) or {}
+    page = pages.get(page_no)
+    if page is None:
+        return None
+    try:
+        return float(page.size.width), float(page.size.height)
     except Exception:  # noqa: BLE001
         return None
 

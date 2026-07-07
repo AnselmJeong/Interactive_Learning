@@ -36,16 +36,27 @@ export function SourceFigureCard({ figure, materialId, request, compact = false,
   const fallbackAttemptedRef = useRef(false);
   const mountedRef = useRef(false);
   const fallbackCacheKey = `${materialId}:${figure.id}`;
+  const imageRef = useRef<HTMLImageElement | null>(null);
 
   useEffect(() => {
     mountedRef.current = true;
     fallbackAttemptedRef.current = false;
-    setImageSrc(figure.assetUrl);
+    setImageSrc(figureDataUrlCache.get(fallbackCacheKey) || figure.assetUrl);
     setImageError("");
     return () => {
       mountedRef.current = false;
     };
   }, [fallbackCacheKey, figure.assetUrl]);
+
+  useEffect(() => {
+    if (imageError) return;
+    const timer = window.setTimeout(() => {
+      const image = imageRef.current;
+      if (!image || !image.complete || image.naturalWidth > 0) return;
+      void loadFallbackAsset();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [fallbackCacheKey, imageError, imageSrc]);
 
   async function loadFallbackAsset() {
     if (fallbackAttemptedRef.current) {
@@ -104,9 +115,11 @@ export function SourceFigureCard({ figure, materialId, request, compact = false,
           </div>
         ) : (
           <img
+            ref={imageRef}
             src={imageSrc}
             alt={captionFor(figure)}
-            loading="lazy"
+            loading={compact ? "eager" : "lazy"}
+            onLoad={() => setImageError("")}
             onError={() => void loadFallbackAsset()}
           />
         )}

@@ -119,6 +119,7 @@ export type AppRPC = {
       "projects.list": { params: {}; response: ProjectSummary[] };
       "projects.open": { params: { projectId: string }; response: ProjectSummary };
       "projects.archive": { params: { projectId: string }; response: boolean };
+      "projects.delete": { params: { projectId: string }; response: boolean };
       "projects.exportArchive": { params: { projectId: string; destinationFolder?: string }; response: ProjectArchiveExport };
       "projects.openFolder": { params: { projectId?: string }; response: boolean };
       "app.openExternal": { params: { url: string }; response: boolean };
@@ -154,7 +155,7 @@ export type AppRPC = {
         response: MaterialAnnotation;
       };
       "annotations.updateNote": { params: { annotationId: string; note: string }; response: MaterialAnnotation };
-      "annotations.delete": { params: { annotationId: string }; response: boolean };
+      "annotations.delete": { params: { annotationId: string }; response: { deleted: boolean; syncWarning?: string } };
       "sessions.list": { params: { materialId: string }; response: SessionSummary[] };
       "sessions.start": { params: { materialId: string; mode: "new" | "continue"; sessionId?: string }; response: { session: SessionSnapshot; context: TutorContext; firstTurn?: TutorTurnOutput } };
       "sessions.load": { params: { sessionId: string }; response: { session: SessionSnapshot; context: TutorContext } };

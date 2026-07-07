@@ -238,6 +238,11 @@ export function getDb() {
   return db;
 }
 
+export function closeDbForTests() {
+  db?.close();
+  db = null;
+}
+
 function migrateMaterialAnnotationKindCheck(database: Database) {
   const row = database
     .query<{ sql: string | null }, []>("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'material_annotations'")

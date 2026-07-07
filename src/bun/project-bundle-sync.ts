@@ -3,7 +3,6 @@ import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { basename, dirname, join } from "node:path";
 import { getDb } from "./project-db";
 import { dataPath } from "./paths";
-import { projectRootAvailable } from "./platform-utils";
 import { listMaterialAnnotations, replaceMaterialAnnotations } from "./annotation-store";
 import type { MaterialAnnotation, MaterialManifest, QualityStatus, SourceManifest, SourceType } from "../shared/artifact-types";
 import type { ProjectSummary } from "../shared/rpc-types";
@@ -19,6 +18,45 @@ type ProjectBundleManifest = {
   createdAt: number;
   updatedAt: number;
   archivedAt: number | null;
+};
+
+type ProjectBundleMarker = {
+  kind: "source" | "material" | "session";
+  path: string;
+  projectId?: string;
+  title?: string;
+  createdAt?: number;
+  updatedAt?: number;
+};
+
+type ProjectSyncIssue = {
+  folderName?: string;
+  path: string;
+  reason: "root_unavailable" | "missing_manifest" | "invalid_manifest" | "import_failed" | "sync_disabled";
+  message: string;
+  recoverable: boolean;
+};
+
+type ProjectSyncReport = {
+  rootPath: string;
+  available: boolean;
+  scannedAt: number;
+  scannedFolderCount: number;
+  foundProjectCount: number;
+  importedProjectCount: number;
+  recoveredProjectCount: number;
+  skippedFolderCount: number;
+  removedCacheCount: number;
+  issues: ProjectSyncIssue[];
+};
+
+type ProjectRootDiscovery = {
+  validProjectIds: Set<string>;
+  recoveredProjectIds: Set<string>;
+  scannedFolderCount: number;
+  skippedFolderCount: number;
+  hasIndeterminateFolders: boolean;
+  issues: ProjectSyncIssue[];
 };
 
 function isNotFound(error: unknown) {
@@ -47,6 +85,11 @@ function timestamp(value: unknown, fallback = Date.now()) {
     if (Number.isFinite(parsed)) return parsed;
   }
   return fallback;
+}
+
+function optionalTimestamp(value: unknown) {
+  const parsed = timestamp(value, 0);
+  return parsed > 0 ? parsed : undefined;
 }
 
 function qualityStatus(value: unknown): QualityStatus {
@@ -96,34 +139,179 @@ async function childDirs(path: string) {
   }
 }
 
-async function validProjectIdsInRoot(rootPath: string) {
-  const ids = new Set<string>();
+function baseSyncReport(rootPath: string, available: boolean): ProjectSyncReport {
+  return {
+    rootPath,
+    available,
+    scannedAt: Date.now(),
+    scannedFolderCount: 0,
+    foundProjectCount: 0,
+    importedProjectCount: 0,
+    recoveredProjectCount: 0,
+    skippedFolderCount: 0,
+    removedCacheCount: 0,
+    issues: [],
+  };
+}
+
+function projectSyncIssue(input: {
+  path: string;
+  folderName?: string;
+  reason: ProjectSyncIssue["reason"];
+  message: string;
+  recoverable: boolean;
+}): ProjectSyncIssue {
+  return input;
+}
+
+async function projectBundleMarkers(projectDir: string) {
+  const markers: ProjectBundleMarker[] = [];
+  for (const sourceId of await childDirs(join(projectDir, "sources"))) {
+    const path = join(projectDir, "sources", sourceId, "source_manifest.json");
+    const manifest = await readJson<SourceManifest>(path);
+    if (!manifest?.id) continue;
+    markers.push({
+      kind: "source",
+      path,
+      projectId: manifest.projectId,
+      title: manifest.title,
+      createdAt: optionalTimestamp(manifest.importedAt),
+      updatedAt: optionalTimestamp(manifest.importedAt),
+    });
+  }
+
+  for (const materialId of await childDirs(join(projectDir, "materials"))) {
+    const path = join(projectDir, "materials", materialId, "material_manifest.json");
+    const manifest = await readJson<MaterialManifest>(path);
+    if (!manifest?.id) continue;
+    const generatedAt = optionalTimestamp(manifest.generatedAt);
+    markers.push({
+      kind: "material",
+      path,
+      projectId: manifest.projectId,
+      title: manifest.title,
+      createdAt: generatedAt,
+      updatedAt: generatedAt,
+    });
+  }
+
+  for (const sessionId of await childDirs(join(projectDir, "sessions"))) {
+    const path = join(projectDir, "sessions", sessionId, "session.json");
+    const snapshot = await readJson<SessionSnapshot>(path);
+    if (!snapshot?.id) continue;
+    markers.push({
+      kind: "session",
+      path,
+      projectId: snapshot.projectId,
+      title: snapshot.title,
+      createdAt: optionalTimestamp(snapshot.createdAt),
+      updatedAt: optionalTimestamp(snapshot.updatedAt),
+    });
+  }
+  return markers;
+}
+
+export async function recoverProjectManifestIfPossible(rootPath: string, projectDirName: string) {
+  const projectDir = join(rootPath, projectDirName);
+  const manifestPath = join(projectDir, "project.json");
+  const markers = await projectBundleMarkers(projectDir);
+  if (!markers.length) return { recovered: false, markerCount: 0 };
+
+  const info = await stat(projectDir).catch(() => null);
+  const markerTimes = markers.flatMap((marker) => [marker.createdAt, marker.updatedAt]).filter((value): value is number => typeof value === "number");
+  const createdAt = markerTimes.length ? Math.min(...markerTimes) : info?.birthtimeMs || Date.now();
+  const updatedAt = markerTimes.length ? Math.max(...markerTimes) : info?.mtimeMs || createdAt;
+  const title = markers.find((marker) => marker.title?.trim())?.title?.trim() || titleFromFile(projectDirName);
+  const manifest: ProjectBundleManifest = {
+    schemaVersion: PROJECT_BUNDLE_SCHEMA_VERSION,
+    id: projectDirName,
+    title,
+    description: null,
+    createdAt,
+    updatedAt,
+    archivedAt: null,
+  };
+  await writeJson(manifestPath, manifest);
+  return { recovered: true, markerCount: markers.length, manifest };
+}
+
+async function discoverProjectsInRoot(rootPath: string): Promise<ProjectRootDiscovery> {
+  const discovery: ProjectRootDiscovery = {
+    validProjectIds: new Set(),
+    recoveredProjectIds: new Set(),
+    scannedFolderCount: 0,
+    skippedFolderCount: 0,
+    hasIndeterminateFolders: false,
+    issues: [],
+  };
   const entries = await readdir(rootPath, { withFileTypes: true });
   for (const entry of entries) {
     if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+    discovery.scannedFolderCount += 1;
     const manifestPath = join(rootPath, entry.name, "project.json");
-    if (existsSync(manifestPath)) ids.add(entry.name);
+    if (existsSync(manifestPath)) {
+      const manifest = await readJson<ProjectBundleManifest>(manifestPath);
+      if (manifest?.id) {
+        discovery.validProjectIds.add(entry.name);
+        continue;
+      }
+      const recovered = await recoverProjectManifestIfPossible(rootPath, entry.name);
+      if (recovered.recovered) {
+        discovery.validProjectIds.add(entry.name);
+        discovery.recoveredProjectIds.add(entry.name);
+        continue;
+      }
+      discovery.hasIndeterminateFolders = true;
+      discovery.skippedFolderCount += 1;
+      discovery.issues.push(projectSyncIssue({
+        path: manifestPath,
+        folderName: entry.name,
+        reason: "invalid_manifest",
+        message: "Project manifest exists but could not be read as a valid project bundle.",
+        recoverable: true,
+      }));
+      continue;
+    }
+
+    const recovered = await recoverProjectManifestIfPossible(rootPath, entry.name);
+    if (recovered.recovered) {
+      discovery.validProjectIds.add(entry.name);
+      discovery.recoveredProjectIds.add(entry.name);
+      continue;
+    }
+
+    discovery.hasIndeterminateFolders = true;
+    discovery.skippedFolderCount += 1;
+    discovery.issues.push(projectSyncIssue({
+      path: join(rootPath, entry.name),
+      folderName: entry.name,
+      reason: "missing_manifest",
+      message: "Folder does not contain project.json or recognizable project bundle artifacts.",
+      recoverable: true,
+    }));
   }
-  return ids;
+  return discovery;
 }
 
-export function shouldPurgeProjectsMissingFromRoot(validProjectIds: Set<string>) {
-  return validProjectIds.size > 0;
+export function shouldPurgeProjectsMissingFromRoot(validProjectIds: Set<string>, hasIndeterminateFolders = false) {
+  return validProjectIds.size > 0 && !hasIndeterminateFolders;
 }
 
-async function purgeDbProjectsMissingFromRoot(rootPath: string, validProjectIds: Set<string>) {
-  if (!shouldPurgeProjectsMissingFromRoot(validProjectIds)) {
-    console.warn(`[project-sync] No project manifests found in ${rootPath}; keeping cached projects until the root is confirmed intentionally empty.`);
-    return;
+async function purgeDbProjectsMissingFromRoot(rootPath: string, validProjectIds: Set<string>, hasIndeterminateFolders: boolean) {
+  if (!shouldPurgeProjectsMissingFromRoot(validProjectIds, hasIndeterminateFolders)) {
+    console.warn(`[project-sync] Project root is incomplete or empty; keeping cached projects for ${rootPath}.`);
+    return 0;
   }
   const rows = getDb()
     .query<{ id: string }, [string]>("SELECT id FROM projects WHERE root_path = ?")
     .all(rootPath);
+  let removed = 0;
   for (const row of rows) {
     if (validProjectIds.has(row.id)) continue;
     console.warn(`[project-sync] Removing cached project missing from root: ${row.id}`);
-    getDb().query("DELETE FROM projects WHERE id = ?").run(row.id);
+    removed += getDb().query("DELETE FROM projects WHERE id = ?").run(row.id).changes;
   }
+  return removed;
 }
 
 export function projectManifestFromSummary(project: ProjectSummary): ProjectBundleManifest {
@@ -145,9 +333,9 @@ export async function writeProjectManifest(project: ProjectSummary) {
 async function importProject(rootPath: string, projectId: string) {
   const projectDir = join(rootPath, projectId);
   const manifestPath = join(projectDir, "project.json");
-  if (!existsSync(manifestPath)) return;
+  if (!existsSync(manifestPath)) return false;
   const manifest = await readJson<ProjectBundleManifest>(manifestPath);
-  if (!manifest?.id) return;
+  if (!manifest?.id) return false;
   const now = Date.now();
   const createdAt = timestamp(manifest?.createdAt, now);
   const updatedAt = timestamp(manifest?.updatedAt, createdAt);
@@ -172,6 +360,7 @@ async function importProject(rootPath: string, projectId: string) {
   await importMaterials(projectDir, projectId);
   await importMaterialAnnotations(projectDir, projectId);
   await importSessions(projectDir, projectId);
+  return true;
 }
 
 async function importSources(projectDir: string, projectId: string) {
@@ -392,26 +581,14 @@ function importMessage(sessionId: string, message: TutorMessage) {
 }
 
 export async function syncProjectRootToDb(rootPath: string) {
-  if (!(await projectRootAvailable(rootPath))) {
-    console.warn(`[project-sync] Project root is unavailable; skipping sync: ${rootPath}`);
-    return;
-  }
-  await mkdir(rootPath, { recursive: true });
-  const validProjectIds = await validProjectIdsInRoot(rootPath);
-  await purgeDbProjectsMissingFromRoot(rootPath, validProjectIds);
-  const entries = await readdir(rootPath, { withFileTypes: true });
-  for (const entry of entries) {
-    if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
-    if (!validProjectIds.has(entry.name)) continue;
-    const projectDir = join(rootPath, entry.name);
-    try {
-      const info = await stat(projectDir);
-      if (!info.isDirectory()) continue;
-      await importProject(rootPath, entry.name);
-    } catch (error) {
-      console.warn(`[project-sync] Failed to import ${projectDir}`, error);
-    }
-  }
+  const report = baseSyncReport(rootPath, false);
+  report.issues.push(projectSyncIssue({
+    path: rootPath,
+    reason: "sync_disabled",
+    message: "Project root sync is disabled; only local database projects are listed.",
+    recoverable: false,
+  }));
+  return report;
 }
 
 export async function writeSessionSnapshot(rootPath: string, snapshot: SessionSnapshot) {

@@ -15,6 +15,9 @@ import type { AiProviderConnectionInput, AppRPC, BuddyMessageInput } from "../sh
 import type { AiProviderKeyState } from "../shared/settings-types";
 import { modelSupportsVision } from "../shared/vision-models";
 import { openFilesystemPath } from "./platform-utils";
+import { configureAppDataBase } from "./paths";
+
+configureAppDataBase(Utils.paths.userData);
 
 const projects = new ProjectService();
 const settings = new SettingsService();
@@ -292,6 +295,7 @@ const rpc = BrowserView.defineRPC<AppRPC>({
       "projects.list": () => projects.list(),
       "projects.open": ({ projectId }) => projects.open(projectId),
       "projects.archive": ({ projectId }) => projects.archive(projectId),
+      "projects.delete": ({ projectId }) => projects.delete(projectId),
       "projects.exportArchive": ({ projectId, destinationFolder }) => projects.exportArchive(projectId, destinationFolder),
       "projects.openFolder": ({ projectId }) => openPath(projects.folder(projectId)),
       "app.openExternal": ({ url }) => openExternalUrl(url),

@@ -66,6 +66,15 @@ DEFAULT_CHAPTER_PATTERN = re.compile(
 )
 
 
+def compile_boundary_pattern(boundary_pattern: str | None) -> re.Pattern[str] | None:
+    if not boundary_pattern:
+        return None
+    try:
+        return re.compile(boundary_pattern, re.IGNORECASE)
+    except re.error as exc:
+        raise ValueError(f"Invalid chapter boundary regex {boundary_pattern!r}: {exc}") from exc
+
+
 def normalize_title(value: str | None) -> str:
     if not value:
         return ""

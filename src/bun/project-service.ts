@@ -9,7 +9,7 @@ import type { MaterialArtifacts } from "../shared/artifact-types";
 import type { ProjectArchiveExport, ProjectSummary } from "../shared/rpc-types";
 import type { TutorContentBlock } from "../shared/tutor-types";
 import { SettingsService } from "./settings-service";
-import { syncProjectRootToDb, writeProjectManifest } from "./project-bundle-sync";
+import { writeProjectManifest } from "./project-bundle-sync";
 import { writeZipFromDirectory } from "./archive-writer";
 
 type ProjectRow = {
@@ -233,7 +233,10 @@ export class ProjectService {
   async list() {
     const appSettings = await this.settings.get();
     const rootPath = appSettings.projectRootFolder || dataPath("projects");
-    await syncProjectRootToDb(rootPath);
+    return this.listFromRoot(rootPath);
+  }
+
+  private listFromRoot(rootPath: string) {
     const rows = getDb()
       .query<ProjectRow, [string]>(
         `SELECT * FROM projects
@@ -258,6 +261,17 @@ export class ProjectService {
     getDb().query("UPDATE projects SET archived_at = ?, updated_at = ? WHERE id = ?").run(now, now, projectId);
     const row = getDb().query<ProjectRow, [string]>("SELECT * FROM projects WHERE id = ?").get(projectId);
     if (row) void writeProjectManifest(toProject(row));
+    return true;
+  }
+
+  async delete(projectId: string) {
+    const row = getDb().query<ProjectRow, [string]>("SELECT * FROM projects WHERE id = ?").get(projectId);
+    if (!row) throw new Error("Project not found");
+
+    const rootPath = row.root_path || dataPath("projects");
+    const projectPath = join(rootPath, projectId);
+    getDb().query("DELETE FROM projects WHERE id = ?").run(projectId);
+    await rm(projectPath, { recursive: true, force: true });
     return true;
   }
 
@@ -406,7 +420,6 @@ export class ProjectService {
       getDb().query("UPDATE projects SET root_path = ?, updated_at = ? WHERE id = ?").run(newRootPath, Date.now(), row.id);
       await writeProjectManifest(toProject({ ...row, root_path: newRootPath, updated_at: Date.now() }));
     }
-    await syncProjectRootToDb(newRootPath);
   }
 }
 

@@ -8,7 +8,7 @@ type ModelTarget = "learning" | "vision";
 type SettingsSectionId = "models" | "access" | "folders" | "preferences";
 
 const PROVIDERS: Array<{ id: AiProviderId; label: string; keyLabel: string }> = [
-  { id: "ollama", label: "Ollama", keyLabel: "Ollama API key" },
+  { id: "ollama", label: "Ollama", keyLabel: "Ollama API key (remote)" },
   { id: "openai", label: "OpenAI", keyLabel: "OpenAI API key" },
   { id: "anthropic", label: "Claude", keyLabel: "Claude API key" },
   { id: "gemini", label: "Gemini", keyLabel: "Gemini API key" },
@@ -33,6 +33,16 @@ function providerLabel(providerId: AiProviderId) {
 
 function modelOptionLabel(model: ProviderModel, target: ModelTarget) {
   return target === "vision" && model.supportsVision ? `${model.id} · vision` : model.id;
+}
+
+function isLoopbackOllamaBaseUrl(value: string) {
+  try {
+    const url = new URL(value);
+    const hostname = url.hostname.toLowerCase();
+    return url.protocol === "http:" && (hostname === "localhost" || hostname === "127.0.0.1" || hostname === "::1" || hostname === "[::1]");
+  } catch {
+    return false;
+  }
 }
 
 export function SettingsModal({
@@ -192,11 +202,13 @@ export function SettingsModal({
 
   function keySummary(provider: AiProviderId) {
     const state = providerStatus.keyStates[provider];
+    if (provider === "ollama" && isLoopbackOllamaBaseUrl(draft.providers.ollama.baseUrl) && !state?.hasApiKey) {
+      return "Ollama key: optional for local";
+    }
     return state?.hasApiKey ? `${providerLabel(provider)} key: ${state.apiKeySource}` : `${providerLabel(provider)} key: missing`;
   }
 
   function renderBaseUrl(provider: AiProviderId, target: ModelTarget) {
-    if (provider === "ollama") return null;
     if (target === "vision" && provider === draft.aiProvider) return null;
     return (
       <label className="route-full">
@@ -340,7 +352,7 @@ export function SettingsModal({
       <section className="settings-panel" aria-labelledby="settings-folders-title">
         <div className="settings-section-intro">
           <h3 id="settings-folders-title">Folders</h3>
-          <p>프로젝트와 다운로드 파일이 저장될 위치입니다.</p>
+          <p>데이터베이스에 등록된 프로젝트와 다운로드 파일이 저장될 위치입니다. 기존 폴더를 자동으로 가져오지는 않습니다.</p>
         </div>
         <div className="settings-grid folder-settings-grid">
           <label className="folder-field">
