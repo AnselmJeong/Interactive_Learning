@@ -34,6 +34,7 @@ export type SourceSummary = {
   sourceType: SourceType;
   originalFileName: string;
   qualityStatus: QualityStatus;
+  learningStatus: "not_started" | "in_progress" | "completed";
   createdAt: number;
   updatedAt: number;
 };

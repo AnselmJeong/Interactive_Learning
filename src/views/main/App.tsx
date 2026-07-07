@@ -103,9 +103,15 @@ function displayableLearningGoal(module: CoursePlanModule) {
 }
 
 function displayableSourceName(source: SourceSummary) {
-  const rawName = source.originalFileName || source.title;
+  const rawName = source.title.trim() || source.originalFileName;
   const fileName = rawName.split(/[\\/]/).filter(Boolean).pop() || source.title;
   return fileName.replace(/\.[^.]+$/u, "").trim() || source.title;
+}
+
+function sourceLearningStatusLabel(status: SourceSummary["learningStatus"]) {
+  if (status === "in_progress") return "학습 중";
+  if (status === "completed") return "학습 완료";
+  return "아직 시작하지 않음";
 }
 
 function DestructiveConfirmationModal({
@@ -629,6 +635,13 @@ export function App({ request }: { request: RpcRequest }) {
     setStatus(READY_STATUS);
   }
 
+  async function refreshSources(projectId = activeProject?.id) {
+    if (!projectId) return [];
+    const sources = (await request("sources.list", { projectId })) as SourceSummary[];
+    setState((current) => ({ ...current, sources }));
+    return sources;
+  }
+
   async function refreshSettings() {
     const [nextSettings, nextStatus] = await Promise.all([request("settings.getPublic", {}), request("aiProvider.status", {})]);
     setSettings(nextSettings as AppSettings);
@@ -919,7 +932,7 @@ export function App({ request }: { request: RpcRequest }) {
       setSelectedModuleId(result.session.currentModuleId);
       setInspectorTab("modules");
       setExpandedSourceMessages(new Set());
-      await refreshSessions(materialId);
+      await Promise.all([refreshSessions(materialId), refreshSources(result.session.projectId)]);
       void refreshPrefetchStatus(result.session.id);
       setStatus(READY_STATUS);
       return result;
@@ -975,7 +988,7 @@ export function App({ request }: { request: RpcRequest }) {
     try {
       const deleted = (await request("sessions.delete", { sessionId: item.id })) as boolean;
       if (!deleted) throw new Error("Session not found");
-      await refreshSessions(item.materialId);
+      await Promise.all([refreshSessions(item.materialId), refreshSources(item.projectId)]);
       if (session?.id === item.id) {
         setSession(null);
         setContext(null);
@@ -986,6 +999,7 @@ export function App({ request }: { request: RpcRequest }) {
       setStatus(READY_STATUS);
     } catch (error) {
       await refreshSessions(item.materialId).catch(() => undefined);
+      await refreshSources(item.projectId).catch(() => undefined);
       setStatus(`세션 삭제 실패: ${(error as Error).message}`);
     } finally {
       setBusy(false);
@@ -1009,7 +1023,7 @@ export function App({ request }: { request: RpcRequest }) {
       setSession(result.session);
       setContext(result.context);
       setSelectedModuleId(result.session.currentModuleId);
-      await refreshSessions(result.session.materialId);
+      await Promise.all([refreshSessions(result.session.materialId), refreshSources(result.session.projectId)]);
       void refreshPrefetchStatus(result.session.id);
       setStatus(READY_STATUS);
       return true;
@@ -1051,7 +1065,7 @@ export function App({ request }: { request: RpcRequest }) {
       setSession(result.session);
       setContext(result.context);
       setSelectedModuleId(result.session.currentModuleId);
-      await refreshSessions(result.session.materialId);
+      await Promise.all([refreshSessions(result.session.materialId), refreshSources(result.session.projectId)]);
       void refreshPrefetchStatus(result.session.id);
       setStatus(READY_STATUS);
     } catch (error) {
@@ -1080,7 +1094,7 @@ export function App({ request }: { request: RpcRequest }) {
       setSession(result.session);
       setContext(result.context);
       setSelectedModuleId(result.session.currentModuleId);
-      await refreshSessions(result.session.materialId);
+      await Promise.all([refreshSessions(result.session.materialId), refreshSources(result.session.projectId)]);
       void refreshPrefetchStatus(result.session.id);
       setStatus(READY_STATUS);
     } catch (error) {
@@ -1107,7 +1121,7 @@ export function App({ request }: { request: RpcRequest }) {
       setSession(result.session);
       setContext(result.context);
       setSelectedModuleId(result.session.currentModuleId || moduleId);
-      await refreshSessions(result.session.materialId);
+      await Promise.all([refreshSessions(result.session.materialId), refreshSources(result.session.projectId)]);
       void refreshPrefetchStatus(result.session.id);
       setStatus(READY_STATUS);
     } catch (error) {
@@ -1128,7 +1142,7 @@ export function App({ request }: { request: RpcRequest }) {
       setSession(result.session);
       setContext(result.context);
       setSelectedModuleId(result.session.currentModuleId);
-      await refreshSessions(result.session.materialId);
+      await Promise.all([refreshSessions(result.session.materialId), refreshSources(result.session.projectId)]);
       void refreshPrefetchStatus(result.session.id);
       setStatus(READY_STATUS);
     } catch (error) {
@@ -1186,7 +1200,7 @@ export function App({ request }: { request: RpcRequest }) {
       && selectedModuleStatus !== "completed"
       && selectedModuleStatus !== "needs_review"
   );
-  const sourceTitleById = useMemo(() => new Map(state.sources.map((source) => [source.id, source.title])), [state.sources]);
+  const sourceTitleById = useMemo(() => new Map(state.sources.map((source) => [source.id, displayableSourceName(source)])), [state.sources]);
   const sourceTitlesForModule = useCallback((moduleId: string | null | undefined) => {
     const module = moduleId ? artifacts?.coursePlan.modules.find((item) => item.id === moduleId) : null;
     if (!module || !artifacts) return [];
@@ -1510,20 +1524,24 @@ export function App({ request }: { request: RpcRequest }) {
               {state.sources.map((source, sourceIndex) => {
                 const isActive = activeSourceId === source.id;
                 const sourceName = displayableSourceName(source);
+                const learningStatusLabel = sourceLearningStatusLabel(source.learningStatus);
+                const sourceTitle = `${sourceName} - ${learningStatusLabel}`;
                 return (
                   <div
                     key={source.id}
                     className={`list-item source-learn-row ${isActive ? "active" : ""}`}
-                    title={sourceName}
+                    title={sourceTitle}
                   >
                     <button
                       type="button"
                       className="source-learn-main"
                       onClick={() => learnFromSource(source.id)}
                       disabled={!activeProject || busy}
-                      title={sourceName}
+                      title={sourceTitle}
+                      aria-label={sourceTitle}
                     >
                       <span className="source-row-index">{sourceIndex + 1}</span>
+                      <span className={`source-status-dot ${source.learningStatus}`} aria-hidden="true" />
                       <span className="source-row-title">{sourceName}</span>
                     </button>
                     <button

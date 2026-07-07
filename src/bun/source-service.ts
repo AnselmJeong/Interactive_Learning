@@ -29,6 +29,13 @@ type MaterialDeletionRow = {
   manifest_path: string | null;
 };
 
+type SourceLearningStatus = SourceSummary["learningStatus"];
+
+type SourceLearningStatusRow = {
+  source_id: string;
+  status: "active" | "completed" | "archived";
+};
+
 type PreppyManifest = {
   output?: {
     chapters_dir?: string;
@@ -75,7 +82,7 @@ type PreparedImportEntry = {
 
 const preparedImports = new Map<string, PreparedImportEntry>();
 
-function toSource(row: SourceRow): SourceSummary {
+function toSource(row: SourceRow, learningStatus: SourceLearningStatus = "not_started"): SourceSummary {
   return {
     id: row.id,
     projectId: row.project_id,
@@ -83,6 +90,7 @@ function toSource(row: SourceRow): SourceSummary {
     sourceType: row.source_type,
     originalFileName: row.original_file_name,
     qualityStatus: row.quality_status,
+    learningStatus,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -907,11 +915,35 @@ export class SourceService {
   }
 
   list(projectId: string) {
+    const learningStatusBySourceId = this.learningStatuses(projectId);
     return getDb()
       .query<SourceRow, [string]>("SELECT * FROM project_sources WHERE project_id = ?")
       .all(projectId)
-      .map(toSource)
+      .map((row) => toSource(row, learningStatusBySourceId.get(row.id) || "not_started"))
       .sort((a, b) => naturalPathSorter.compare(a.originalFileName || a.title, b.originalFileName || b.title));
+  }
+
+  private learningStatuses(projectId: string) {
+    const statuses = new Map<string, SourceLearningStatus>();
+    const rows = getDb()
+      .query<SourceLearningStatusRow, [string]>(
+        `SELECT material_sources.source_id, learning_sessions.status
+         FROM material_sources
+         JOIN learning_materials ON learning_materials.id = material_sources.material_id
+         JOIN learning_sessions ON learning_sessions.material_id = learning_materials.id
+         WHERE learning_materials.project_id = ?
+           AND learning_sessions.status IN ('active', 'completed')`
+      )
+      .all(projectId);
+
+    for (const row of rows) {
+      if (row.status === "active") {
+        statuses.set(row.source_id, "in_progress");
+      } else if (!statuses.has(row.source_id)) {
+        statuses.set(row.source_id, "completed");
+      }
+    }
+    return statuses;
   }
 
   getRow(sourceId: string) {

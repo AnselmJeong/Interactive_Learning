@@ -22,6 +22,8 @@
   --accent-2: #9f7814;
   --teal: #256f68;
   --teal-soft: #dfecea;
+  --source-status-progress: oklch(0.62 0.105 75);
+  --source-status-complete: oklch(0.55 0.115 145);
   --ink-blue: #293a44;
   --warm: #a77d12;
   --danger: #9d3732;
@@ -55,6 +57,8 @@
   --accent-2: #d6ad44;
   --teal: #9ab7ad;
   --teal-soft: #23332e;
+  --source-status-progress: oklch(0.76 0.105 78);
+  --source-status-complete: oklch(0.72 0.12 150);
   --ink-blue: #d9cdbb;
   --warm: #d6ad44;
   --danger: #d36a5e;
@@ -531,8 +535,12 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   pointer-events: auto;
   animation: buddy-bubble-in 180ms cubic-bezier(0.16, 1, 0.3, 1);
 }
-.learning-buddy[data-bubble-side="left"] .learning-buddy-message { left: 0; }
-.learning-buddy[data-bubble-side="right"] .learning-buddy-message { right: 0; }
+.learning-buddy[data-bubble-side="left"] .learning-buddy-message { right: 0; }
+.learning-buddy[data-bubble-side="right"] .learning-buddy-message { left: 0; }
+.learning-buddy[data-side="left"] .learning-buddy-message { right: 0; left: auto; }
+.app-shell.left-pane-collapsed .learning-buddy[data-side="left"] .learning-buddy-message { left: 0; right: auto; }
+.learning-buddy[data-side="right"] .learning-buddy-message { left: 0; right: auto; }
+.app-shell.right-pane-collapsed .learning-buddy[data-side="right"] .learning-buddy-message { right: 0; left: auto; }
 .learning-buddy-message::after {
   content: "";
   position: absolute;
@@ -544,8 +552,12 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   background: inherit;
   transform: rotate(45deg);
 }
-.learning-buddy[data-bubble-side="left"] .learning-buddy-message::after { left: 22px; }
-.learning-buddy[data-bubble-side="right"] .learning-buddy-message::after { right: 22px; }
+.learning-buddy[data-bubble-side="left"] .learning-buddy-message::after { right: 22px; }
+.learning-buddy[data-bubble-side="right"] .learning-buddy-message::after { left: 22px; }
+.learning-buddy[data-side="left"] .learning-buddy-message::after { right: 22px; left: auto; }
+.app-shell.left-pane-collapsed .learning-buddy[data-side="left"] .learning-buddy-message::after { left: 22px; right: auto; }
+.learning-buddy[data-side="right"] .learning-buddy-message::after { left: 22px; right: auto; }
+.app-shell.right-pane-collapsed .learning-buddy[data-side="right"] .learning-buddy-message::after { right: 22px; left: auto; }
 .learning-buddy-message p {
   margin: 0;
   font-size: 12px;
@@ -2553,9 +2565,9 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   min-width: 0;
   min-height: 30px;
   display: grid;
-  grid-template-columns: 28px minmax(0, 1fr);
+  grid-template-columns: 28px 12px minmax(0, 1fr);
   align-items: center;
-  gap: 0;
+  gap: 2px;
   border: 0;
   background: transparent;
   padding: 2px 4px 2px 10px;
@@ -2571,6 +2583,22 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
 }
 .source-learn-row.active .source-row-index {
   color: var(--accent-2);
+}
+.source-status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: currentColor;
+  color: transparent;
+  box-shadow: none;
+}
+.source-status-dot.in_progress {
+  color: var(--source-status-progress);
+  box-shadow: 0 0 0 2px color-mix(in oklch, var(--source-status-progress) 18%, transparent);
+}
+.source-status-dot.completed {
+  color: var(--source-status-complete);
+  box-shadow: 0 0 0 2px color-mix(in oklch, var(--source-status-complete) 18%, transparent);
 }
 .source-row-title {
   display: block;
