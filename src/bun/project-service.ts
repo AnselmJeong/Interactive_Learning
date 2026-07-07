@@ -272,6 +272,17 @@ export class ProjectService {
     return true;
   }
 
+  async delete(projectId: string) {
+    const row = getDb().query<ProjectRow, [string]>("SELECT * FROM projects WHERE id = ?").get(projectId);
+    if (!row) throw new Error("Project not found");
+
+    const rootPath = row.root_path || dataPath("projects");
+    const projectPath = join(rootPath, projectId);
+    getDb().query("DELETE FROM projects WHERE id = ?").run(projectId);
+    await rm(projectPath, { recursive: true, force: true });
+    return true;
+  }
+
   async exportArchive(projectId: string, destinationFolder?: string): Promise<ProjectArchiveExport> {
     const project = this.open(projectId);
     const settings = await this.settings.get();

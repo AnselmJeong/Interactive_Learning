@@ -293,6 +293,7 @@ const rpc = BrowserView.defineRPC<AppRPC>({
       "projects.rescan": () => projects.rescan(),
       "projects.open": ({ projectId }) => projects.open(projectId),
       "projects.archive": ({ projectId }) => projects.archive(projectId),
+      "projects.delete": ({ projectId }) => projects.delete(projectId),
       "projects.exportArchive": ({ projectId, destinationFolder }) => projects.exportArchive(projectId, destinationFolder),
       "projects.openFolder": ({ projectId }) => openPath(projects.folder(projectId)),
       "app.openExternal": ({ url }) => openExternalUrl(url),

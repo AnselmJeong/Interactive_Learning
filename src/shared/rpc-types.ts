@@ -146,6 +146,7 @@ export type AppRPC = {
       "projects.rescan": { params: {}; response: ProjectRescanResult };
       "projects.open": { params: { projectId: string }; response: ProjectSummary };
       "projects.archive": { params: { projectId: string }; response: boolean };
+      "projects.delete": { params: { projectId: string }; response: boolean };
       "projects.exportArchive": { params: { projectId: string; destinationFolder?: string }; response: ProjectArchiveExport };
       "projects.openFolder": { params: { projectId?: string }; response: boolean };
       "app.openExternal": { params: { url: string }; response: boolean };

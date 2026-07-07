@@ -578,6 +578,46 @@ export function App({ request }: { request: RpcRequest }) {
     }
   }
 
+  async function deleteProject(project: ProjectSummary) {
+    const confirmed = window.confirm(
+      `"${project.title}" 프로젝트를 삭제할까요?\n\nAll sources, generated materials, sessions, annotations, and local project files will be removed. This cannot be undone.`
+    );
+    if (!confirmed) return;
+
+    const deletingActiveProject = activeProject?.id === project.id;
+    setBusy(true);
+    setStatus("Deleting project");
+    try {
+      if (deletingActiveProject && preparedImport) {
+        await request("sources.cancelPreparedImport", { projectId: project.id, importId: preparedImport.id }).catch(() => undefined);
+        setPreparedImport(null);
+      }
+      await request("projects.delete", { projectId: project.id });
+      const projects = (await request("projects.list", {})) as ProjectSummary[];
+      setState((current) => ({ ...current, projects }));
+      if (deletingActiveProject) {
+        if (projects[0]) {
+          await openProject(projects[0]);
+        } else {
+          setActiveProject(null);
+          setActiveMaterial(null);
+          setArtifacts(null);
+          setSession(null);
+          setContext(null);
+          setPrefetchStatus(null);
+          setSelectedModuleId(null);
+          setState((current) => ({ ...current, projects, sources: [], materials: [], sessions: [] }));
+        }
+      }
+      setSourceNotice("");
+      setStatus(`Deleted ${project.title}`);
+    } catch (error) {
+      setStatus(`Project delete failed: ${(error as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const refreshPrefetchStatus = useCallback(async (sessionId: string) => {
     try {
       const next = (await request("sessions.prefetchStatus", { sessionId })) as TutorPrefetchStatus;
@@ -1349,6 +1389,7 @@ export function App({ request }: { request: RpcRequest }) {
               onSelect={(project) => void openProject(project)}
               onCreate={() => setNewProjectOpen(true)}
               onRefresh={() => void rescanProjects()}
+              onDelete={(project) => void deleteProject(project)}
             />
           </section>
 
