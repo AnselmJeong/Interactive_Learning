@@ -1616,6 +1616,7 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   position: absolute;
   top: 8px;
   right: 8px;
+  z-index: 1;
   width: 28px;
   min-height: 28px;
   border: 0;

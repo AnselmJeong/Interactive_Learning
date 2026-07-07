@@ -874,8 +874,9 @@ export function App({ request }: { request: RpcRequest }) {
     setBusy(true);
     setStatus("세션 삭제 중");
     try {
-      await request("sessions.delete", { sessionId: item.id });
-      setState((current) => ({ ...current, sessions: current.sessions.filter((sessionItem) => sessionItem.id !== item.id) }));
+      const deleted = (await request("sessions.delete", { sessionId: item.id })) as boolean;
+      if (!deleted) throw new Error("Session not found");
+      await refreshSessions(item.materialId);
       if (session?.id === item.id) {
         setSession(null);
         setContext(null);
@@ -885,6 +886,7 @@ export function App({ request }: { request: RpcRequest }) {
       }
       setStatus(READY_STATUS);
     } catch (error) {
+      await refreshSessions(item.materialId).catch(() => undefined);
       setStatus(`세션 삭제 실패: ${(error as Error).message}`);
     } finally {
       setBusy(false);
@@ -1769,7 +1771,11 @@ export function App({ request }: { request: RpcRequest }) {
                           <button
                             type="button"
                             className="session-delete-button"
-                            onClick={() => void deleteSession(item)}
+                            onMouseDown={(event) => event.stopPropagation()}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              void deleteSession(item);
+                            }}
                             disabled={busy}
                             title="세션 삭제"
                             aria-label={`${item.title} 세션 삭제`}
