@@ -1844,9 +1844,13 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
 }
 .source-figure-media img {
   display: block;
-  width: 100%;
   height: auto;
+  width: auto;
   max-width: 100%;
+  max-height: min(520px, 70vh);
+}
+.source-figure-card.compact .source-figure-media img {
+  max-height: min(420px, 62vh);
 }
 .source-figure-image-error {
   display: inline-flex;

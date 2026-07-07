@@ -14,7 +14,8 @@ from pathlib import Path
 
 import pymupdf
 
-from preppy.figures.export import FigureExporter
+from preppy.figures.export import FigureExporter, probe_dimensions
+from preppy.figures.filters import is_too_small_figure
 from preppy.hashing import sha256_file
 from preppy.markdown.render import render_chapter_markdown
 from preppy.models import (
@@ -53,6 +54,8 @@ def convert(pdf_path: Path, *, reason: str, elapsed_seconds: float = 0.0) -> Pre
         exporter = FigureExporter()
         figures: list[FigureAsset] = []
         figure_ids: list[str] = []
+        figures_found = 0
+        figures_skipped = 0
         for page_index, page in enumerate(doc, start=1):
             for image in page.get_images(full=True):
                 xref = image[0]
@@ -62,6 +65,13 @@ def convert(pdf_path: Path, *, reason: str, elapsed_seconds: float = 0.0) -> Pre
                     continue
                 image_bytes = extracted.get("image")
                 if not image_bytes:
+                    continue
+                figures_found += 1
+                width, height = probe_dimensions(image_bytes)
+                bbox = _image_bbox(page, xref)
+                page_size = (float(page.rect.width), float(page.rect.height))
+                if is_too_small_figure(width, height, bbox=bbox, page_size=page_size):
+                    figures_skipped += 1
                     continue
                 suffix = f".{extracted.get('ext', 'png')}"
                 exported = exporter.register(image_bytes, suffix)
@@ -130,9 +140,9 @@ def convert(pdf_path: Path, *, reason: str, elapsed_seconds: float = 0.0) -> Pre
                 selected_count=1,
             ),
             figures=FigureDiagnostics(
-                found=len(figure_ids),
+                found=figures_found,
                 exported=len(figures),
-                skipped=0,
+                skipped=figures_skipped,
                 duplicates=duplicate_count,
                 missing_captions=len(figures),
             ),
@@ -143,7 +153,7 @@ def convert(pdf_path: Path, *, reason: str, elapsed_seconds: float = 0.0) -> Pre
                 min_chapter_chars=len(body_text),
                 figures_exported=len(figures),
                 figures_with_captions=0,
-                skipped_images=0,
+                skipped_images=figures_skipped,
                 fallback_usage_count=1,
                 warnings=[
                     QualityWarning(
@@ -168,6 +178,17 @@ def convert(pdf_path: Path, *, reason: str, elapsed_seconds: float = 0.0) -> Pre
         )
     finally:
         doc.close()
+
+
+def _image_bbox(page: pymupdf.Page, xref: int) -> list[float] | None:
+    try:
+        rects = page.get_image_rects(xref)
+    except Exception:  # noqa: BLE001
+        return None
+    if not rects:
+        return None
+    rect = max(rects, key=lambda item: abs(float(item.width) * float(item.height)))
+    return [float(rect.x0), float(rect.y0), float(rect.x1), float(rect.y1)]
 
 
 def convert_unreadable(pdf_path: Path, *, reason: str, elapsed_seconds: float = 0.0) -> PreppyDocument:

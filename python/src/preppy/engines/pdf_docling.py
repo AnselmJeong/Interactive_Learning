@@ -24,6 +24,7 @@ from docling_core.types.doc.document import DoclingDocument, PictureItem, TableI
 
 from preppy.figures.captions import clean_caption_text
 from preppy.figures.export import FigureExporter
+from preppy.figures.filters import is_too_small_figure
 from preppy.hashing import sha256_file
 from preppy.markdown.render import render_chapter_markdown
 from preppy.models import (
@@ -611,6 +612,13 @@ def _handle_picture(
     if pil_image is None:
         return _PictureOutcome(kind="skipped")
 
+    prov = getattr(picture_item, "prov", None) or []
+    page = prov[0].page_no if prov else None
+    bbox = _bbox_to_list(prov[0].bbox) if prov and getattr(prov[0], "bbox", None) else None
+    page_size = _page_size(doc, page)
+    if is_too_small_figure(pil_image.width, pil_image.height, bbox=bbox, page_size=page_size):
+        return _PictureOutcome(kind="skipped")
+
     save_format = "JPEG" if pil_image.mode not in ("RGBA", "P", "LA") and pil_image.format == "JPEG" else "PNG"
     buffer = io.BytesIO()
     try:
@@ -637,10 +645,6 @@ def _handle_picture(
 
     if not exported.is_new:
         return _PictureOutcome(kind="duplicate", figure_id=exported.figure_id, markdown=markdown_line)
-
-    prov = getattr(picture_item, "prov", None) or []
-    page = prov[0].page_no if prov else None
-    bbox = _bbox_to_list(prov[0].bbox) if prov and getattr(prov[0], "bbox", None) else None
 
     figure_meta = Figure(
         id=exported.figure_id,
@@ -671,6 +675,19 @@ def _render_table(table_item: TableItem, doc: DoclingDocument) -> tuple[str, boo
 def _bbox_to_list(bbox: object) -> list[float] | None:
     try:
         return [float(bbox.l), float(bbox.t), float(bbox.r), float(bbox.b)]
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _page_size(doc: DoclingDocument, page_no: int | None) -> tuple[float, float] | None:
+    if page_no is None:
+        return None
+    pages = getattr(doc, "pages", {}) or {}
+    page = pages.get(page_no)
+    if page is None:
+        return None
+    try:
+        return float(page.size.width), float(page.size.height)
     except Exception:  # noqa: BLE001
         return None
 

@@ -18,7 +18,8 @@ from bs4 import BeautifulSoup, Tag
 from ebooklib import epub
 
 from preppy.figures.captions import infer_caption, is_decorative
-from preppy.figures.export import FigureExporter
+from preppy.figures.export import FigureExporter, probe_dimensions
+from preppy.figures.filters import is_too_small_figure
 from preppy.hashing import sha256_file
 from preppy.markdown.render import html_to_markdown, render_chapter_markdown
 from preppy.models import (
@@ -431,6 +432,11 @@ def _handle_image(
         return _ImageOutcome(kind="skipped")
 
     image_bytes = item.get_content()
+    width, height = probe_dimensions(image_bytes)
+    if is_too_small_figure(width, height):
+        img.decompose()
+        return _ImageOutcome(kind="skipped")
+
     suffix = PurePosixPath(resolved).suffix or ".bin"
     exported = exporter.register(image_bytes, suffix)
     caption_text, caption_status, caption_source = infer_caption(img)
