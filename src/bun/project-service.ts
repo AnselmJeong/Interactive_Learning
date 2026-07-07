@@ -6,10 +6,10 @@ import { getDb } from "./project-db";
 import { dataPath, projectDirAt } from "./paths";
 import { CourseArtifactService } from "./course-artifact-service";
 import type { MaterialArtifacts } from "../shared/artifact-types";
-import type { ProjectArchiveExport, ProjectRescanResult, ProjectSummary } from "../shared/rpc-types";
+import type { ProjectArchiveExport, ProjectSummary } from "../shared/rpc-types";
 import type { TutorContentBlock } from "../shared/tutor-types";
 import { SettingsService } from "./settings-service";
-import { syncProjectRootToDb, writeProjectManifest } from "./project-bundle-sync";
+import { writeProjectManifest } from "./project-bundle-sync";
 import { writeZipFromDirectory } from "./archive-writer";
 
 type ProjectRow = {
@@ -233,15 +233,7 @@ export class ProjectService {
   async list() {
     const appSettings = await this.settings.get();
     const rootPath = appSettings.projectRootFolder || dataPath("projects");
-    await syncProjectRootToDb(rootPath);
     return this.listFromRoot(rootPath);
-  }
-
-  async rescan(): Promise<ProjectRescanResult> {
-    const appSettings = await this.settings.get();
-    const rootPath = appSettings.projectRootFolder || dataPath("projects");
-    const sync = await syncProjectRootToDb(rootPath);
-    return { projects: this.listFromRoot(rootPath), sync };
   }
 
   private listFromRoot(rootPath: string) {
@@ -428,7 +420,6 @@ export class ProjectService {
       getDb().query("UPDATE projects SET root_path = ?, updated_at = ? WHERE id = ?").run(newRootPath, Date.now(), row.id);
       await writeProjectManifest(toProject({ ...row, root_path: newRootPath, updated_at: Date.now() }));
     }
-    await syncProjectRootToDb(newRootPath);
   }
 }
 

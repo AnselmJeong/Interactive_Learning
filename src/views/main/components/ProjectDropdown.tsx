@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ChevronDown, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { ChevronDown, Plus, Trash2 } from "lucide-react";
 import type { ProjectSummary } from "../../../shared/rpc-types";
 
 export function ProjectDropdown({
@@ -8,7 +8,6 @@ export function ProjectDropdown({
   busy,
   onSelect,
   onCreate,
-  onRefresh,
   onDelete,
 }: {
   projects: ProjectSummary[];
@@ -16,7 +15,6 @@ export function ProjectDropdown({
   busy: boolean;
   onSelect: (project: ProjectSummary) => void;
   onCreate: () => void;
-  onRefresh: () => void;
   onDelete: (project: ProjectSummary) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -85,9 +83,6 @@ export function ProjectDropdown({
             )}
           </div>
           <div className="pd-actions">
-            <button type="button" className="pd-action" disabled={busy} onClick={() => { onRefresh(); setOpen(false); }}>
-              <RefreshCw size={15} /> Rescan
-            </button>
             <button type="button" className="pd-action pd-create" disabled={busy} onClick={() => { onCreate(); setOpen(false); }}>
               <Plus size={15} /> 새 프로젝트
             </button>

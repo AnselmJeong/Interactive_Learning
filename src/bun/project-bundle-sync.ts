@@ -3,10 +3,9 @@ import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises"
 import { basename, dirname, join } from "node:path";
 import { getDb } from "./project-db";
 import { dataPath } from "./paths";
-import { projectRootAvailable } from "./platform-utils";
 import { listMaterialAnnotations, replaceMaterialAnnotations } from "./annotation-store";
 import type { MaterialAnnotation, MaterialManifest, QualityStatus, SourceManifest, SourceType } from "../shared/artifact-types";
-import type { ProjectSummary, ProjectSyncIssue, ProjectSyncReport } from "../shared/rpc-types";
+import type { ProjectSummary } from "../shared/rpc-types";
 import type { SessionSnapshot, TutorMessage } from "../shared/tutor-types";
 
 const PROJECT_BUNDLE_SCHEMA_VERSION = 1;
@@ -28,6 +27,27 @@ type ProjectBundleMarker = {
   title?: string;
   createdAt?: number;
   updatedAt?: number;
+};
+
+type ProjectSyncIssue = {
+  folderName?: string;
+  path: string;
+  reason: "root_unavailable" | "missing_manifest" | "invalid_manifest" | "import_failed" | "sync_disabled";
+  message: string;
+  recoverable: boolean;
+};
+
+type ProjectSyncReport = {
+  rootPath: string;
+  available: boolean;
+  scannedAt: number;
+  scannedFolderCount: number;
+  foundProjectCount: number;
+  importedProjectCount: number;
+  recoveredProjectCount: number;
+  skippedFolderCount: number;
+  removedCacheCount: number;
+  issues: ProjectSyncIssue[];
 };
 
 type ProjectRootDiscovery = {
@@ -562,53 +582,12 @@ function importMessage(sessionId: string, message: TutorMessage) {
 
 export async function syncProjectRootToDb(rootPath: string) {
   const report = baseSyncReport(rootPath, false);
-  if (!(await projectRootAvailable(rootPath))) {
-    console.warn(`[project-sync] Project root is unavailable; skipping sync: ${rootPath}`);
-    report.issues.push(projectSyncIssue({
-      path: rootPath,
-      reason: "root_unavailable",
-      message: "Project root folder is not available.",
-      recoverable: true,
-    }));
-    return report;
-  }
-  report.available = true;
-  await mkdir(rootPath, { recursive: true });
-  const discovery = await discoverProjectsInRoot(rootPath);
-  report.scannedFolderCount = discovery.scannedFolderCount;
-  report.foundProjectCount = discovery.validProjectIds.size;
-  report.recoveredProjectCount = discovery.recoveredProjectIds.size;
-  report.skippedFolderCount = discovery.skippedFolderCount;
-  report.issues.push(...discovery.issues);
-  report.removedCacheCount = await purgeDbProjectsMissingFromRoot(rootPath, discovery.validProjectIds, discovery.hasIndeterminateFolders);
-
-  for (const projectId of [...discovery.validProjectIds].sort()) {
-    const projectDir = join(rootPath, projectId);
-    try {
-      const info = await stat(projectDir);
-      if (!info.isDirectory()) continue;
-      if (await importProject(rootPath, projectId)) {
-        report.importedProjectCount += 1;
-      } else {
-        report.issues.push(projectSyncIssue({
-          path: join(projectDir, "project.json"),
-          folderName: projectId,
-          reason: "invalid_manifest",
-          message: "Project manifest was discovered but could not be imported.",
-          recoverable: true,
-        }));
-      }
-    } catch (error) {
-      console.warn(`[project-sync] Failed to import ${projectDir}`, error);
-      report.issues.push(projectSyncIssue({
-        path: projectDir,
-        folderName: projectId,
-        reason: "import_failed",
-        message: (error as Error).message || "Project import failed.",
-        recoverable: true,
-      }));
-    }
-  }
+  report.issues.push(projectSyncIssue({
+    path: rootPath,
+    reason: "sync_disabled",
+    message: "Project root sync is disabled; only local database projects are listed.",
+    recoverable: false,
+  }));
   return report;
 }
 
