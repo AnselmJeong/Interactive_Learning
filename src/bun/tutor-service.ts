@@ -196,6 +196,44 @@ export function repairedCurrentChunkId(currentChunkId: string | null, coveredChu
   return currentChunkId;
 }
 
+export function repairedModuleCurrentChunkId(
+  currentChunkId: string | null,
+  coveredChunkIds: string[],
+  moduleChunkIds: string[],
+  taughtModuleChunkIds: string[] = []
+) {
+  const orderedModuleChunkIds = uniqueStrings(moduleChunkIds.filter(Boolean));
+  if (!orderedModuleChunkIds.length) return null;
+
+  const moduleIdSet = new Set(orderedModuleChunkIds);
+  const covered = new Set(coveredChunkIds.filter((id) => moduleIdSet.has(id)));
+  if (covered.size >= orderedModuleChunkIds.length) {
+    return orderedModuleChunkIds[orderedModuleChunkIds.length - 1]!;
+  }
+
+  const firstUncoveredAfter = (chunkId: string) => {
+    const index = orderedModuleChunkIds.indexOf(chunkId);
+    if (index < 0) return null;
+    return orderedModuleChunkIds.slice(index + 1).find((id) => !covered.has(id)) || null;
+  };
+
+  const activeCandidate = (chunkId: string | null | undefined) => {
+    if (!chunkId || !moduleIdSet.has(chunkId)) return null;
+    if (!covered.has(chunkId)) return chunkId;
+    return firstUncoveredAfter(chunkId);
+  };
+
+  const currentCandidate = activeCandidate(currentChunkId);
+  if (currentCandidate) return currentCandidate;
+
+  for (const chunkId of [...taughtModuleChunkIds].reverse()) {
+    const taughtCandidate = activeCandidate(chunkId);
+    if (taughtCandidate) return taughtCandidate;
+  }
+
+  return orderedModuleChunkIds.find((id) => !covered.has(id)) || orderedModuleChunkIds[0]!;
+}
+
 function jsonArray(raw: string | null): string[] {
   if (!raw) return [];
   try {
@@ -773,8 +811,13 @@ export class TutorService {
     const session = this.snapshotHeader(sessionId);
     if (session.status !== "active") throw new Error("This session is not active");
     const artifacts = await this.artifacts.getArtifacts(session.materialId);
-    this.moduleById(artifacts, moduleId);
+    const module = this.moduleById(artifacts, moduleId);
     await this.repairSessionCursor(sessionId, artifacts, { persistSnapshot: true, stalePrefetches: true });
+    const repairedSession = this.snapshotHeader(sessionId);
+    if (!repairedSession.completedModuleIds.includes(module.id)) {
+      this.activateModuleCursor(sessionId, artifacts, module, repairedSession);
+      await this.persistSessionSnapshot(sessionId);
+    }
     return { session: this.snapshot(sessionId), context: await this.context(sessionId) };
   }
 
@@ -1383,6 +1426,45 @@ export class TutorService {
     return artifacts.coursePlan.modules
       .filter((module) => module.sourceChunkIds.length > 0 && module.sourceChunkIds.every((id) => covered.has(id)))
       .map((module) => module.id);
+  }
+
+  private activateModuleCursor(sessionId: string, artifacts: MaterialArtifacts, module: CourseModule, session = this.snapshotHeader(sessionId)) {
+    const targetChunkId = repairedModuleCurrentChunkId(
+      session.currentChunkId,
+      session.coveredChunkIds,
+      module.sourceChunkIds,
+      this.taughtModuleChunkIds(sessionId, module)
+    );
+    if (!targetChunkId) throw new Error("This module has no source chunk");
+
+    const covered = new Set(uniqueStrings(session.coveredChunkIds));
+    const completedModuleIds = this.completedModuleIdsFromChunks(artifacts, covered);
+    const cursorChanged =
+      session.currentModuleId !== module.id ||
+      session.currentChunkId !== targetChunkId ||
+      !sameStringSet(session.completedModuleIds, completedModuleIds);
+    if (!cursorChanged) return false;
+
+    getDb()
+      .query(
+        `UPDATE learning_sessions
+         SET current_module_id = ?, current_chunk_id = ?, covered_chunk_ids_json = ?, completed_module_ids_json = ?, status = 'active', updated_at = ?
+         WHERE id = ?`
+      )
+      .run(module.id, targetChunkId, JSON.stringify([...covered]), JSON.stringify(completedModuleIds), Date.now(), sessionId);
+    this.markPrefetchesStale(sessionId);
+    return true;
+  }
+
+  private taughtModuleChunkIds(sessionId: string, module: CourseModule) {
+    const moduleChunkIds = new Set(module.sourceChunkIds);
+    const taught: string[] = [];
+    for (const message of this.persistedAssistantTeachingMessages(sessionId)) {
+      if (message.moduleId && message.moduleId !== module.id) continue;
+      if (message.stateUpdate?.turnMode === "digress") continue;
+      taught.push(...this.messageTeachingChunkRefs(message).filter((id) => moduleChunkIds.has(id)));
+    }
+    return taught;
   }
 
   // Persist the source-chunk cursor: the current chunk, the covered set, and the derived

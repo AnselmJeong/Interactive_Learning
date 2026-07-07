@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { prefetchConsumeWaitMs, repairedCurrentChunkId, tutorLanguageInstruction } from "./tutor-service";
+import { prefetchConsumeWaitMs, repairedCurrentChunkId, repairedModuleCurrentChunkId, tutorLanguageInstruction } from "./tutor-service";
 
 describe("prefetch consume wait policy", () => {
   test("does not wait the full consume window when provider timeout is nearly exhausted", () => {
@@ -43,5 +43,21 @@ describe("session cursor repair", () => {
   test("uses the last valid chunk once every chunk is covered", () => {
     expect(repairedCurrentChunkId("chunk-002", curriculum, curriculum)).toBe("chunk-004");
     expect(repairedCurrentChunkId("missing", curriculum, curriculum)).toBe("chunk-004");
+  });
+});
+
+describe("module cursor repair", () => {
+  const moduleChunks = ["chunk-001", "chunk-002", "chunk-003"];
+
+  test("restores the last unfinished chunk taught in the selected module", () => {
+    expect(repairedModuleCurrentChunkId("chunk-004", ["chunk-001"], moduleChunks, ["chunk-001", "chunk-002"])).toBe("chunk-002");
+  });
+
+  test("moves to the next uncovered module chunk after a covered taught chunk", () => {
+    expect(repairedModuleCurrentChunkId("chunk-004", ["chunk-001", "chunk-002"], moduleChunks, ["chunk-002"])).toBe("chunk-003");
+  });
+
+  test("falls back to the first uncovered module chunk when the module has no prior turns", () => {
+    expect(repairedModuleCurrentChunkId("chunk-004", ["chunk-001"], moduleChunks)).toBe("chunk-002");
   });
 });

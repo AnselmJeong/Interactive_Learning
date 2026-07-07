@@ -963,7 +963,9 @@ export function App({ request }: { request: RpcRequest }) {
       const result = (await request("sessions.selectModule", { sessionId: session.id, moduleId })) as { session: SessionSnapshot; context: TutorContext };
       setSession(result.session);
       setContext(result.context);
+      setSelectedModuleId(result.session.currentModuleId || moduleId);
       await refreshSessions(result.session.materialId);
+      void refreshPrefetchStatus(result.session.id);
       setStatus(READY_STATUS);
     } catch (error) {
       setStatus(`Module 선택 실패: ${(error as Error).message}`);
@@ -984,6 +986,7 @@ export function App({ request }: { request: RpcRequest }) {
       setContext(result.context);
       setSelectedModuleId(result.session.currentModuleId);
       await refreshSessions(result.session.materialId);
+      void refreshPrefetchStatus(result.session.id);
       setStatus(READY_STATUS);
     } catch (error) {
       cancelAnswerReadySound();
