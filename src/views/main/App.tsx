@@ -36,6 +36,13 @@ type CoursePlanModule = MaterialArtifacts["coursePlan"]["modules"][number];
 type ModuleStatus = TutorContext["moduleOutline"][number]["status"];
 type InspectorTab = "modules" | "sessions";
 type AppTheme = "light" | "dark";
+type DestructiveConfirmation = {
+  title: string;
+  body: string;
+  detail?: string;
+  confirmLabel: string;
+  onConfirm: () => Promise<void>;
+};
 
 const PROGRESSION_CHOICES = new Set(["계속해줘", "계속해줘.", "다음 진도로 넘어가주세요.", "다음 대목으로 넘어가주세요.", "다음 문단으로 넘어가주세요.", "다음 모듈로 넘어가주세요.", "진도로 돌아갈게요."]);
 const FINISH_CONFIRMATION_CHOICE = "네, 마칠게요.";
@@ -98,6 +105,52 @@ function displayableSourceName(source: SourceSummary) {
   const rawName = source.originalFileName || source.title;
   const fileName = rawName.split(/[\\/]/).filter(Boolean).pop() || source.title;
   return fileName.replace(/\.[^.]+$/u, "").trim() || source.title;
+}
+
+function DestructiveConfirmationModal({
+  confirmation,
+  busy,
+  onCancel,
+  onConfirm,
+}: {
+  confirmation: DestructiveConfirmation;
+  busy: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <div
+      className="modal-backdrop confirm-backdrop"
+      onMouseDown={(event) => {
+        if (!busy && event.target === event.currentTarget) onCancel();
+      }}
+    >
+      <div className="modal confirm-modal" role="dialog" aria-modal="true" aria-labelledby="destructive-confirm-title">
+        <header className="confirm-header">
+          <span className="confirm-icon" aria-hidden="true">
+            <Trash2 size={18} />
+          </span>
+          <div>
+            <p className="eyebrow">Confirm delete</p>
+            <h2 id="destructive-confirm-title">{confirmation.title}</h2>
+          </div>
+        </header>
+        <section className="confirm-body">
+          <p>{confirmation.body}</p>
+          {confirmation.detail ? <small>{confirmation.detail}</small> : null}
+        </section>
+        <footer className="modal-actions confirm-actions">
+          <button type="button" className="wide-button" onClick={onCancel} disabled={busy}>
+            취소
+          </button>
+          <button type="button" className="wide-button danger-action" onClick={onConfirm} disabled={busy} autoFocus>
+            {busy ? <Loader2 size={15} className="spin" /> : <Trash2 size={15} />}
+            {confirmation.confirmLabel}
+          </button>
+        </footer>
+      </div>
+    </div>
+  );
 }
 
 function stripRepeatedSourceHeading(content: string, heading: string) {
@@ -435,6 +488,8 @@ export function App({ request }: { request: RpcRequest }) {
   const [preparedImport, setPreparedImport] = useState<PreparedSourceImport | null>(null);
   const [expandedSourceMessages, setExpandedSourceMessages] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
+  const [confirmationBusy, setConfirmationBusy] = useState(false);
+  const [destructiveConfirmation, setDestructiveConfirmation] = useState<DestructiveConfirmation | null>(null);
   const [tutorThinking, setTutorThinking] = useState(false);
   const [prefetchStatus, setPrefetchStatus] = useState<TutorPrefetchStatus | null>(null);
   const [status, setStatus] = useState(READY_STATUS);
@@ -534,12 +589,36 @@ export function App({ request }: { request: RpcRequest }) {
     setProviderStatus(nextStatus as AiProviderStatus);
   }
 
-  async function deleteProject(project: ProjectSummary) {
-    const confirmed = window.confirm(
-      `"${project.title}" 프로젝트를 삭제할까요?\n\nAll sources, generated materials, sessions, annotations, and local project files will be removed. This cannot be undone.`
-    );
-    if (!confirmed) return;
+  function confirmDestructive(confirmation: DestructiveConfirmation) {
+    if (busy || confirmationBusy) return;
+    setDestructiveConfirmation(confirmation);
+  }
 
+  async function runDestructiveConfirmation() {
+    const confirmation = destructiveConfirmation;
+    if (!confirmation) return;
+    setConfirmationBusy(true);
+    try {
+      await confirmation.onConfirm();
+      setDestructiveConfirmation(null);
+    } catch (error) {
+      setStatus((error as Error).message);
+    } finally {
+      setConfirmationBusy(false);
+    }
+  }
+
+  function deleteProject(project: ProjectSummary) {
+    confirmDestructive({
+      title: `"${project.title}" 프로젝트를 삭제할까요?`,
+      body: "소스, 생성된 material, session, annotation, local project files가 모두 삭제됩니다.",
+      detail: "되돌릴 수 없습니다.",
+      confirmLabel: "프로젝트 삭제",
+      onConfirm: () => deleteProjectConfirmed(project),
+    });
+  }
+
+  async function deleteProjectConfirmed(project: ProjectSummary) {
     const deletingActiveProject = activeProject?.id === project.id;
     setBusy(true);
     setStatus("Deleting project");
@@ -709,11 +788,21 @@ export function App({ request }: { request: RpcRequest }) {
     }
   }
 
-  async function deleteSource(source: SourceSummary) {
+  function deleteSource(source: SourceSummary) {
     if (!activeProject) return;
     const sourceName = displayableSourceName(source);
-    const confirmed = window.confirm(`"${sourceName}" 소스와 연결된 학습 기록을 삭제할까요?\n\n생성된 material, session, annotation, and local files will be removed.`);
-    if (!confirmed) return;
+    confirmDestructive({
+      title: `"${sourceName}" 소스를 삭제할까요?`,
+      body: "연결된 material, session, annotation, local files가 삭제됩니다.",
+      detail: "Project는 유지됩니다.",
+      confirmLabel: "소스 삭제",
+      onConfirm: () => deleteSourceConfirmed(source),
+    });
+  }
+
+  async function deleteSourceConfirmed(source: SourceSummary) {
+    if (!activeProject) return;
+    const sourceName = displayableSourceName(source);
     const activeMaterialUsesSource = Boolean(activeMaterial?.sourceIds.includes(source.id));
     setBusy(true);
     setStatus("소스 삭제 중");
@@ -824,9 +913,17 @@ export function App({ request }: { request: RpcRequest }) {
     }
   }
 
-  async function deleteSession(item: SessionSummary) {
-    const confirmed = window.confirm(`"${item.title}" session을 삭제할까요?\n\n이 session의 대화 기록과 진행 상태가 삭제됩니다. Source와 material은 유지됩니다.`);
-    if (!confirmed) return;
+  function deleteSession(item: SessionSummary) {
+    confirmDestructive({
+      title: `"${item.title}" session을 삭제할까요?`,
+      body: "이 session의 대화 기록과 진행 상태가 삭제됩니다.",
+      detail: "Source와 material은 유지됩니다.",
+      confirmLabel: "세션 삭제",
+      onConfirm: () => deleteSessionConfirmed(item),
+    });
+  }
+
+  async function deleteSessionConfirmed(item: SessionSummary) {
     setBusy(true);
     setStatus("세션 삭제 중");
     try {
@@ -1641,6 +1738,8 @@ export function App({ request }: { request: RpcRequest }) {
           active={Boolean(artifacts)}
           request={request}
           viewMode={viewMode}
+          leftPaneOpen={leftPaneOpen}
+          rightPaneOpen={rightPaneOpen}
           thinking={tutorThinking}
           prefetchState={continuePrefetchState}
           progressPercent={progressPercent}
@@ -1773,6 +1872,14 @@ export function App({ request }: { request: RpcRequest }) {
         />
       ) : null}
       {aboutOpen ? <AboutModal onClose={() => setAboutOpen(false)} /> : null}
+      {destructiveConfirmation ? (
+        <DestructiveConfirmationModal
+          confirmation={destructiveConfirmation}
+          busy={confirmationBusy}
+          onCancel={() => setDestructiveConfirmation(null)}
+          onConfirm={() => void runDestructiveConfirmation()}
+        />
+      ) : null}
 
       {newProjectOpen ? (
         <NewProjectModal
