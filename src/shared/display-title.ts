@@ -2,6 +2,7 @@ const ZERO_WIDTH_MARKS = /[\u200b\u200c\u200d\ufeff]/gu;
 const MARKDOWN_IMAGE = /!\[([^\]]*)\]\([^)]+\)/gu;
 const MARKDOWN_LINK = /\[([^\]]+)\]\([^)]+\)/gu;
 const INLINE_CODE = /`([^`\n]+)`/gu;
+const DISPLAY_FILE_EXTENSION = /\.(?:md|markdown|mdown|txt|text|pdf|epub|html?|docx?|pptx?|xlsx?)$/iu;
 const MARKDOWN_WRAPPED_SPAN =
   /(^|[\s([{>"'“‘])(\*{1,3}|_{1,3})(?=\S)([^\n]*?\S)\2(?=$|[\s.,;:!?)}\]"'”’가-힣])/gu;
 
@@ -24,6 +25,15 @@ export function plainDisplayText(value: string) {
 
 export function displayableCourseTitle(title: string) {
   return plainDisplayText(title).replace(/\s+course$/i, "").trim();
+}
+
+export function displayableSourceTitle(title: string, fallbackFileName = "") {
+  const rawTitle = plainDisplayText(title);
+  if (rawTitle) return rawTitle.replace(DISPLAY_FILE_EXTENSION, "").trim() || rawTitle;
+
+  const rawFallback = plainDisplayText(fallbackFileName);
+  const fileName = rawFallback.split(/[\\/]/).filter(Boolean).pop() || rawFallback;
+  return fileName.replace(DISPLAY_FILE_EXTENSION, "").trim() || rawFallback;
 }
 
 export function comparableHeadingTitle(title: string) {

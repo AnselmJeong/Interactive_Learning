@@ -4,7 +4,7 @@ import type { MaterialSummary, PreparedSourceImport, ProjectArchiveExport, Proje
 import type { AppSettings, AiProviderStatus, ChatSubmitShortcut, ProviderModel } from "../../shared/settings-types";
 import type { MaterialAnnotation, MaterialArtifacts } from "../../shared/artifact-types";
 import type { LearningMessageBatchStatus, SessionSnapshot, SessionSummary, SourceRef, TutorContext, TutorMessage, TutorPrefetchStatus } from "../../shared/tutor-types";
-import { displayableCourseTitle, displayableHeadingPath, displayableOutlineTitle } from "../../shared/display-title";
+import { displayableCourseTitle, displayableHeadingPath, displayableOutlineTitle, displayableSourceTitle } from "../../shared/display-title";
 import { SettingsModal } from "./components/SettingsModal";
 import { VisualRenderer } from "./components/VisualRenderer";
 import { MarkdownContent } from "./components/MarkdownContent";
@@ -121,9 +121,7 @@ function displayableLearningGoal(module: CoursePlanModule) {
 }
 
 function displayableSourceName(source: SourceSummary) {
-  const rawName = source.title.trim() || source.originalFileName;
-  const fileName = rawName.split(/[\\/]/).filter(Boolean).pop() || source.title;
-  return fileName.replace(/\.[^.]+$/u, "").trim() || source.title;
+  return displayableSourceTitle(source.title, source.originalFileName);
 }
 
 function sourceLearningStatusLabel(status: SourceSummary["learningStatus"]) {
