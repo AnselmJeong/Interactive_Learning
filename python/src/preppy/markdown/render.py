@@ -9,6 +9,11 @@ from markdownify import ATX, markdownify as _markdownify
 from preppy.markdown.clean import collapse_blank_lines
 
 _HEADING_RE = re.compile(r"^(#{1,6})(\s+)(.*)$")
+_MARKDOWN_IMAGE_RE = re.compile(r"!\[[^\]]*\]\((?P<target>[^)\s]+)(?:\s+\"[^\"]*\")?\)")
+_IMAGE_TARGET_RE = re.compile(
+    r"^(?:data:image/|.*\.(?:avif|bmp|gif|jpe?g|png|svg|tiff?|webp)(?:[?#].*)?$)",
+    re.IGNORECASE,
+)
 
 
 def html_to_markdown(html: str) -> str:
@@ -20,6 +25,7 @@ def html_to_markdown(html: str) -> str:
         escape_underscores=False,
         strong_em_symbol="*",
     )
+    markdown = _separate_accidental_image_links(markdown)
     return collapse_blank_lines(markdown)
 
 
@@ -69,3 +75,22 @@ def _is_duplicate_heading(line: str, title: str) -> bool:
 
 def _normalize_heading_text(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip().casefold()
+
+
+def _separate_accidental_image_links(markdown: str) -> str:
+    """Avoid turning punctuation plus a following text link into an image.
+
+    `markdownify` renders `<p>Wow!<a href="note.xhtml">1</a></p>` as
+    `Wow![1](note.xhtml)`. That is valid Markdown image syntax even though the
+    source HTML contained text followed by a link. Real Preppy figures are
+    rewritten to image asset paths before this function runs, so non-image
+    targets can be safely separated back into punctuation plus a normal link.
+    """
+
+    def replace(match: re.Match[str]) -> str:
+        target = match.group("target")
+        if _IMAGE_TARGET_RE.match(target):
+            return match.group(0)
+        return "! " + match.group(0)[1:]
+
+    return _MARKDOWN_IMAGE_RE.sub(replace, markdown)

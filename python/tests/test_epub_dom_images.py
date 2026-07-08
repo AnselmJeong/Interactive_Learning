@@ -2,9 +2,10 @@ import json
 
 from bs4 import BeautifulSoup
 
-from preppy.engines.epub_dom import _handle_image
+from preppy.engines.epub_dom import _handle_image, _replace_epub_noteref_links
 from preppy.figures.export import FigureExporter
 from preppy.inspect import inspect_output
+from preppy.markdown.render import html_to_markdown
 
 
 class _FakeItem:
@@ -46,6 +47,19 @@ def test_html_fragment_image_reference_is_skipped() -> None:
 
     assert outcome.kind == "skipped"
     assert soup.find("img") is None
+
+
+def test_epub_noteref_links_are_replaced_before_markdown_conversion() -> None:
+    soup = BeautifulSoup(
+        '<p>Important!<sup><a href="notes.xhtml#endnote-001" role="doc-noteref">1</a></sup></p>',
+        "html.parser",
+    )
+
+    _replace_epub_noteref_links(soup)
+    markdown = html_to_markdown(str(soup))
+
+    assert "Important![1]" in markdown
+    assert "notes.xhtml#endnote-001" not in markdown
 
 
 def test_broken_markdown_image_link_is_warning(tmp_path) -> None:

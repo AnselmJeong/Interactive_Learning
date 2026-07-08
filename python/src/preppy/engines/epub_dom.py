@@ -261,6 +261,7 @@ def convert(
             segment_soup = BeautifulSoup(segment_html, "html.parser")
             for node in segment_soup.select("script, style, nav"):
                 node.decompose()
+            _replace_epub_noteref_links(segment_soup)
             _merge_leading_headings(segment_soup)
             chapter_title = _refine_chapter_title(candidate.title, segment_soup)
             resolved_candidate_titles[candidate.id] = chapter_title
@@ -658,6 +659,51 @@ def _merge_leading_headings(soup: BeautifulSoup) -> None:
         return
     second.string = f"{first_text.rstrip('.:-')} {second_text}"
     first.decompose()
+
+
+_NOTE_REF_FRAGMENT_RE = re.compile(r"#(?:endnote|footnote)[-_]", re.IGNORECASE)
+_NOTE_REF_DOC_RE = re.compile(r"(?:^|/)(?:endnotes?|footnotes?)\.x?html(?:#|$)", re.IGNORECASE)
+
+
+def _replace_epub_noteref_links(soup: BeautifulSoup) -> None:
+    for link in soup.find_all("a"):
+        if not _is_epub_noteref_link(link):
+            continue
+        marker = _note_marker_text(link.get_text(" ", strip=True))
+        if marker:
+            link.replace_with(marker)
+        else:
+            link.unwrap()
+
+
+def _is_epub_noteref_link(link: Tag) -> bool:
+    roles = _attr_tokens(link.get("role"))
+    epub_types = _attr_tokens(link.get("epub:type"))
+    href = str(link.get("href") or "")
+    return (
+        "doc-noteref" in roles
+        or "noteref" in epub_types
+        or (_NOTE_REF_DOC_RE.search(href) is not None and _NOTE_REF_FRAGMENT_RE.search(href) is not None)
+    )
+
+
+def _attr_tokens(value: object) -> set[str]:
+    if value is None:
+        return set()
+    if isinstance(value, (list, tuple, set)):
+        raw = " ".join(str(part) for part in value)
+    else:
+        raw = str(value)
+    return {part.casefold() for part in raw.split()}
+
+
+def _note_marker_text(value: str) -> str:
+    marker = value.strip()
+    if not marker:
+        return ""
+    if marker.startswith("[") and marker.endswith("]"):
+        return marker
+    return f"[{marker}]"
 
 
 def _resolve_book_href(base_dir: PurePosixPath, href: str) -> str:
