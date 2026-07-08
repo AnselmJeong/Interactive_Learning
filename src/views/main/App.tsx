@@ -23,7 +23,7 @@ import { stripFigureMarkdown } from "./figure-text";
 import { placeAnnotationsForMessages, shouldRenderInlineAnnotation } from "./annotation-placement";
 import { annotationCardId, focusAnnotationInline } from "./annotation-inline-links";
 import { playAnswerReadySound, primeAnswerReadySound } from "./notification-sound";
-import { continuePrefetchStateForSession, hasPreparedBatchMessage, nextPrefetchStatusForSession } from "./prefetch-status";
+import { continuePrefetchStateForSession, continueReadyFocusKey, hasPreparedBatchMessage, nextPrefetchStatusForSession } from "./prefetch-status";
 import { shouldSubmitTextArea } from "./submit-shortcut";
 
 type RpcRequest = (method: string, params: unknown) => Promise<unknown>;
@@ -1492,6 +1492,7 @@ export function App({ request }: { request: RpcRequest }) {
   const canReturnToProgress = !selectedModuleWaiting && (latestAssistant?.stateUpdate?.conversationMode === "detour" || latestAssistant?.stateUpdate?.turnMode === "digress");
   const batchPreparedReady = hasPreparedBatchMessage(batchStatus, session?.id);
   const continuePrefetchState = continuePrefetchStateForSession(prefetchStatus, batchStatus, session?.id);
+  const readyContinueFocusKey = continueReadyFocusKey(prefetchStatus, batchStatus, session?.id);
   const continueButtonClass = `continue-button prefetch-${continuePrefetchState}`;
   const useReadyReturnButton = canReturnToProgress && continuePrefetchState === "ready";
   const continueButtonAria = continuePrefetchState === "generating"
@@ -1529,13 +1530,12 @@ export function App({ request }: { request: RpcRequest }) {
   const showProgressActions = Boolean(!sessionReadOnly && !selectedModuleReadOnly && !allModulesCovered);
   useEffect(() => {
     if (viewMode !== "chat" || !showProgressActions || busy || selectedModuleWaiting) return;
-    if (prefetchStatus?.status !== "ready") return;
+    if (continuePrefetchState !== "ready" || !readyContinueFocusKey) return;
 
-    const readyKey = `${prefetchStatus.sessionId}:${prefetchStatus.updatedAt ?? "ready"}`;
-    if (lastFocusedReadyPrefetchKeyRef.current === readyKey) return;
-    lastFocusedReadyPrefetchKeyRef.current = readyKey;
+    if (lastFocusedReadyPrefetchKeyRef.current === readyContinueFocusKey) return;
+    lastFocusedReadyPrefetchKeyRef.current = readyContinueFocusKey;
     continueButtonRef.current?.focus({ preventScroll: true });
-  }, [busy, prefetchStatus, selectedModuleWaiting, showProgressActions, viewMode]);
+  }, [busy, continuePrefetchState, readyContinueFocusKey, selectedModuleWaiting, showProgressActions, viewMode]);
 
   const canContinueFromCompletedModule = Boolean(
     !sessionReadOnly

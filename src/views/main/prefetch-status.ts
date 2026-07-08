@@ -33,3 +33,24 @@ export function continuePrefetchStateForSession(
   }
   return "idle";
 }
+
+export function continueReadyFocusKey(
+  prefetchStatus: TutorPrefetchStatus | null,
+  batchStatus: LearningMessageBatchStatus | null,
+  activeSessionId: string | null | undefined,
+) {
+  if (!activeSessionId) return null;
+  if (hasPreparedBatchMessage(batchStatus, activeSessionId)) {
+    return [
+      "batch",
+      activeSessionId,
+      batchStatus?.runId || "run",
+      batchStatus?.visiblePreparedRemaining ?? 0,
+      batchStatus?.updatedAt ?? "ready",
+    ].join(":");
+  }
+  if (prefetchStatus?.sessionId === activeSessionId && prefetchStatus.status === "ready") {
+    return ["prefetch", activeSessionId, prefetchStatus.updatedAt ?? "ready"].join(":");
+  }
+  return null;
+}
