@@ -78,13 +78,46 @@ function hasIgnoredTextNode(root: HTMLElement, resolved: ResolvedTextAnchor) {
   );
 }
 
+const INLINE_ANNOTATION_BOUNDARY_SELECTOR = [
+  "p",
+  "li",
+  "blockquote",
+  "figcaption",
+  "td",
+  "th",
+  "h1",
+  "h2",
+  "h3",
+  "h4",
+  "h5",
+  "h6",
+].join(",");
+
+function inlineAnnotationBoundary(root: HTMLElement, node: Node) {
+  const element = elementFromNode(node);
+  const boundary = element?.closest<HTMLElement>(INLINE_ANNOTATION_BOUNDARY_SELECTOR);
+  return boundary && root.contains(boundary) ? boundary : root;
+}
+
+function rangeIsInlineSafe(root: HTMLElement, range: Range) {
+  return inlineAnnotationBoundary(root, range.startContainer) === inlineAnnotationBoundary(root, range.endContainer);
+}
+
 function annotationHasCard(annotation: MaterialAnnotation) {
   return annotation.kind !== "highlight";
 }
 
-function inlineClasses(annotation: MaterialAnnotation, activeAnnotationId: string | null | undefined) {
+export function isInteractiveInlineAnnotation(annotation: MaterialAnnotation) {
+  return annotation.kind !== "highlight";
+}
+
+export function inlineAnnotationTagName(annotation: MaterialAnnotation) {
+  return isInteractiveInlineAnnotation(annotation) ? "a" : "mark";
+}
+
+export function inlineClasses(annotation: MaterialAnnotation, activeAnnotationId: string | null | undefined) {
   const classes = [
-    "annotation-inline-link",
+    isInteractiveInlineAnnotation(annotation) ? "annotation-inline-link" : "annotation-inline-mark",
     `annotation-kind-${annotation.kind}`,
   ];
   if (annotation.kind === "highlight") {
@@ -100,7 +133,7 @@ function rangesOverlap(left: ResolvedTextAnchor, right: ResolvedTextAnchor) {
 }
 
 export function unwrapAnnotationInlineLinks(root: HTMLElement) {
-  const links = [...root.querySelectorAll<HTMLElement>(".annotation-inline-link")];
+  const links = [...root.querySelectorAll<HTMLElement>(".annotation-inline-link, .annotation-inline-mark")];
   for (const link of links) {
     const parent = link.parentNode;
     if (!parent) continue;
@@ -109,6 +142,19 @@ export function unwrapAnnotationInlineLinks(root: HTMLElement) {
     parent.replaceChild(fragment, link);
     parent.normalize();
   }
+}
+
+export function highlightAnnotationIdsForRange(root: HTMLElement, range: Range) {
+  const ids = new Set<string>();
+  const marks = root.querySelectorAll<HTMLElement>(".annotation-inline-mark[data-annotation-kind='highlight'][data-annotation-id]");
+  for (const mark of marks) {
+    try {
+      if (range.intersectsNode(mark) && mark.dataset.annotationId) ids.add(mark.dataset.annotationId);
+    } catch {
+      // Ignore detached nodes while React is reconciling annotation wrappers.
+    }
+  }
+  return [...ids];
 }
 
 export function focusAnnotationInline(root: HTMLElement, annotationId: string) {
@@ -142,17 +188,24 @@ export function applyAnnotationInlineLinks(input: {
     if (hasIgnoredTextNode(input.root, item.anchor)) continue;
     const range = rangeForTextOffsets(input.root, item.anchor.startOffset, item.anchor.endOffset);
     if (!range || !range.toString().trim()) continue;
+    if (!rangeIsInlineSafe(input.root, range)) {
+      range.detach();
+      continue;
+    }
 
-    const wrapper = input.root.ownerDocument.createElement("a");
+    const interactive = isInteractiveInlineAnnotation(item.annotation);
+    const wrapper = input.root.ownerDocument.createElement(inlineAnnotationTagName(item.annotation));
     wrapper.id = annotationInlineId(item.annotation.id);
-    wrapper.href = annotationHasCard(item.annotation) ? `#${annotationCardId(item.annotation.id)}` : `#${annotationInlineId(item.annotation.id)}`;
     wrapper.className = inlineClasses(item.annotation, input.activeAnnotationId);
     wrapper.dataset.annotationId = item.annotation.id;
     wrapper.dataset.annotationKind = item.annotation.kind;
-    wrapper.addEventListener("click", (event) => {
-      event.preventDefault();
-      input.onActivateAnnotation?.(item.annotation);
-    });
+    if (interactive) {
+      wrapper.setAttribute("href", annotationHasCard(item.annotation) ? `#${annotationCardId(item.annotation.id)}` : `#${annotationInlineId(item.annotation.id)}`);
+      wrapper.addEventListener("click", (event) => {
+        event.preventDefault();
+        input.onActivateAnnotation?.(item.annotation);
+      });
+    }
 
     try {
       const fragment = range.extractContents();

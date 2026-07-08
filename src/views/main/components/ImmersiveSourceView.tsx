@@ -3,7 +3,7 @@ import { Bookmark, Highlighter, Image as ImageIcon, Loader2, LocateFixed, Messag
 import type { ImageLookupResult, LookupResult, MaterialAnnotation, MaterialArtifacts, TextSelectionAnchor } from "../../../shared/artifact-types";
 import type { ChatSubmitShortcut } from "../../../shared/settings-types";
 import { shouldRenderInlineAnnotation, shouldRenderSourceAnnotationCard } from "../annotation-placement";
-import { annotationCardId, focusAnnotationInline } from "../annotation-inline-links";
+import { annotationCardId, focusAnnotationInline, highlightAnnotationIdsForRange } from "../annotation-inline-links";
 import { figureIdForExplanationAnnotation } from "../figure-annotations";
 import { stripFigureMarkdown } from "../figure-text";
 import { buildTextSelectionAnchor, isIgnoredSelectionElement } from "../selection-anchor";
@@ -39,6 +39,7 @@ type LookupAction = "question" | "lookup" | "image";
 type SelectionState = {
   chunkId: string;
   textAnchor?: TextSelectionAnchor | null;
+  highlightAnnotationIds: string[];
   text: string;
   x: number;
   y: number;
@@ -387,6 +388,7 @@ export function ImmersiveSourceView({
       chunkId,
       text: textAnchor.selectedText.slice(0, SELECTED_TEXT_MAX_CHARS),
       textAnchor,
+      highlightAnnotationIds: highlightAnnotationIdsForRange(startBody, range),
       x: point.x,
       y: point.y,
     };
@@ -446,6 +448,16 @@ export function ImmersiveSourceView({
   async function removeMark(markId: string) {
     await removeAnnotation(markId);
     if (editingMarkId === markId) setEditingMarkId(null);
+  }
+
+  async function removeSelectedHighlights() {
+    const annotationIds = [...new Set(selection?.highlightAnnotationIds || [])];
+    if (!annotationIds.length) return;
+    setSelection(null);
+    window.getSelection()?.removeAllRanges();
+    for (const annotationId of annotationIds) {
+      await removeMark(annotationId);
+    }
   }
 
   async function runLookup(action: LookupAction, sourceSelection = selection) {
@@ -643,16 +655,29 @@ export function ImmersiveSourceView({
         >
           {selection ? (
             <div className="selection-toolbar" style={{ left: selection.x, top: selection.y }} aria-label="선택 텍스트 작업">
-              <button
-                type="button"
-                className="mark-action"
-                onMouseDown={(event) => event.preventDefault()}
-                onClick={() => void addMark("highlight")}
-                aria-label="표시"
-                title="표시"
-              >
-                <Highlighter size={20} />
-              </button>
+              {selection.highlightAnnotationIds.length ? (
+                <button
+                  type="button"
+                  className="remove-mark-action"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => void removeSelectedHighlights()}
+                  aria-label="표시 삭제"
+                  title="표시 삭제"
+                >
+                  <Trash2 size={20} />
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="mark-action"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => void addMark("highlight")}
+                  aria-label="표시"
+                  title="표시"
+                >
+                  <Highlighter size={20} />
+                </button>
+              )}
               <button
                 type="button"
                 className="note-action"

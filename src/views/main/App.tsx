@@ -2030,6 +2030,7 @@ export function App({ request }: { request: RpcRequest }) {
               request={request}
               submitShortcut={settings?.chatSubmitShortcut || "cmd-enter"}
               onAnnotationSaved={handleAnnotationSaved}
+              onDeleteAnnotation={(annotationId) => void deleteSavedAnnotation(annotationId)}
             />
           ) : null}
           </section>

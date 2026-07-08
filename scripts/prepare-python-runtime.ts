@@ -1,7 +1,8 @@
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { chmod, cp, mkdir, readdir, rm } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { chmod, cp, lstat, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { buildPlatformName, findExistingPythonExecutable, runtimeBundleName, type RuntimePlatform } from "../src/bun/platform-utils";
 
 type PythonRuntimeInfo = {
@@ -12,6 +13,20 @@ type PythonRuntimeInfo = {
   sitePackages: string;
 };
 
+type RuntimeBundleManifest = {
+  schemaVersion: 1;
+  targetName: string;
+  targetPlatformName: string;
+  targetArch: string;
+  dependencyHash: string;
+  basePrefix: string;
+  major: number;
+  minor: number;
+  preparedAt: string;
+};
+
+const MANIFEST_SCHEMA_VERSION = 1;
+const PREPARE_SCRIPT_VERSION = 2;
 const projectRoot = resolve(import.meta.dir, "..");
 const pythonRoot = join(projectRoot, "python");
 const targetPlatform = (process.env.ELECTROBUN_OS || process.env.LEARNIE_TARGET_OS || process.platform) as RuntimePlatform;
@@ -21,6 +36,10 @@ const venvPython = targetPlatformName === "win32" ? join(pythonRoot, ".venv", "S
 const targetName = runtimeBundleName(targetPlatform, targetArch);
 const bundleRoot = join(pythonRoot, ".bundle", targetName);
 const runtimeRoot = join(bundleRoot, "runtime");
+const manifestPath = join(bundleRoot, "runtime-manifest.json");
+const forceRuntimePrepare = process.argv.includes("--force")
+  || process.env.LEARNIE_PYTHON_RUNTIME_FORCE === "1"
+  || process.env.LEARNIE_PYTHON_RUNTIME_FORCE === "true";
 
 function run(command: string, args: string[], options: { cwd?: string; env?: NodeJS.ProcessEnv } = {}) {
   const result = spawnSync(command, args, {
@@ -36,6 +55,91 @@ function run(command: string, args: string[], options: { cwd?: string; env?: Nod
   }
 
   return result.stdout.trim();
+}
+
+async function hashFile(hasher: ReturnType<typeof createHash>, path: string) {
+  hasher.update(`file:${path}\0`);
+  hasher.update(await readFile(path));
+  hasher.update("\0");
+}
+
+async function runtimeDependencyHash() {
+  const hasher = createHash("sha256");
+  hasher.update(`prepare-script:${PREPARE_SCRIPT_VERSION}\0`);
+  hasher.update(`target:${targetName}\0`);
+  // python/src is copied separately by Electrobun, so source-only edits should not rebuild the runtime bundle.
+  await hashFile(hasher, join(pythonRoot, "pyproject.toml"));
+  await hashFile(hasher, join(pythonRoot, "uv.lock"));
+  return hasher.digest("hex");
+}
+
+function sitePackagesPath(info: Pick<PythonRuntimeInfo, "major" | "minor">) {
+  return targetPlatformName === "win32"
+    ? join(runtimeRoot, "Lib", "site-packages")
+    : join(runtimeRoot, "lib", `python${info.major}.${info.minor}`, "site-packages");
+}
+
+function baseSitePackagesPath(info: Pick<PythonRuntimeInfo, "basePrefix" | "major" | "minor">) {
+  return targetPlatformName === "win32"
+    ? join(info.basePrefix, "Lib", "site-packages")
+    : join(info.basePrefix, "lib", `python${info.major}.${info.minor}`, "site-packages");
+}
+
+function isPathAtOrInside(path: string, parent: string) {
+  const childPath = resolve(path);
+  const parentPath = resolve(parent);
+  const pathRelativeToParent = relative(parentPath, childPath);
+  return pathRelativeToParent === "" || (!pathRelativeToParent.startsWith("..") && !isAbsolute(pathRelativeToParent));
+}
+
+async function readRuntimeManifest() {
+  try {
+    return JSON.parse(await readFile(manifestPath, "utf8")) as RuntimeBundleManifest;
+  } catch {
+    return null;
+  }
+}
+
+async function runtimeBundleIsReusable(dependencyHash: string) {
+  if (forceRuntimePrepare) return false;
+  const manifest = await readRuntimeManifest();
+  if (!manifest) return false;
+  if (
+    manifest.schemaVersion !== MANIFEST_SCHEMA_VERSION ||
+    manifest.targetName !== targetName ||
+    manifest.targetPlatformName !== targetPlatformName ||
+    manifest.targetArch !== targetArch ||
+    manifest.dependencyHash !== dependencyHash
+  ) {
+    return false;
+  }
+  const runtimeEntry = await lstat(runtimeRoot).catch(() => null);
+  if (!runtimeEntry?.isDirectory()) return false;
+  const bundledPython = findExistingPythonExecutable({
+    pythonRoot,
+    platform: targetPlatform,
+    arch: targetArch,
+    major: manifest.major,
+    minor: manifest.minor,
+  });
+  if (!bundledPython) return false;
+  const sitePackages = await stat(sitePackagesPath(manifest)).catch(() => null);
+  return Boolean(sitePackages?.isDirectory());
+}
+
+async function writeRuntimeManifest(info: PythonRuntimeInfo, dependencyHash: string) {
+  const manifest: RuntimeBundleManifest = {
+    schemaVersion: MANIFEST_SCHEMA_VERSION,
+    targetName,
+    targetPlatformName,
+    targetArch,
+    dependencyHash,
+    basePrefix: info.basePrefix,
+    major: info.major,
+    minor: info.minor,
+    preparedAt: new Date().toISOString(),
+  };
+  await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
 }
 
 function ensureVenv() {
@@ -84,15 +188,20 @@ async function removePythonCaches(root: string) {
 }
 
 async function copyRuntime(info: PythonRuntimeInfo) {
-  const bundledSitePackages = targetPlatformName === "win32"
-    ? join(runtimeRoot, "Lib", "site-packages")
-    : join(runtimeRoot, "lib", `python${info.major}.${info.minor}`, "site-packages");
+  const bundledSitePackages = sitePackagesPath(info);
+  const baseSitePackages = baseSitePackagesPath(info);
+  const realBaseSitePackages = await realpath(baseSitePackages).catch(() => null);
 
   await rm(bundleRoot, { recursive: true, force: true });
   await mkdir(bundleRoot, { recursive: true });
   await cp(info.basePrefix, runtimeRoot, {
     recursive: true,
-    filter: (source) => !source.includes("__pycache__") && !source.endsWith(".pyc"),
+    dereference: true,
+    filter: (source) => {
+      if (source.includes("__pycache__") || source.endsWith(".pyc")) return false;
+      if (isPathAtOrInside(source, baseSitePackages)) return false;
+      return !realBaseSitePackages || !isPathAtOrInside(source, realBaseSitePackages);
+    },
   });
   await rm(bundledSitePackages, { recursive: true, force: true });
   await cp(info.sitePackages, bundledSitePackages, {
@@ -124,11 +233,17 @@ async function verifyRuntime(info: PythonRuntimeInfo) {
 }
 
 async function main() {
-  ensureVenv();
+  const dependencyHash = await runtimeDependencyHash();
   await removePythonCaches(join(pythonRoot, "src"));
+  if (await runtimeBundleIsReusable(dependencyHash)) {
+    console.log(`Reusing packaged Python runtime at ${bundleRoot}`);
+    return;
+  }
+  ensureVenv();
   const info = inspectPython();
   await copyRuntime(info);
   await verifyRuntime(info);
+  await writeRuntimeManifest(info, dependencyHash);
   console.log(`Prepared packaged Python runtime at ${bundleRoot}`);
 }
 

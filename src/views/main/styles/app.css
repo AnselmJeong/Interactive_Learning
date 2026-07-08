@@ -27,6 +27,9 @@
   --ink-blue: #293a44;
   --warm: #a77d12;
   --danger: #9d3732;
+  --annotation-link-ink: #2f6f7e;
+  --annotation-link-hover: #164f5d;
+  --annotation-highlight-line: #b84f47;
   --shadow: 0 12px 30px rgba(45, 38, 28, 0.08);
   --tutor-body-font-size: 20px;
   --learning-pane-font: "Gowun Batang", "Noto Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", serif;
@@ -62,6 +65,9 @@
   --ink-blue: #d9cdbb;
   --warm: #d6ad44;
   --danger: #d36a5e;
+  --annotation-link-ink: #8fc7d2;
+  --annotation-link-hover: #b9e2e9;
+  --annotation-highlight-line: #e0766d;
   --shadow: 0 18px 42px rgba(0, 0, 0, 0.28);
 }
 
@@ -1166,48 +1172,69 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   display: contents;
 }
 .annotation-inline-link {
-  border-radius: 4px;
-  color: inherit;
+  color: var(--annotation-link-ink);
   text-decoration: none;
-  box-decoration-break: clone;
-  -webkit-box-decoration-break: clone;
+  border-bottom: 0;
   cursor: pointer;
-  transition: background 140ms ease, box-shadow 140ms ease, outline-color 140ms ease;
+  transition: color 140ms ease, text-decoration-color 140ms ease;
+}
+.markdown-content .annotation-inline-link {
+  color: var(--annotation-link-ink);
+  text-decoration: none;
+  border-bottom: 0;
 }
 .annotation-inline-link:hover {
-  color: inherit;
+  color: var(--annotation-link-hover);
+}
+.markdown-content .annotation-inline-link:hover {
+  color: var(--annotation-link-hover);
 }
 .annotation-inline-link:focus-visible,
 .annotation-inline-link.active {
-  outline: 2px solid rgba(37, 111, 104, 0.36);
-  outline-offset: 2px;
+  outline: none;
+  color: var(--annotation-link-hover);
+}
+.annotation-inline-mark {
+  background: transparent;
+  color: inherit;
+  cursor: text;
+  padding: 0;
 }
 .annotation-kind-lookup,
 .annotation-kind-define {
-  background: rgba(214, 173, 68, 0.14);
-  box-shadow: inset 0 -0.16em 0 rgba(167, 125, 18, 0.45);
+  color: var(--annotation-link-ink);
 }
 .annotation-kind-question {
-  background: var(--question-accent-soft);
-  box-shadow: inset 0 -0.16em 0 rgba(52, 98, 170, 0.36);
+  color: var(--annotation-link-ink);
 }
 .annotation-kind-image {
-  background: rgba(41, 58, 68, 0.08);
-  box-shadow: inset 0 -0.16em 0 rgba(41, 58, 68, 0.28);
+  color: var(--annotation-link-ink);
 }
 .annotation-kind-note {
-  background: rgba(37, 111, 104, 0.13);
-  box-shadow: inset 0 -0.16em 0 rgba(37, 111, 104, 0.38);
+  color: var(--annotation-link-ink);
 }
 .annotation-kind-highlight,
 .annotation-highlight-yellow {
-  background: rgba(243, 187, 71, 0.36);
-  box-shadow: inset 0 -0.08em 0 rgba(167, 125, 18, 0.38);
+  color: inherit;
+  background: transparent;
+  text-decoration-line: underline;
+  text-decoration-color: var(--annotation-highlight-line);
+  text-decoration-thickness: 0.08em;
+  text-underline-offset: 0.16em;
+  text-decoration-skip-ink: none;
 }
-.annotation-highlight-green { background: rgba(46, 122, 111, 0.18); box-shadow: inset 0 -0.08em 0 rgba(37, 111, 104, 0.42); }
-.annotation-highlight-blue { background: rgba(79, 132, 194, 0.18); box-shadow: inset 0 -0.08em 0 rgba(52, 98, 170, 0.42); }
-.annotation-highlight-pink { background: rgba(194, 89, 125, 0.17); box-shadow: inset 0 -0.08em 0 rgba(166, 58, 96, 0.36); }
-.annotation-highlight-red-underline { background: transparent; box-shadow: inset 0 -0.14em 0 rgba(201, 94, 76, 0.48); }
+.annotation-highlight-green,
+.annotation-highlight-blue,
+.annotation-highlight-pink,
+.annotation-highlight-red-underline {
+  color: inherit;
+  background: transparent;
+  text-decoration-line: underline;
+  text-decoration-color: var(--annotation-highlight-line);
+  text-decoration-thickness: 0.08em;
+  text-underline-offset: 0.16em;
+  text-decoration-skip-ink: none;
+}
 .annotation-card-active {
   animation: annotation-card-pulse 1200ms ease-out 1;
   border-color: rgba(37, 111, 104, 0.46) !important;
@@ -3242,8 +3269,12 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   transform: translateY(-1px);
 }
 .selection-toolbar .mark-action {
-  background: rgba(243, 187, 71, 0.32);
-  color: #8a5a00;
+  background: var(--surface-hover);
+  color: var(--annotation-highlight-line);
+}
+.selection-toolbar .remove-mark-action {
+  background: var(--surface-hover);
+  color: var(--danger);
 }
 .selection-toolbar .note-action {
   background: rgba(46, 122, 111, 0.14);
@@ -3579,7 +3610,7 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   border-radius: 8px;
   padding: 12px 14px;
 }
-.source-mark.highlight { background: rgba(167, 125, 18, 0.09); }
+.source-mark.highlight { background: rgba(184, 79, 71, 0.08); }
 .source-mark.note { background: rgba(37, 111, 104, 0.08); }
 .source-mark > div {
   display: grid;
@@ -3588,7 +3619,7 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   align-items: start;
 }
 .source-mark svg { color: var(--teal); margin-top: 2px; }
-.source-mark.highlight svg { color: var(--accent); }
+.source-mark.highlight svg { color: var(--annotation-highlight-line); }
 .source-mark p {
   margin: 0;
   color: var(--ink-soft);
@@ -3805,10 +3836,13 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   border-color: rgba(154, 183, 173, 0.18);
 }
 :root[data-theme="dark"] .chat-annotation-card.define,
-:root[data-theme="dark"] .source-annotation-card.define,
-:root[data-theme="dark"] .source-mark.highlight {
+:root[data-theme="dark"] .source-annotation-card.define {
   background: rgba(214, 173, 68, 0.1);
   border-color: rgba(214, 173, 68, 0.22);
+}
+:root[data-theme="dark"] .source-mark.highlight {
+  background: rgba(224, 118, 109, 0.1);
+  border-color: rgba(224, 118, 109, 0.22);
 }
 :root[data-theme="dark"] .chat-annotation-card.question,
 :root[data-theme="dark"] .source-annotation-card.question {
@@ -3820,32 +3854,6 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
 :root[data-theme="dark"] .lookup-question-text,
 :root[data-theme="dark"] .chat-annotation-question {
   color: #a9c4ed;
-}
-:root[data-theme="dark"] .annotation-inline-link:focus-visible,
-:root[data-theme="dark"] .annotation-inline-link.active {
-  outline-color: rgba(154, 183, 173, 0.42);
-}
-:root[data-theme="dark"] .annotation-kind-lookup,
-:root[data-theme="dark"] .annotation-kind-define {
-  background: rgba(214, 173, 68, 0.17);
-  box-shadow: inset 0 -0.16em 0 rgba(214, 173, 68, 0.42);
-}
-:root[data-theme="dark"] .annotation-kind-question {
-  background: rgba(126, 161, 212, 0.14);
-  box-shadow: inset 0 -0.16em 0 rgba(126, 161, 212, 0.38);
-}
-:root[data-theme="dark"] .annotation-kind-image {
-  background: rgba(154, 183, 173, 0.1);
-  box-shadow: inset 0 -0.16em 0 rgba(154, 183, 173, 0.26);
-}
-:root[data-theme="dark"] .annotation-kind-note {
-  background: rgba(154, 183, 173, 0.14);
-  box-shadow: inset 0 -0.16em 0 rgba(154, 183, 173, 0.35);
-}
-:root[data-theme="dark"] .annotation-kind-highlight,
-:root[data-theme="dark"] .annotation-highlight-yellow {
-  background: rgba(214, 173, 68, 0.24);
-  box-shadow: inset 0 -0.08em 0 rgba(214, 173, 68, 0.45);
 }
 :root[data-theme="dark"] .annotation-card-active {
   border-color: rgba(154, 183, 173, 0.44) !important;
@@ -3878,6 +3886,16 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
 :root[data-theme="dark"] .selection-toolbar button:hover {
   background: #2a2319;
   color: var(--ink);
+}
+:root[data-theme="dark"] .selection-toolbar .mark-action,
+:root[data-theme="dark"] .selection-toolbar .remove-mark-action {
+  background: #2a292a;
+}
+:root[data-theme="dark"] .selection-toolbar .mark-action {
+  color: var(--annotation-highlight-line);
+}
+:root[data-theme="dark"] .selection-toolbar .remove-mark-action {
+  color: #eaa39b;
 }
 :root[data-theme="dark"] ::selection {
   background: rgba(214, 173, 68, 0.32);

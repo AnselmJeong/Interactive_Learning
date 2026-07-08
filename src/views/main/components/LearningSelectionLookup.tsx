@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState, type PointerEvent, type RefObject } from "react";
-import { Highlighter, Image as ImageIcon, Loader2, MessageSquare, Save, Search, X } from "lucide-react";
+import { Highlighter, Image as ImageIcon, Loader2, MessageSquare, Save, Search, Trash2, X } from "lucide-react";
 import type { ImageLookupResult, LookupResult, MaterialAnnotation, TextSelectionAnchor } from "../../../shared/artifact-types";
 import type { ChatSubmitShortcut } from "../../../shared/settings-types";
 import { MarkdownContent } from "./MarkdownContent";
+import { highlightAnnotationIdsForRange } from "../annotation-inline-links";
 import { buildTextSelectionAnchor, isIgnoredSelectionElement } from "../selection-anchor";
 import { shouldSubmitTextArea } from "../submit-shortcut";
 
@@ -14,6 +15,7 @@ type SelectionState = {
   anchorMessageId?: string | null;
   anchorBlockId?: string | null;
   textAnchor?: TextSelectionAnchor | null;
+  highlightAnnotationIds: string[];
   text: string;
   x: number;
   y: number;
@@ -37,6 +39,7 @@ type LearningSelectionLookupProps = {
   request: RpcRequest;
   submitShortcut: ChatSubmitShortcut;
   onAnnotationSaved?: (annotation: MaterialAnnotation) => void;
+  onDeleteAnnotation?: (annotationId: string) => void | Promise<void>;
 };
 
 const LOOKUP_PANEL_WIDTH = 420;
@@ -97,6 +100,7 @@ export function LearningSelectionLookup({
   request,
   submitShortcut,
   onAnnotationSaved,
+  onDeleteAnnotation,
 }: LearningSelectionLookupProps) {
   const [selection, setSelection] = useState<SelectionState | null>(null);
   const [lookupPanel, setLookupPanel] = useState<LookupPanelState | null>(null);
@@ -181,6 +185,7 @@ export function LearningSelectionLookup({
       anchorBlockId,
       text: textAnchor.selectedText.slice(0, SELECTED_TEXT_MAX_CHARS),
       textAnchor,
+      highlightAnnotationIds: highlightAnnotationIdsForRange(root, range),
       x: point.x,
       y: point.y,
     };
@@ -332,6 +337,36 @@ export function LearningSelectionLookup({
     }
   }
 
+  async function deleteAnnotation(annotationId: string) {
+    if (onDeleteAnnotation) {
+      await onDeleteAnnotation(annotationId);
+      return;
+    }
+    await request("annotations.delete", { annotationId });
+  }
+
+  async function removeSelectedHighlights(sourceSelection = selection) {
+    const annotationIds = [...new Set(sourceSelection?.highlightAnnotationIds || [])];
+    if (!annotationIds.length || !sourceSelection) return;
+    setSelection(null);
+    window.getSelection()?.removeAllRanges();
+    try {
+      for (const annotationId of annotationIds) {
+        await deleteAnnotation(annotationId);
+      }
+    } catch (error) {
+      setLookupPanel({
+        action: "lookup",
+        selection: sourceSelection,
+        status: "error",
+        x: sourceSelection.x,
+        y: sourceSelection.y,
+        queryText: sourceSelection.text,
+        error: `Remove failed: ${(error as Error).message || String(error)}`,
+      });
+    }
+  }
+
   function closePanel() {
     setLookupPanel(null);
   }
@@ -340,16 +375,29 @@ export function LearningSelectionLookup({
     <>
       {selection ? (
         <div className="selection-toolbar" style={{ left: selection.x, top: selection.y }} aria-label="선택 텍스트 작업">
-          <button
-            type="button"
-            className="mark-action"
-            onMouseDown={(event) => event.preventDefault()}
-            onClick={() => void saveHighlight()}
-            aria-label="표시"
-            title="표시"
-          >
-            <Highlighter size={20} />
-          </button>
+          {selection.highlightAnnotationIds.length ? (
+            <button
+              type="button"
+              className="remove-mark-action"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => void removeSelectedHighlights()}
+              aria-label="표시 삭제"
+              title="표시 삭제"
+            >
+              <Trash2 size={20} />
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="mark-action"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => void saveHighlight()}
+              aria-label="표시"
+              title="표시"
+            >
+              <Highlighter size={20} />
+            </button>
+          )}
           <button
             type="button"
             className="question-action"
