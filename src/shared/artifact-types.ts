@@ -94,10 +94,28 @@ export type NoteResult = {
 
 export type HighlightResult = {
   kind: "highlight";
+  style?: "yellow" | "green" | "blue" | "pink" | "red-underline";
 };
 
 export type MaterialAnnotationKind = "define" | "lookup" | "question" | "image" | "note" | "highlight";
 export type MaterialAnnotationSurface = "chat" | "source";
+
+export type TextSelectionAnchor = {
+  version: 1;
+  surface: MaterialAnnotationSurface;
+  scope: "source-chunk" | "chat-message" | "tutor-block";
+  chunkId: string;
+  messageId?: string | null;
+  blockId?: string | null;
+  selectedText: string;
+  normalizedText: string;
+  occurrence: number;
+  startOffset: number;
+  endOffset: number;
+  prefix: string;
+  suffix: string;
+  scopeTextLength: number;
+};
 
 export type MaterialAnnotation = {
   id: string;
@@ -108,6 +126,7 @@ export type MaterialAnnotation = {
   surface: MaterialAnnotationSurface;
   anchorMessageId?: string | null;
   anchorBlockId?: string | null;
+  textAnchor?: TextSelectionAnchor | null;
   kind: MaterialAnnotationKind;
   selectedText: string;
   normalizedText: string;

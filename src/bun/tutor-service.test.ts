@@ -178,4 +178,41 @@ describe("prepared learning messages", () => {
       { id: "prepared-1", delivery_state: "prepared", ordinal: 2 },
     ]);
   });
+
+  test("does not schedule default prefetch while prepared messages remain", async () => {
+    const sessionId = insertSession();
+    const now = Date.now();
+    getDb()
+      .query(
+        `INSERT INTO learning_messages
+         (id, session_id, role, content, source_refs_json, choices_json, blocks_json, delivery_state,
+          batch_run_id, cursor_before_json, cursor_after_json, created_at, ordinal)
+         VALUES
+         ('prepared-1', ?, 'assistant', 'Prepared', '[]', '[]', '[]', 'prepared',
+          'run-1', '{}', '{}', ?, 1)`
+      )
+      .run(sessionId, now);
+    getDb()
+      .query(
+        `INSERT INTO tutor_prefetches
+         (id, session_id, material_id, kind, status, base_message_count, base_current_chunk_id,
+          base_covered_chunk_ids_json, base_session_fingerprint, target_event, target_module_id,
+          target_chunk_id, cursor_after_json, provider, model, settings_fingerprint, material_fingerprint,
+          prompt_version, output_json, created_at, updated_at, expires_at)
+         VALUES
+         ('prefetch-1', ?, 'material-1', 'default_continue', 'generating', 1, 'chunk-1',
+          '[]', 'fingerprint-1', 'next_chunk', 'module-1',
+          'chunk-2', '{}', 'openai', 'model', 'settings', 'material',
+          'prefetch-v1', '{}', ?, ?, ?)`
+      )
+      .run(sessionId, now, now, now + 60_000);
+
+    const service = new TutorService();
+    await (service as unknown as {
+      scheduleDefaultContinueAsync: (id: string, reason: "assistant_turn") => Promise<void>;
+    }).scheduleDefaultContinueAsync(sessionId, "assistant_turn");
+
+    const row = getDb().query<{ status: string }, []>("SELECT status FROM tutor_prefetches WHERE id = 'prefetch-1'").get();
+    expect(row?.status).toBe("stale");
+  });
 });

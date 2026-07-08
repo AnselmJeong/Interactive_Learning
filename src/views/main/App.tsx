@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Archive, BookOpen, Check, Info, Loader2, MessageSquare, Moon, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Play, Send, Settings, Sun, Trash2, Upload } from "lucide-react";
+import { Archive, BookOpen, Check, Info, Loader2, LocateFixed, MessageSquare, Moon, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Play, Send, Settings, Sun, Trash2, Upload } from "lucide-react";
 import type { MaterialSummary, PreparedSourceImport, ProjectArchiveExport, ProjectSummary, SourceSummary } from "../../shared/rpc-types";
 import type { AppSettings, AiProviderStatus, ChatSubmitShortcut, ProviderModel } from "../../shared/settings-types";
 import type { MaterialAnnotation, MaterialArtifacts } from "../../shared/artifact-types";
@@ -17,11 +17,13 @@ import { SourceImportModal } from "./components/SourceImportModal";
 import { AboutModal } from "./components/AboutModal";
 import { SourceFigureCard } from "./components/SourceFigureCard";
 import { LearningBuddy } from "./components/LearningBuddy";
+import { AnnotationInlineScope } from "./components/AnnotationInlineScope";
 import { figureIdForExplanationAnnotation } from "./figure-annotations";
 import { stripFigureMarkdown } from "./figure-text";
-import { placeAnnotationsForMessages } from "./annotation-placement";
+import { placeAnnotationsForMessages, shouldRenderInlineAnnotation } from "./annotation-placement";
+import { annotationCardId, focusAnnotationInline } from "./annotation-inline-links";
 import { playAnswerReadySound, primeAnswerReadySound } from "./notification-sound";
-import { nextPrefetchStatusForSession } from "./prefetch-status";
+import { continuePrefetchStateForSession, hasPreparedBatchMessage, nextPrefetchStatusForSession } from "./prefetch-status";
 import { shouldSubmitTextArea } from "./submit-shortcut";
 
 type RpcRequest = (method: string, params: unknown) => Promise<unknown>;
@@ -310,14 +312,27 @@ function AnnotationSourceLinks({ sourceMeta }: { sourceMeta: MaterialAnnotation[
   );
 }
 
-function ChatSavedAnnotationCard({ annotation, onDelete }: { annotation: MaterialAnnotation; onDelete: (annotationId: string) => void }) {
+function ChatSavedAnnotationCard({
+  annotation,
+  active,
+  onLocate,
+  onDelete,
+}: {
+  annotation: MaterialAnnotation;
+  active: boolean;
+  onLocate: (annotation: MaterialAnnotation) => void;
+  onDelete: (annotationId: string) => void;
+}) {
   const result = annotation.result;
   const isQuestion = annotation.kind === "question" && result.kind === "question";
   return (
-    <article className={`chat-annotation-card ${annotation.kind}`}>
+    <article id={annotationCardId(annotation.id)} className={`chat-annotation-card ${annotation.kind} ${active ? "annotation-card-active" : ""}`}>
       <header>
         <span>{annotationKindLabel(annotation.kind)}</span>
         {isQuestion ? null : <strong>{annotation.selectedText}</strong>}
+        <button type="button" onClick={() => onLocate(annotation)} title="원문 위치">
+          <LocateFixed size={14} />
+        </button>
         <button type="button" onClick={() => onDelete(annotation.id)} title="삭제">
           <Trash2 size={14} />
         </button>
@@ -356,12 +371,28 @@ function ChatSavedAnnotationCard({ annotation, onDelete }: { annotation: Materia
   );
 }
 
-function ChatSavedAnnotations({ annotations, onDelete }: { annotations: MaterialAnnotation[]; onDelete: (annotationId: string) => void }) {
+function ChatSavedAnnotations({
+  annotations,
+  activeAnnotationId,
+  onLocate,
+  onDelete,
+}: {
+  annotations: MaterialAnnotation[];
+  activeAnnotationId?: string | null;
+  onLocate: (annotation: MaterialAnnotation) => void;
+  onDelete: (annotationId: string) => void;
+}) {
   if (!annotations.length) return null;
   return (
     <div className="chat-annotation-list" aria-label="저장된 선택 설명">
       {annotations.map((annotation) => (
-        <ChatSavedAnnotationCard key={annotation.id} annotation={annotation} onDelete={onDelete} />
+        <ChatSavedAnnotationCard
+          key={annotation.id}
+          annotation={annotation}
+          active={activeAnnotationId === annotation.id}
+          onLocate={onLocate}
+          onDelete={onDelete}
+        />
       ))}
     </div>
   );
@@ -392,12 +423,68 @@ const ChatLog = memo(function ChatLog({
 }) {
   const annotationPlacement = useMemo(() => placeAnnotationsForMessages(annotations, messages), [annotations, messages]);
   const figureAnnotationsById = useMemo(() => groupFigureExplanationAnnotations(annotations), [annotations]);
+  const [activeAnnotationId, setActiveAnnotationId] = useState<string | null>(null);
+  const activeAnnotationTimerRef = useRef<number | null>(null);
+  const chatLogRef = useRef<HTMLDivElement | null>(null);
+  const inlineAnnotations = useMemo(() => {
+    const messageGroups = new Map<string, MaterialAnnotation[]>();
+    const blockGroups = new Map<string, MaterialAnnotation[]>();
+    for (const annotation of annotations) {
+      if (!shouldRenderInlineAnnotation(annotation)) continue;
+      if (annotation.surface !== "chat" && !annotation.anchorMessageId && !annotation.anchorBlockId) continue;
+      if (annotation.anchorBlockId) {
+        const group = blockGroups.get(annotation.anchorBlockId) || [];
+        group.push(annotation);
+        blockGroups.set(annotation.anchorBlockId, group);
+      } else if (annotation.anchorMessageId) {
+        const group = messageGroups.get(annotation.anchorMessageId) || [];
+        group.push(annotation);
+        messageGroups.set(annotation.anchorMessageId, group);
+      }
+    }
+    return { messageGroups, blockGroups };
+  }, [annotations]);
+
+  useEffect(() => {
+    return () => {
+      if (activeAnnotationTimerRef.current != null) {
+        window.clearTimeout(activeAnnotationTimerRef.current);
+      }
+    };
+  }, []);
+
+  function pulseAnnotation(annotationId: string) {
+    setActiveAnnotationId(annotationId);
+    if (activeAnnotationTimerRef.current != null) {
+      window.clearTimeout(activeAnnotationTimerRef.current);
+    }
+    activeAnnotationTimerRef.current = window.setTimeout(() => {
+      setActiveAnnotationId(null);
+      activeAnnotationTimerRef.current = null;
+    }, 1600);
+  }
+
+  function scrollToAnnotationCard(annotation: MaterialAnnotation) {
+    pulseAnnotation(annotation.id);
+    const card = chatLogRef.current?.querySelector<HTMLElement>(`#${annotationCardId(annotation.id)}`);
+    if (card) {
+      card.scrollIntoView({ block: "center", behavior: "smooth" });
+      return;
+    }
+    if (chatLogRef.current) focusAnnotationInline(chatLogRef.current, annotation.id);
+  }
+
+  function scrollToAnnotationInline(annotation: MaterialAnnotation) {
+    pulseAnnotation(annotation.id);
+    if (chatLogRef.current) focusAnnotationInline(chatLogRef.current, annotation.id);
+  }
 
   return (
-    <div className="chat-log">
+    <div className="chat-log" ref={chatLogRef}>
       {messages.map((message) => {
         const lookupChunkId = message.sourceRefs[0] || undefined;
         const savedAnnotations = annotationPlacement.groups.get(message.id) || [];
+        const messageInlineAnnotations = inlineAnnotations.messageGroups.get(message.id) || [];
         return (
           <div
             key={message.id}
@@ -415,21 +502,46 @@ const ChatLog = memo(function ChatLog({
                 materialId={materialId}
                 request={request}
                 messageId={message.id}
+                inlineAnnotationsByBlockId={inlineAnnotations.blockGroups}
+                activeAnnotationId={activeAnnotationId}
+                onActivateAnnotation={scrollToAnnotationCard}
                 figureAnnotationsById={figureAnnotationsById}
                 onAnnotationSaved={onAnnotationSaved}
                 onAnnotationDeleted={onDeleteAnnotation}
                 renderBlockAfter={(blockId) => {
                   const blockAnnotations = annotationPlacement.blockGroups.get(blockId) || [];
                   return blockAnnotations.length ? (
-                    <ChatSavedAnnotations annotations={blockAnnotations} onDelete={onDeleteAnnotation} />
+                    <ChatSavedAnnotations
+                      annotations={blockAnnotations}
+                      activeAnnotationId={activeAnnotationId}
+                      onLocate={scrollToAnnotationInline}
+                      onDelete={onDeleteAnnotation}
+                    />
                   ) : null;
                 }}
               />
             ) : (
-              <MarkdownContent content={message.content} />
+              <AnnotationInlineScope
+                annotations={messageInlineAnnotations}
+                activeAnnotationId={activeAnnotationId}
+                onActivateAnnotation={scrollToAnnotationCard}
+                scopeProps={{
+                  "data-lookup-chunk-id": lookupChunkId,
+                  "data-lookup-message-id": message.id,
+                  "data-chat-message-id": message.id,
+                  "data-chat-role": message.role,
+                }}
+              >
+                <MarkdownContent content={message.content} />
+              </AnnotationInlineScope>
             )}
             {message.role === "assistant" && savedAnnotations.length ? (
-              <ChatSavedAnnotations annotations={savedAnnotations} onDelete={onDeleteAnnotation} />
+              <ChatSavedAnnotations
+                annotations={savedAnnotations}
+                activeAnnotationId={activeAnnotationId}
+                onLocate={scrollToAnnotationInline}
+                onDelete={onDeleteAnnotation}
+              />
             ) : null}
             {message.role === "assistant" && message.sourceRefs.length ? (
               <div className="answer-sources">
@@ -454,7 +566,12 @@ const ChatLog = memo(function ChatLog({
       })}
       {annotationPlacement.unplaced.length ? (
         <div className="bubble assistant annotation-fallback">
-          <ChatSavedAnnotations annotations={annotationPlacement.unplaced} onDelete={onDeleteAnnotation} />
+          <ChatSavedAnnotations
+            annotations={annotationPlacement.unplaced}
+            activeAnnotationId={activeAnnotationId}
+            onLocate={scrollToAnnotationInline}
+            onDelete={onDeleteAnnotation}
+          />
         </div>
       ) : null}
       {tutorThinking ? (
@@ -1031,7 +1148,7 @@ export function App({ request }: { request: RpcRequest }) {
       setBatchStatus(result.batch);
       setSelectedModuleId(result.session.currentModuleId);
       setInspectorTab("modules");
-      await Promise.all([refreshSessions(result.session.materialId), refreshSources(result.session.projectId)]);
+      await Promise.all([refreshSessions(result.session.materialId), refreshSources(result.session.projectId), refreshBatchStatus(result.session.materialId, result.session.id)]);
       void refreshPrefetchStatus(result.session.id);
       setStatus(READY_STATUS);
     } catch (error) {
@@ -1129,7 +1246,7 @@ export function App({ request }: { request: RpcRequest }) {
       setSession(result.session);
       setContext(result.context);
       setSelectedModuleId(result.session.currentModuleId);
-      await Promise.all([refreshSessions(result.session.materialId), refreshSources(result.session.projectId)]);
+      await Promise.all([refreshSessions(result.session.materialId), refreshSources(result.session.projectId), refreshBatchStatus(result.session.materialId, result.session.id)]);
       void refreshPrefetchStatus(result.session.id);
       setStatus(READY_STATUS);
       return true;
@@ -1171,7 +1288,7 @@ export function App({ request }: { request: RpcRequest }) {
       setSession(result.session);
       setContext(result.context);
       setSelectedModuleId(result.session.currentModuleId);
-      await Promise.all([refreshSessions(result.session.materialId), refreshSources(result.session.projectId)]);
+      await Promise.all([refreshSessions(result.session.materialId), refreshSources(result.session.projectId), refreshBatchStatus(result.session.materialId, result.session.id)]);
       void refreshPrefetchStatus(result.session.id);
       setStatus(READY_STATUS);
     } catch (error) {
@@ -1200,7 +1317,7 @@ export function App({ request }: { request: RpcRequest }) {
       setSession(result.session);
       setContext(result.context);
       setSelectedModuleId(result.session.currentModuleId);
-      await Promise.all([refreshSessions(result.session.materialId), refreshSources(result.session.projectId)]);
+      await Promise.all([refreshSessions(result.session.materialId), refreshSources(result.session.projectId), refreshBatchStatus(result.session.materialId, result.session.id)]);
       void refreshPrefetchStatus(result.session.id);
       setStatus(READY_STATUS);
     } catch (error) {
@@ -1373,13 +1490,8 @@ export function App({ request }: { request: RpcRequest }) {
   const latestAssistant = [...currentMessages].reverse().find((message) => message.role === "assistant");
   const latestAssistantId = latestAssistant?.id || null;
   const canReturnToProgress = !selectedModuleWaiting && (latestAssistant?.stateUpdate?.conversationMode === "detour" || latestAssistant?.stateUpdate?.turnMode === "digress");
-  const batchPreparedReady = Boolean(batchStatus?.visiblePreparedRemaining && batchStatus.sessionId === session?.id);
-  const continuePrefetchState =
-    prefetchStatus?.status === "generating" || prefetchStatus?.status === "ready" || prefetchStatus?.status === "failed"
-      ? prefetchStatus.status
-      : batchPreparedReady
-      ? "ready"
-      : "idle";
+  const batchPreparedReady = hasPreparedBatchMessage(batchStatus, session?.id);
+  const continuePrefetchState = continuePrefetchStateForSession(prefetchStatus, batchStatus, session?.id);
   const continueButtonClass = `continue-button prefetch-${continuePrefetchState}`;
   const useReadyReturnButton = canReturnToProgress && continuePrefetchState === "ready";
   const continueButtonAria = continuePrefetchState === "generating"

@@ -12,6 +12,7 @@ import type {
   NoteResult,
   QualityStatus,
   SourceType,
+  TextSelectionAnchor,
 } from "./artifact-types";
 import type { AiProviderId, AiProviderStatus, AppSettings, ProviderModel, PublicAiProviderUpdate } from "./settings-types";
 import type { LearningMessageBatchStatus, SessionSnapshot, SessionSummary, TutorContext, TutorPrefetchStatus, TutorTurnOutput } from "./tutor-types";
@@ -150,6 +151,7 @@ export type AppRPC = {
           surface?: MaterialAnnotationSurface;
           anchorMessageId?: string | null;
           anchorBlockId?: string | null;
+          textAnchor?: TextSelectionAnchor | null;
           kind: MaterialAnnotationKind;
           selectedText: string;
           result: LookupResult | ImageLookupResult | NoteResult | HighlightResult;

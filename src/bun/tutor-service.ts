@@ -866,17 +866,17 @@ export class TutorService {
     }
 
     if (mode === "paragraph") {
-      const consumed = await this.tryConsumeDefaultContinue(sessionId, { waitForGenerating: !this.hasPreparedMessages(sessionId) });
-      if (consumed) {
-        await this.persistSessionSnapshot(sessionId);
-        this.scheduleDefaultContinue(sessionId, "assistant_turn");
-        return { session: this.snapshot(sessionId), context: await this.context(sessionId), output: consumed };
-      }
       const revealed = await this.tryRevealNextPreparedMessage(sessionId);
       if (revealed) {
         await this.persistSessionSnapshot(sessionId);
         this.scheduleDefaultContinue(sessionId, "assistant_turn");
         return { session: this.snapshot(sessionId), context: await this.context(sessionId), output: revealed };
+      }
+      const consumed = await this.tryConsumeDefaultContinue(sessionId, { waitForGenerating: !this.hasPreparedMessages(sessionId) });
+      if (consumed) {
+        await this.persistSessionSnapshot(sessionId);
+        this.scheduleDefaultContinue(sessionId, "assistant_turn");
+        return { session: this.snapshot(sessionId), context: await this.context(sessionId), output: consumed };
       }
       this.markPrefetchesStale(sessionId);
       const plan = this.planDefaultContinue(session, artifacts);
@@ -908,17 +908,17 @@ export class TutorService {
     if (await this.repairSessionCursor(sessionId, artifacts, { persistSnapshot: true, stalePrefetches: true })) {
       session = this.snapshotForPlanning(sessionId);
     }
-    const consumed = await this.tryConsumeDefaultContinue(sessionId, { returning: true, waitForGenerating: !this.hasPreparedMessages(sessionId) });
-    if (consumed) {
-      await this.persistSessionSnapshot(sessionId);
-      this.scheduleDefaultContinue(sessionId, "assistant_turn");
-      return { session: this.snapshot(sessionId), context: await this.context(sessionId), output: consumed };
-    }
     const revealed = await this.tryRevealNextPreparedMessage(sessionId, { returning: true });
     if (revealed) {
       await this.persistSessionSnapshot(sessionId);
       this.scheduleDefaultContinue(sessionId, "assistant_turn");
       return { session: this.snapshot(sessionId), context: await this.context(sessionId), output: revealed };
+    }
+    const consumed = await this.tryConsumeDefaultContinue(sessionId, { returning: true, waitForGenerating: !this.hasPreparedMessages(sessionId) });
+    if (consumed) {
+      await this.persistSessionSnapshot(sessionId);
+      this.scheduleDefaultContinue(sessionId, "assistant_turn");
+      return { session: this.snapshot(sessionId), context: await this.context(sessionId), output: consumed };
     }
     this.markPrefetchesStale(sessionId);
     const plan = this.planExplicitProgress(session, artifacts, "return_to_progress");
@@ -2195,6 +2195,10 @@ export class TutorService {
   private async scheduleDefaultContinueAsync(sessionId: string, _reason: "assistant_turn" | "session_loaded") {
     if (this.activePrefetches.has(sessionId) || this.activePrefetches.size >= MAX_ACTIVE_PREFETCH_JOBS) return;
     this.cleanupExpiredPrefetches();
+    if (this.hasPreparedMessages(sessionId)) {
+      this.markPrefetchesStale(sessionId);
+      return;
+    }
     const session = this.snapshotForPlanning(sessionId);
     if (session.status !== "active") return;
     const artifacts = await this.artifacts.getArtifacts(session.materialId);

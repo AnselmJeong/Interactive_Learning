@@ -8,6 +8,7 @@ import type {
   MaterialAnnotationKind,
   MaterialAnnotationSurface,
   NoteResult,
+  TextSelectionAnchor,
 } from "../shared/artifact-types";
 
 type AnnotationResult = LookupResult | ImageLookupResult | NoteResult | HighlightResult;
@@ -22,6 +23,7 @@ type MaterialAnnotationRow = {
   surface: MaterialAnnotationSurface;
   anchor_message_id: string | null;
   anchor_block_id: string | null;
+  anchor_json: string | null;
   kind: MaterialAnnotationKind;
   selected_text: string;
   normalized_text: string;
@@ -38,6 +40,7 @@ export type SaveMaterialAnnotationInput = {
   surface?: MaterialAnnotationSurface;
   anchorMessageId?: string | null;
   anchorBlockId?: string | null;
+  textAnchor?: TextSelectionAnchor | null;
   kind: MaterialAnnotationKind;
   selectedText: string;
   result: AnnotationResult;
@@ -81,6 +84,7 @@ function rowToAnnotation(row: MaterialAnnotationRow): MaterialAnnotation {
     }),
     anchorMessageId: row.anchor_message_id,
     anchorBlockId: row.anchor_block_id,
+    textAnchor: row.anchor_json ? parseJson<TextSelectionAnchor | null>(row.anchor_json, null) : null,
     kind: row.kind,
     selectedText: row.selected_text,
     normalizedText: row.normalized_text,
@@ -121,9 +125,9 @@ export function saveMaterialAnnotation(input: SaveMaterialAnnotationInput) {
   getDb()
     .query(
       `INSERT INTO material_annotations
-       (id, project_id, material_id, source_id, chunk_id, surface, anchor_message_id, anchor_block_id, kind, selected_text, normalized_text,
+       (id, project_id, material_id, source_id, chunk_id, surface, anchor_message_id, anchor_block_id, anchor_json, kind, selected_text, normalized_text,
         result_json, source_meta_json, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       id,
@@ -134,6 +138,7 @@ export function saveMaterialAnnotation(input: SaveMaterialAnnotationInput) {
       annotationSurface(input),
       input.anchorMessageId || null,
       input.anchorBlockId || null,
+      input.textAnchor ? JSON.stringify(input.textAnchor) : null,
       input.kind,
       selectedText,
       normalizeSelectedText(selectedText),
@@ -158,9 +163,9 @@ export function replaceMaterialAnnotations(materialId: string, annotations: Mate
   const db = getDb();
   const insert = db.query(
     `INSERT INTO material_annotations
-     (id, project_id, material_id, source_id, chunk_id, surface, anchor_message_id, anchor_block_id, kind, selected_text, normalized_text,
+     (id, project_id, material_id, source_id, chunk_id, surface, anchor_message_id, anchor_block_id, anchor_json, kind, selected_text, normalized_text,
       result_json, source_meta_json, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
   const replace = db.transaction((items: MaterialAnnotation[]) => {
     db.query("DELETE FROM material_annotations WHERE material_id = ?").run(materialId);
@@ -177,6 +182,7 @@ export function replaceMaterialAnnotations(materialId: string, annotations: Mate
         annotationSurface(annotation),
         annotation.anchorMessageId || null,
         annotation.anchorBlockId || null,
+        annotation.textAnchor ? JSON.stringify(annotation.textAnchor) : null,
         annotation.kind,
         selectedText,
         annotation.normalizedText || normalizeSelectedText(selectedText),

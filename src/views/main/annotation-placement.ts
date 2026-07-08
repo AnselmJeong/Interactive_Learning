@@ -22,6 +22,16 @@ export function shouldRenderSourceAnnotationCard(annotation: MaterialAnnotation)
   return annotation.surface === "source" && !annotationHasAnchor(annotation);
 }
 
+export function shouldRenderChatAnnotationCard(annotation: MaterialAnnotation) {
+  return annotation.kind !== "highlight" && isChatAnnotation(annotation);
+}
+
+export function shouldRenderInlineAnnotation(annotation: MaterialAnnotation) {
+  if (!annotation.selectedText?.trim()) return false;
+  if (isFigureExplanationAnnotation(annotation)) return false;
+  return annotation.kind === "highlight" || annotation.kind === "note" || annotation.kind === "lookup" || annotation.kind === "question" || annotation.kind === "image" || annotation.kind === "define";
+}
+
 export function placeAnnotationsForMessages(annotations: MaterialAnnotation[], messages: TutorMessage[]): AnnotationPlacement {
   const assistantMessages = messages.filter((message) => message.role === "assistant");
   const assistantMessageIds = new Set(assistantMessages.map((message) => message.id));
@@ -48,7 +58,7 @@ export function placeAnnotationsForMessages(annotations: MaterialAnnotation[], m
   }
 
   for (const annotation of annotations) {
-    if (!isChatAnnotation(annotation)) continue;
+    if (!shouldRenderChatAnnotationCard(annotation)) continue;
     if (annotation.anchorBlockId && visibleBlockIds.has(annotation.anchorBlockId)) {
       addBlock(annotation.anchorBlockId, annotation);
       continue;

@@ -13,6 +13,7 @@ import type {
   NoteResult,
   HighlightResult,
   SourceChunk,
+  TextSelectionAnchor,
 } from "../shared/artifact-types";
 import type { AppSettings } from "../shared/settings-types";
 
@@ -40,6 +41,7 @@ type SaveLookupInput = {
   surface?: MaterialAnnotationSurface;
   anchorMessageId?: string | null;
   anchorBlockId?: string | null;
+  textAnchor?: TextSelectionAnchor | null;
   kind: MaterialAnnotationKind;
   selectedText: string;
   result: LookupResult | ImageLookupResult | NoteResult | HighlightResult;
@@ -302,7 +304,7 @@ async function fetchJson<T>(url: string, timeoutMs = 10000): Promise<T> {
   const response = await fetch(url, {
     headers: {
       accept: "application/json",
-      "user-agent": "Learnie/0.5.8 desktop learning app",
+      "user-agent": "Learnie/0.6.0 desktop learning app",
     },
     signal: AbortSignal.timeout(timeoutMs),
   });
@@ -322,7 +324,7 @@ async function fetchImageDataUrl(value: string, timeoutMs = 10000): Promise<stri
   const response = await fetch(url.toString(), {
     headers: {
       accept: "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
-      "user-agent": "Learnie/0.5.8 desktop learning app",
+      "user-agent": "Learnie/0.6.0 desktop learning app",
     },
     signal: AbortSignal.timeout(timeoutMs),
   });
@@ -788,6 +790,7 @@ export class AnnotationService {
       surface: input.surface,
       anchorMessageId: input.anchorMessageId || null,
       anchorBlockId: input.anchorBlockId || null,
+      textAnchor: input.textAnchor || null,
       kind: input.kind,
       selectedText: input.selectedText,
       result: input.result,

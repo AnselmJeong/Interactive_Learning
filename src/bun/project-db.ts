@@ -192,6 +192,7 @@ export function getDb() {
       surface TEXT NOT NULL DEFAULT 'source' CHECK (surface IN ('chat', 'source')),
       anchor_message_id TEXT,
       anchor_block_id TEXT,
+      anchor_json TEXT,
       kind TEXT NOT NULL CHECK (kind IN ('define', 'lookup', 'question', 'image', 'note', 'highlight')),
       selected_text TEXT NOT NULL,
       normalized_text TEXT NOT NULL,
@@ -254,6 +255,9 @@ export function getDb() {
   }
   if (!annotationColumns.includes("anchor_block_id")) {
     db.exec("ALTER TABLE material_annotations ADD COLUMN anchor_block_id TEXT;");
+  }
+  if (!annotationColumns.includes("anchor_json")) {
+    db.exec("ALTER TABLE material_annotations ADD COLUMN anchor_json TEXT;");
   }
   if (!annotationColumns.includes("surface")) {
     db.exec("ALTER TABLE material_annotations ADD COLUMN surface TEXT NOT NULL DEFAULT 'source';");
@@ -332,6 +336,7 @@ function migrateMaterialAnnotationKindCheck(database: Database) {
         surface TEXT NOT NULL DEFAULT 'source' CHECK (surface IN ('chat', 'source')),
         anchor_message_id TEXT,
         anchor_block_id TEXT,
+        anchor_json TEXT,
         kind TEXT NOT NULL CHECK (kind IN ('define', 'lookup', 'question', 'image', 'note', 'highlight')),
         selected_text TEXT NOT NULL,
         normalized_text TEXT NOT NULL,
@@ -342,10 +347,10 @@ function migrateMaterialAnnotationKindCheck(database: Database) {
       );
 
       INSERT INTO material_annotations
-       (id, project_id, material_id, source_id, chunk_id, surface, anchor_message_id, anchor_block_id, kind, selected_text, normalized_text,
+       (id, project_id, material_id, source_id, chunk_id, surface, anchor_message_id, anchor_block_id, anchor_json, kind, selected_text, normalized_text,
         result_json, source_meta_json, created_at, updated_at)
       SELECT
-        id, project_id, material_id, source_id, chunk_id, surface, anchor_message_id, anchor_block_id, kind, selected_text, normalized_text,
+        id, project_id, material_id, source_id, chunk_id, surface, anchor_message_id, anchor_block_id, anchor_json, kind, selected_text, normalized_text,
         result_json, source_meta_json, created_at, updated_at
       FROM material_annotations_old;
 

@@ -2,6 +2,7 @@ import { memo, useState, type ReactNode } from "react";
 import type { MaterialAnnotation } from "../../../shared/artifact-types";
 import type { SourceRef, TutorContentBlock } from "../../../shared/tutor-types";
 import { plainDisplayText } from "../../../shared/display-title";
+import { AnnotationInlineScope } from "./AnnotationInlineScope";
 import { MarkdownContent } from "./MarkdownContent";
 import { SourceFigureCard } from "./SourceFigureCard";
 import { shouldAutoRenderSourceFigure } from "../source-figure-filter";
@@ -233,6 +234,9 @@ export const TutorBlockRenderer = memo(function TutorBlockRenderer({
   request,
   messageId,
   renderBlockAfter,
+  inlineAnnotationsByBlockId,
+  activeAnnotationId,
+  onActivateAnnotation,
   figureAnnotationsById,
   onAnnotationSaved,
   onAnnotationDeleted,
@@ -244,6 +248,9 @@ export const TutorBlockRenderer = memo(function TutorBlockRenderer({
   request?: RpcRequest;
   messageId?: string;
   renderBlockAfter?: (blockId: string) => ReactNode;
+  inlineAnnotationsByBlockId?: Map<string, MaterialAnnotation[]>;
+  activeAnnotationId?: string | null;
+  onActivateAnnotation?: (annotation: MaterialAnnotation) => void;
   figureAnnotationsById?: Map<string, MaterialAnnotation[]>;
   onAnnotationSaved?: (annotation: MaterialAnnotation) => void;
   onAnnotationDeleted?: (annotationId: string) => void;
@@ -280,6 +287,7 @@ export const TutorBlockRenderer = memo(function TutorBlockRenderer({
         const figures = figuresFor(refId);
         const lookupChunkId = refId || fallbackSourceRefs[0]?.chunkId || undefined;
         const lookupBlockId = messageId ? `${messageId}:block-${index}` : undefined;
+        const inlineAnnotations = lookupBlockId ? inlineAnnotationsByBlockId?.get(lookupBlockId) || [] : [];
         return (
           <div
             key={`${block.type}-${index}`}
@@ -287,7 +295,19 @@ export const TutorBlockRenderer = memo(function TutorBlockRenderer({
             data-lookup-chunk-id={lookupChunkId}
             data-lookup-block-id={lookupBlockId}
           >
-            <TutorBlock block={block} />
+            <AnnotationInlineScope
+              annotations={inlineAnnotations}
+              activeAnnotationId={activeAnnotationId}
+              onActivateAnnotation={onActivateAnnotation}
+              scopeProps={{
+                "data-lookup-chunk-id": lookupChunkId,
+                "data-lookup-message-id": messageId,
+                "data-lookup-block-id": lookupBlockId,
+                "data-chat-role": "assistant",
+              }}
+            >
+              <TutorBlock block={block} />
+            </AnnotationInlineScope>
             {figures.length && materialId && request ? (
               <div className="tutor-inline-figures">
                 {figures.map((figure) => (

@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState, type PointerEvent, type RefObject } from "react";
-import { Image as ImageIcon, Loader2, MessageSquare, Save, Search, X } from "lucide-react";
-import type { ImageLookupResult, LookupResult, MaterialAnnotation } from "../../../shared/artifact-types";
+import { Highlighter, Image as ImageIcon, Loader2, MessageSquare, Save, Search, X } from "lucide-react";
+import type { ImageLookupResult, LookupResult, MaterialAnnotation, TextSelectionAnchor } from "../../../shared/artifact-types";
 import type { ChatSubmitShortcut } from "../../../shared/settings-types";
 import { MarkdownContent } from "./MarkdownContent";
+import { buildTextSelectionAnchor, isIgnoredSelectionElement } from "../selection-anchor";
 import { shouldSubmitTextArea } from "../submit-shortcut";
 
 type RpcRequest = (method: string, params: unknown) => Promise<unknown>;
@@ -12,6 +13,7 @@ type SelectionState = {
   chunkId: string;
   anchorMessageId?: string | null;
   anchorBlockId?: string | null;
+  textAnchor?: TextSelectionAnchor | null;
   text: string;
   x: number;
   y: number;
@@ -52,7 +54,7 @@ function clampPoint(x: number, y: number) {
 
 function toolbarPointForRange(rect: DOMRect, container: HTMLElement | null) {
   const toolbarWidth = 58;
-  const toolbarHeight = 168;
+  const toolbarHeight = 216;
   const margin = 14;
   const containerRect = container?.getBoundingClientRect();
   const preferredRight = containerRect ? containerRect.right - toolbarWidth - margin : window.innerWidth - toolbarWidth - margin;
@@ -70,10 +72,6 @@ function actionLabel(action: LookupAction) {
 
 function elementFromNode(node: Node) {
   return node.nodeType === Node.ELEMENT_NODE ? (node as Element) : node.parentElement;
-}
-
-function isIgnoredSelectionElement(element: Element | null) {
-  return Boolean(element?.closest("button, input, textarea, select, [contenteditable='true'], .selection-toolbar, .lookup-popover, .modal"));
 }
 
 function resultSourceMeta(result: LookupResult | ImageLookupResult | undefined) {
@@ -150,10 +148,29 @@ export function LearningSelectionLookup({
     if (!chunkId) return null;
     const startMessage = startElement.closest<HTMLElement>("[data-lookup-message-id]");
     const endMessage = endElement.closest<HTMLElement>("[data-lookup-message-id]");
-    const anchorMessageId = startMessage?.dataset.lookupMessageId || endMessage?.dataset.lookupMessageId || null;
     const startBlock = startElement.closest<HTMLElement>("[data-lookup-block-id]");
     const endBlock = endElement.closest<HTMLElement>("[data-lookup-block-id]");
-    const anchorBlockId = startBlock?.dataset.lookupBlockId || endBlock?.dataset.lookupBlockId || null;
+    if (!startMessage || startMessage !== endMessage || startMessage.dataset.chatRole !== "assistant") return null;
+
+    let scopeRoot: HTMLElement | null = null;
+    let anchorBlockId: string | null = null;
+    if (startBlock || endBlock) {
+      if (!startBlock || startBlock !== endBlock) return null;
+      scopeRoot = startBlock;
+      anchorBlockId = startBlock.dataset.lookupBlockId || null;
+    } else {
+      scopeRoot = startMessage;
+    }
+    const anchorMessageId = startMessage.dataset.lookupMessageId || null;
+    const textAnchor = buildTextSelectionAnchor({
+      range,
+      root: scopeRoot,
+      surface: "chat",
+      chunkId,
+      messageId: anchorMessageId,
+      blockId: anchorBlockId,
+    });
+    if (!textAnchor) return null;
 
     const rect = range.getBoundingClientRect();
     if (!rect.width && !rect.height) return null;
@@ -162,7 +179,8 @@ export function LearningSelectionLookup({
       chunkId,
       anchorMessageId,
       anchorBlockId,
-      text: text.slice(0, SELECTED_TEXT_MAX_CHARS),
+      text: textAnchor.selectedText.slice(0, SELECTED_TEXT_MAX_CHARS),
+      textAnchor,
       x: point.x,
       y: point.y,
     };
@@ -263,6 +281,7 @@ export function LearningSelectionLookup({
         surface: "chat",
         anchorMessageId: panel.selection.anchorMessageId || null,
         anchorBlockId: panel.selection.anchorBlockId || null,
+        textAnchor: panel.selection.textAnchor || null,
         kind: result.kind,
         selectedText: panel.selection.text,
         result,
@@ -281,6 +300,38 @@ export function LearningSelectionLookup({
     }
   }
 
+  async function saveHighlight(sourceSelection = selection) {
+    if (!materialId || !sourceSelection?.chunkId || !sourceSelection.text) return;
+    try {
+      const saved = (await request("annotations.save", {
+        materialId,
+        chunkId: sourceSelection.chunkId,
+        surface: "chat",
+        anchorMessageId: sourceSelection.anchorMessageId || null,
+        anchorBlockId: sourceSelection.anchorBlockId || null,
+        textAnchor: sourceSelection.textAnchor || null,
+        kind: "highlight",
+        selectedText: sourceSelection.text,
+        result: { kind: "highlight", style: "yellow" },
+        sourceMeta: [],
+      })) as MaterialAnnotation;
+      onAnnotationSaved?.(saved);
+      window.getSelection()?.removeAllRanges();
+      setSelection(null);
+      setLookupPanel(null);
+    } catch (error) {
+      setLookupPanel({
+        action: "lookup",
+        selection: sourceSelection,
+        status: "error",
+        x: sourceSelection.x,
+        y: sourceSelection.y,
+        queryText: sourceSelection.text,
+        error: `Save failed: ${(error as Error).message || String(error)}`,
+      });
+    }
+  }
+
   function closePanel() {
     setLookupPanel(null);
   }
@@ -289,6 +340,16 @@ export function LearningSelectionLookup({
     <>
       {selection ? (
         <div className="selection-toolbar" style={{ left: selection.x, top: selection.y }} aria-label="선택 텍스트 작업">
+          <button
+            type="button"
+            className="mark-action"
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => void saveHighlight()}
+            aria-label="표시"
+            title="표시"
+          >
+            <Highlighter size={20} />
+          </button>
           <button
             type="button"
             className="question-action"

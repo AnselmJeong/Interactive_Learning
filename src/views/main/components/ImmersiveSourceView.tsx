@@ -1,11 +1,14 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
-import { Bookmark, Highlighter, Image as ImageIcon, Loader2, MessageSquare, Save, Search, Sparkles, StickyNote, Trash2, X } from "lucide-react";
-import type { ImageLookupResult, LookupResult, MaterialAnnotation, MaterialArtifacts } from "../../../shared/artifact-types";
+import { Bookmark, Highlighter, Image as ImageIcon, Loader2, LocateFixed, MessageSquare, Save, Search, Sparkles, StickyNote, Trash2, X } from "lucide-react";
+import type { ImageLookupResult, LookupResult, MaterialAnnotation, MaterialArtifacts, TextSelectionAnchor } from "../../../shared/artifact-types";
 import type { ChatSubmitShortcut } from "../../../shared/settings-types";
-import { shouldRenderSourceAnnotationCard } from "../annotation-placement";
+import { shouldRenderInlineAnnotation, shouldRenderSourceAnnotationCard } from "../annotation-placement";
+import { annotationCardId, focusAnnotationInline } from "../annotation-inline-links";
 import { figureIdForExplanationAnnotation } from "../figure-annotations";
 import { stripFigureMarkdown } from "../figure-text";
+import { buildTextSelectionAnchor, isIgnoredSelectionElement } from "../selection-anchor";
 import { shouldSubmitTextArea } from "../submit-shortcut";
+import { AnnotationInlineScope } from "./AnnotationInlineScope";
 import { MarkdownContent } from "./MarkdownContent";
 import { SourceFigureCard } from "./SourceFigureCard";
 
@@ -35,6 +38,7 @@ type LookupAction = "question" | "lookup" | "image";
 
 type SelectionState = {
   chunkId: string;
+  textAnchor?: TextSelectionAnchor | null;
   text: string;
   x: number;
   y: number;
@@ -146,9 +150,11 @@ export function ImmersiveSourceView({
   const [lookupPanel, setLookupPanel] = useState<LookupPanelState | null>(null);
   const [annotations, setAnnotations] = useState<MaterialAnnotation[]>(artifacts.annotations || []);
   const [editingMarkId, setEditingMarkId] = useState<string | null>(null);
+  const [activeAnnotationId, setActiveAnnotationId] = useState<string | null>(null);
   const chunkRefs = useRef(new Map<string, HTMLElement>());
   const sourceDocRef = useRef<HTMLDivElement | null>(null);
   const selectionTimerRef = useRef<number | null>(null);
+  const activeAnnotationTimerRef = useRef<number | null>(null);
   const markMigrationStartedRef = useRef(new Set<string>());
   const lookupRequestSeqRef = useRef(0);
   const q = normalizeQuery(query);
@@ -168,7 +174,18 @@ export function ImmersiveSourceView({
   const marksByChunk = useMemo(() => {
     const groups = new Map<string, MaterialAnnotation[]>();
     for (const annotation of annotations) {
-      if (annotation.kind !== "highlight" && annotation.kind !== "note") continue;
+      if (annotation.kind !== "note") continue;
+      const group = groups.get(annotation.chunkId) || [];
+      group.push(annotation);
+      groups.set(annotation.chunkId, group);
+    }
+    return groups;
+  }, [annotations]);
+  const inlineAnnotationsByChunk = useMemo(() => {
+    const groups = new Map<string, MaterialAnnotation[]>();
+    for (const annotation of annotations) {
+      if (annotation.surface !== "source" || annotation.anchorMessageId || annotation.anchorBlockId) continue;
+      if (!shouldRenderInlineAnnotation(annotation)) continue;
       const group = groups.get(annotation.chunkId) || [];
       group.push(annotation);
       groups.set(annotation.chunkId, group);
@@ -299,11 +316,40 @@ export function ImmersiveSourceView({
       if (selectionTimerRef.current != null) {
         window.clearTimeout(selectionTimerRef.current);
       }
+      if (activeAnnotationTimerRef.current != null) {
+        window.clearTimeout(activeAnnotationTimerRef.current);
+      }
     };
   }, []);
 
   function scrollToChunk(chunkId: string) {
     chunkRefs.current.get(chunkId)?.scrollIntoView({ block: "center", behavior: "smooth" });
+  }
+
+  function pulseAnnotation(annotationId: string) {
+    setActiveAnnotationId(annotationId);
+    if (activeAnnotationTimerRef.current != null) {
+      window.clearTimeout(activeAnnotationTimerRef.current);
+    }
+    activeAnnotationTimerRef.current = window.setTimeout(() => {
+      setActiveAnnotationId(null);
+      activeAnnotationTimerRef.current = null;
+    }, 1600);
+  }
+
+  function scrollToAnnotationCard(annotation: MaterialAnnotation) {
+    pulseAnnotation(annotation.id);
+    const card = sourceDocRef.current?.querySelector<HTMLElement>(`#${annotationCardId(annotation.id)}`);
+    if (card) {
+      card.scrollIntoView({ block: "center", behavior: "smooth" });
+      return;
+    }
+    if (sourceDocRef.current) focusAnnotationInline(sourceDocRef.current, annotation.id);
+  }
+
+  function scrollToAnnotationInline(annotation: MaterialAnnotation) {
+    pulseAnnotation(annotation.id);
+    if (sourceDocRef.current) focusAnnotationInline(sourceDocRef.current, annotation.id);
   }
 
   function readSelection(): SelectionState | null {
@@ -318,16 +364,29 @@ export function ImmersiveSourceView({
     const endElement = range.endContainer.nodeType === Node.ELEMENT_NODE
       ? (range.endContainer as Element)
       : range.endContainer.parentElement;
+    if (isIgnoredSelectionElement(startElement) || isIgnoredSelectionElement(endElement)) return null;
+    const startBody = startElement?.closest<HTMLElement>(".source-chunk-body[data-annotation-scope]");
+    const endBody = endElement?.closest<HTMLElement>(".source-chunk-body[data-annotation-scope]");
+    if (!startBody || startBody !== endBody || !sourceDocRef.current?.contains(startBody)) return null;
     const startChunk = startElement?.closest<HTMLElement>(".source-chunk");
     const endChunk = endElement?.closest<HTMLElement>(".source-chunk");
     if (!startChunk || startChunk !== endChunk || !sourceDocRef.current?.contains(startChunk)) {
       return null;
     }
+    const chunkId = startChunk.dataset.chunkId || "";
+    const textAnchor = buildTextSelectionAnchor({
+      range,
+      root: startBody,
+      surface: "source",
+      chunkId,
+    });
+    if (!textAnchor) return null;
     const rect = range.getBoundingClientRect();
     const point = toolbarPointForRange(rect, sourceDocRef.current);
     return {
-      chunkId: startChunk.dataset.chunkId || "",
-      text: text.slice(0, SELECTED_TEXT_MAX_CHARS),
+      chunkId,
+      text: textAnchor.selectedText.slice(0, SELECTED_TEXT_MAX_CHARS),
+      textAnchor,
       x: point.x,
       y: point.y,
     };
@@ -357,7 +416,8 @@ export function ImmersiveSourceView({
       surface: "source",
       kind,
       selectedText: selected.text,
-      result: kind === "note" ? { kind: "note", note: "" } : { kind: "highlight" },
+      textAnchor: selected.textAnchor || null,
+      result: kind === "note" ? { kind: "note", note: "" } : { kind: "highlight", style: "yellow" },
       sourceMeta: [],
     })) as MaterialAnnotation;
     setAnnotations((current) => [saved, ...current.filter((annotation) => annotation.id !== saved.id)]);
@@ -472,6 +532,7 @@ export function ImmersiveSourceView({
         surface: "source",
         kind: result.kind,
         selectedText: panel.selection.text,
+        textAnchor: panel.selection.textAnchor || null,
         result,
         sourceMeta: resultSourceMeta(result),
       })) as MaterialAnnotation;
@@ -648,6 +709,7 @@ export function ImmersiveSourceView({
           {enrichedChunks.map(({ chunk, index, heading, showHeading, text, matchesQuery }) => {
             const status = sourceProgress?.statusFor(chunk.id) || "upcoming";
             const chunkMarks = marksByChunk.get(chunk.id) || [];
+            const chunkInlineAnnotations = inlineAnnotationsByChunk.get(chunk.id) || [];
             const chunkFigures = figuresByChunk.get(chunk.id) || [];
             const displayFigures = displayFiguresByChunk.get(chunk.id) || [];
             const chunkAnnotations = annotationsByChunk.get(chunk.id) || [];
@@ -666,13 +728,25 @@ export function ImmersiveSourceView({
                   <span>{status === "current" ? "진행 중" : status === "covered" ? "다룸" : "예정"}</span>
                 </div>
                 {showHeading ? <h4 className="source-heading">{heading}</h4> : null}
-                {text ? <MarkdownContent content={stripFigureMarkdown(text, chunkFigures)} /> : null}
+                {text ? (
+                  <div className="source-chunk-body" data-annotation-scope>
+                    <AnnotationInlineScope
+                      annotations={chunkInlineAnnotations}
+                      activeAnnotationId={activeAnnotationId}
+                      onActivateAnnotation={scrollToAnnotationCard}
+                    >
+                      <MarkdownContent content={stripFigureMarkdown(text, chunkFigures)} />
+                    </AnnotationInlineScope>
+                  </div>
+                ) : null}
                 {chunkAnnotations.length ? (
                   <div className="source-annotation-list">
                     {chunkAnnotations.map((annotation) => (
                       <SavedAnnotationCard
                         key={annotation.id}
                         annotation={annotation}
+                        active={activeAnnotationId === annotation.id}
+                        onLocate={() => scrollToAnnotationInline(annotation)}
                         onDelete={() => void removeAnnotation(annotation.id)}
                       />
                     ))}
@@ -700,10 +774,17 @@ export function ImmersiveSourceView({
                 {chunkMarks.length ? (
                   <div className="source-mark-list">
                     {chunkMarks.map((mark) => (
-                      <article key={mark.id} className={`source-mark ${mark.kind}`}>
+                      <article
+                        key={mark.id}
+                        id={annotationCardId(mark.id)}
+                        className={`source-mark ${mark.kind} ${activeAnnotationId === mark.id ? "annotation-card-active" : ""}`}
+                      >
                         <div>
                           {mark.kind === "note" ? <StickyNote size={14} /> : <Highlighter size={14} />}
                           <p>{mark.selectedText}</p>
+                          <button type="button" onClick={() => scrollToAnnotationInline(mark)} title="원문 위치">
+                            <LocateFixed size={14} />
+                          </button>
                           <button type="button" onClick={() => void removeMark(mark.id)} title="삭제">
                             <Trash2 size={14} />
                           </button>
@@ -960,16 +1041,29 @@ function LookupResultBody({
   );
 }
 
-function SavedAnnotationCard({ annotation, onDelete }: { annotation: MaterialAnnotation; onDelete: () => void }) {
+function SavedAnnotationCard({
+  annotation,
+  active,
+  onLocate,
+  onDelete,
+}: {
+  annotation: MaterialAnnotation;
+  active: boolean;
+  onLocate: () => void;
+  onDelete: () => void;
+}) {
   const result = annotation.result;
   const isQuestion = annotation.kind === "question" && result.kind === "question";
   return (
-    <article className={`source-annotation-card ${annotation.kind}`}>
+    <article id={annotationCardId(annotation.id)} className={`source-annotation-card ${annotation.kind} ${active ? "annotation-card-active" : ""}`}>
       <header>
         <div>
           <span>{annotation.kind === "image" ? "Image" : annotation.kind === "question" ? "추가 질문" : annotation.kind === "define" ? "Define" : "Lookup"}</span>
           {isQuestion ? null : <strong>{annotation.selectedText}</strong>}
         </div>
+        <button type="button" onClick={onLocate} title="원문 위치">
+          <LocateFixed size={14} />
+        </button>
         <button type="button" onClick={onDelete} title="삭제">
           <Trash2 size={14} />
         </button>
