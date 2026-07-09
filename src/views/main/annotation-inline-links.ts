@@ -78,13 +78,12 @@ function hasIgnoredTextNode(root: HTMLElement, resolved: ResolvedTextAnchor) {
   );
 }
 
-const INLINE_ANNOTATION_BOUNDARY_SELECTOR = [
-  "p",
+const INLINE_ANNOTATION_CONTAINER_SELECTOR = [
   "li",
-  "blockquote",
-  "figcaption",
   "td",
   "th",
+  "blockquote",
+  "figcaption",
   "h1",
   "h2",
   "h3",
@@ -93,9 +92,13 @@ const INLINE_ANNOTATION_BOUNDARY_SELECTOR = [
   "h6",
 ].join(",");
 
+const INLINE_ANNOTATION_TEXT_BOUNDARY_SELECTOR = "p";
+
 function inlineAnnotationBoundary(root: HTMLElement, node: Node) {
   const element = elementFromNode(node);
-  const boundary = element?.closest<HTMLElement>(INLINE_ANNOTATION_BOUNDARY_SELECTOR);
+  const container = element?.closest<HTMLElement>(INLINE_ANNOTATION_CONTAINER_SELECTOR);
+  if (container && root.contains(container)) return container;
+  const boundary = element?.closest<HTMLElement>(INLINE_ANNOTATION_TEXT_BOUNDARY_SELECTOR);
   return boundary && root.contains(boundary) ? boundary : root;
 }
 

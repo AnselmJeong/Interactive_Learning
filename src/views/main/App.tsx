@@ -98,7 +98,7 @@ function continueButtonTitle(status: TutorPrefetchStatus | null) {
 }
 
 function batchStatusLabel(status: LearningMessageBatchStatus | null) {
-  if (!status || status.status === "idle") return "전체 메시지 미리 만들기";
+  if (!status || status.status === "idle") return "전체 메시지 일괄 제작";
   const progress = status.totalSteps > 0 ? `${status.completedSteps}/${status.totalSteps}` : `${status.completedSteps}`;
   if (status.status === "generating" || status.status === "queued") return `메시지 생성 중 ${progress}`;
   if (status.status === "partial") return status.preparedCount > 0 ? `일부 메시지 준비됨 ${status.preparedCount}` : "생성 중지됨";

@@ -42,6 +42,8 @@ type NormalizedTextMap = {
   rawLengths: number[];
 };
 
+const LEADING_LIST_MARKER_RE = /^\s*(?:(?:0?[1-9]|[1-9]\d)(?:[.)\u3001\uff0e]\s*|\s+)|[\u2460-\u2473]\s*)/u;
+
 function elementFromNode(node: Node) {
   return node.nodeType === Node.ELEMENT_NODE ? (node as Element) : node.parentElement;
 }
@@ -56,6 +58,23 @@ export function normalizeAnchorText(value: string) {
 
 export function normalizedAnchorKey(value: string) {
   return normalizeAnchorText(value).toLocaleLowerCase();
+}
+
+function selectedTextSearchCandidates(value: string) {
+  const normalized = normalizeAnchorText(value);
+  const candidates = [normalized];
+  const withoutListMarker = normalizeAnchorText(normalized.replace(LEADING_LIST_MARKER_RE, ""));
+  if (withoutListMarker && normalizedAnchorKey(withoutListMarker) !== normalizedAnchorKey(normalized)) {
+    candidates.push(withoutListMarker);
+  }
+  return candidates.filter(Boolean);
+}
+
+function acceptedNormalizedKeys(selectedText: string, normalizedText: string) {
+  return new Set([
+    normalizedText,
+    ...selectedTextSearchCandidates(selectedText).map((candidate) => normalizedAnchorKey(candidate)),
+  ].filter(Boolean));
 }
 
 function normalizeWithMap(value: string): NormalizedTextMap {
@@ -99,7 +118,7 @@ function findExactMatches(scopeText: string, selectedText: string): TextMatch[] 
   return matches;
 }
 
-export function findTextMatches(scopeText: string, selectedText: string): TextMatch[] {
+function findNormalizedTextMatches(scopeText: string, selectedText: string): TextMatch[] {
   const normalizedNeedle = normalizedAnchorKey(selectedText);
   if (!normalizedNeedle) return [];
 
@@ -117,7 +136,15 @@ export function findTextMatches(scopeText: string, selectedText: string): TextMa
     }
     matchIndex = normalizedScope.text.indexOf(normalizedNeedle, matchIndex + Math.max(1, normalizedNeedle.length));
   }
-  return matches.length ? matches : findExactMatches(scopeText, selectedText);
+  return matches;
+}
+
+export function findTextMatches(scopeText: string, selectedText: string): TextMatch[] {
+  for (const candidate of selectedTextSearchCandidates(selectedText)) {
+    const matches = findNormalizedTextMatches(scopeText, candidate);
+    if (matches.length) return matches;
+  }
+  return findExactMatches(scopeText, selectedText);
 }
 
 function textOffsetForBoundary(root: HTMLElement, container: Node, offset: number) {
@@ -140,6 +167,14 @@ function occurrenceForOffset(scopeText: string, selectedText: string, startOffse
   if (exactIndex >= 0) return exactIndex;
   const before = matches.filter((match) => match.startOffset < startOffset).length;
   return Math.min(before, matches.length - 1);
+}
+
+function bestMatchNearOffset(scopeText: string, selectedText: string, startOffset: number) {
+  const matches = findTextMatches(scopeText, selectedText);
+  if (!matches.length) return null;
+  return matches
+    .map((match, index) => ({ match, index }))
+    .sort((a, b) => Math.abs(a.match.startOffset - startOffset) - Math.abs(b.match.startOffset - startOffset))[0] || null;
 }
 
 function selectionScope(surface: MaterialAnnotationSurface, messageId?: string | null, blockId?: string | null): TextSelectionAnchor["scope"] {
@@ -169,6 +204,12 @@ export function buildTextSelectionAnchor(input: {
   if (startOffset == null || endOffset == null || endOffset <= startOffset) return null;
 
   const scopeText = input.root.textContent || "";
+  const matched = bestMatchNearOffset(scopeText, selectedText, startOffset);
+  const anchorStartOffset = matched?.match.startOffset ?? startOffset;
+  const anchorEndOffset = matched?.match.endOffset ?? endOffset;
+  const anchorSelectedText = matched
+    ? normalizeAnchorText(scopeText.slice(matched.match.startOffset, matched.match.endOffset))
+    : selectedText;
   return {
     version: 1,
     surface: input.surface,
@@ -176,13 +217,13 @@ export function buildTextSelectionAnchor(input: {
     chunkId: input.chunkId,
     messageId: input.messageId || null,
     blockId: input.blockId || null,
-    selectedText,
-    normalizedText: normalizedAnchorKey(selectedText),
-    occurrence: occurrenceForOffset(scopeText, rawSelectedText, startOffset),
-    startOffset,
-    endOffset,
-    prefix: normalizeAnchorText(scopeText.slice(Math.max(0, startOffset - 80), startOffset)),
-    suffix: normalizeAnchorText(scopeText.slice(endOffset, Math.min(scopeText.length, endOffset + 80))),
+    selectedText: anchorSelectedText,
+    normalizedText: normalizedAnchorKey(anchorSelectedText),
+    occurrence: matched?.index ?? occurrenceForOffset(scopeText, rawSelectedText, startOffset),
+    startOffset: anchorStartOffset,
+    endOffset: anchorEndOffset,
+    prefix: normalizeAnchorText(scopeText.slice(Math.max(0, anchorStartOffset - 80), anchorStartOffset)),
+    suffix: normalizeAnchorText(scopeText.slice(anchorEndOffset, Math.min(scopeText.length, anchorEndOffset + 80))),
     scopeTextLength: scopeText.length,
   };
 }
@@ -211,10 +252,11 @@ export function resolveTextSelectionAnchor(input: {
   const selectedText = anchor?.selectedText || input.annotation.selectedText;
   const normalizedText = anchor?.normalizedText || input.annotation.normalizedText || normalizedAnchorKey(selectedText);
   if (!selectedText || !normalizedText) return null;
+  const acceptedKeys = acceptedNormalizedKeys(selectedText, normalizedText);
 
   if (anchor && anchor.startOffset >= 0 && anchor.endOffset > anchor.startOffset && anchor.endOffset <= scopeText.length) {
     const candidateText = scopeText.slice(anchor.startOffset, anchor.endOffset);
-    if (normalizedAnchorKey(candidateText) === normalizedText) {
+    if (acceptedKeys.has(normalizedAnchorKey(candidateText))) {
       return {
         startOffset: anchor.startOffset,
         endOffset: anchor.endOffset,
@@ -225,7 +267,7 @@ export function resolveTextSelectionAnchor(input: {
   }
 
   const matches = findTextMatches(scopeText, selectedText)
-    .filter((match) => normalizedAnchorKey(scopeText.slice(match.startOffset, match.endOffset)) === normalizedText);
+    .filter((match) => acceptedKeys.has(normalizedAnchorKey(scopeText.slice(match.startOffset, match.endOffset))));
   if (!matches.length) return null;
 
   if (!anchor) {
