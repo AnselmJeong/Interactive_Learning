@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import type { MaterialAnnotation } from "../../shared/artifact-types";
-import { inlineAnnotationTagName, inlineClasses, isInteractiveInlineAnnotation } from "./annotation-inline-links";
+import {
+  inlineAnnotationTagName,
+  inlineClasses,
+  isInteractiveInlineAnnotation,
+  resolveTextNodeRangeOffsets,
+} from "./annotation-inline-links";
 
 function annotation(kind: MaterialAnnotation["kind"]): MaterialAnnotation {
   return {
@@ -47,5 +52,25 @@ describe("annotation inline links", () => {
     expect(inlineAnnotationTagName(highlight)).toBe("mark");
     expect(inlineClasses(highlight, null)).toContain("annotation-inline-mark");
     expect(inlineClasses(highlight, null)).not.toContain("annotation-inline-link");
+  });
+
+  test("starts annotation ranges in the following text node at paragraph boundaries", () => {
+    const labelLength = "함께 읽기".length;
+    const paragraphLength = "산술의 토큰은 숫자입니다.".length;
+
+    expect(resolveTextNodeRangeOffsets([labelLength, paragraphLength], labelLength, labelLength + "산술의".length)).toEqual({
+      start: { nodeIndex: 1, nodeOffset: 0 },
+      end: { nodeIndex: 1, nodeOffset: "산술의".length },
+    });
+  });
+
+  test("keeps range ends on the previous text node at paragraph boundaries", () => {
+    const firstParagraphLength = "첫 문장입니다.".length;
+    const secondParagraphLength = "둘째 문장입니다.".length;
+
+    expect(resolveTextNodeRangeOffsets([firstParagraphLength, secondParagraphLength], 0, firstParagraphLength)).toEqual({
+      start: { nodeIndex: 0, nodeOffset: 0 },
+      end: { nodeIndex: 0, nodeOffset: firstParagraphLength },
+    });
   });
 });

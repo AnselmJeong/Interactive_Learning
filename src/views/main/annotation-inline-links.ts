@@ -32,6 +32,31 @@ function allTextNodes(root: HTMLElement) {
   return nodes;
 }
 
+export function resolveTextNodeRangeOffsets(textLengths: number[], startOffset: number, endOffset: number) {
+  if (endOffset <= startOffset) return null;
+
+  let cursor = 0;
+  let start: { nodeIndex: number; nodeOffset: number } | null = null;
+  let end: { nodeIndex: number; nodeOffset: number } | null = null;
+
+  for (let nodeIndex = 0; nodeIndex < textLengths.length; nodeIndex += 1) {
+    const length = Math.max(0, textLengths[nodeIndex] || 0);
+    const next = cursor + length;
+
+    if (!start && length > 0 && startOffset >= cursor && startOffset < next) {
+      start = { nodeIndex, nodeOffset: startOffset - cursor };
+    }
+    if (!end && length > 0 && endOffset > cursor && endOffset <= next) {
+      end = { nodeIndex, nodeOffset: endOffset - cursor };
+      break;
+    }
+
+    cursor = next;
+  }
+
+  return start && end ? { start, end } : null;
+}
+
 function textNodesForOffsets(root: HTMLElement, startOffset: number, endOffset: number) {
   const nodes: Text[] = [];
   let cursor = 0;
@@ -45,30 +70,15 @@ function textNodesForOffsets(root: HTMLElement, startOffset: number, endOffset: 
 
 function rangeForTextOffsets(root: HTMLElement, startOffset: number, endOffset: number) {
   if (endOffset <= startOffset) return null;
-  let cursor = 0;
-  let startNode: Text | null = null;
-  let startNodeOffset = 0;
-  let endNode: Text | null = null;
-  let endNodeOffset = 0;
-
-  for (const node of allTextNodes(root)) {
-    const next = cursor + node.data.length;
-    if (!startNode && startOffset >= cursor && startOffset <= next) {
-      startNode = node;
-      startNodeOffset = Math.max(0, Math.min(node.data.length, startOffset - cursor));
-    }
-    if (!endNode && endOffset >= cursor && endOffset <= next) {
-      endNode = node;
-      endNodeOffset = Math.max(0, Math.min(node.data.length, endOffset - cursor));
-      break;
-    }
-    cursor = next;
-  }
+  const textNodes = allTextNodes(root);
+  const offsets = resolveTextNodeRangeOffsets(textNodes.map((node) => node.data.length), startOffset, endOffset);
+  const startNode = offsets ? textNodes[offsets.start.nodeIndex] : null;
+  const endNode = offsets ? textNodes[offsets.end.nodeIndex] : null;
 
   if (!startNode || !endNode) return null;
   const range = root.ownerDocument.createRange();
-  range.setStart(startNode, startNodeOffset);
-  range.setEnd(endNode, endNodeOffset);
+  range.setStart(startNode, offsets!.start.nodeOffset);
+  range.setEnd(endNode, offsets!.end.nodeOffset);
   return range;
 }
 
