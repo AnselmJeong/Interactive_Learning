@@ -26,6 +26,7 @@ import { placeAnnotationsForMessages, shouldRenderInlineAnnotation } from "./ann
 import { annotationCardId, focusAnnotationInline } from "./annotation-inline-links";
 import { playAnswerReadySound, primeAnswerReadySound } from "./notification-sound";
 import { continuePrefetchStateForPreparedRoute, continueReadyFocusKeyForPreparedRoute, nextPrefetchStatusForSession } from "./prefetch-status";
+import { hasExpandedTextSelection, shouldAutoFocusReadyAction } from "./focus-management";
 import { shouldSubmitTextArea } from "./submit-shortcut";
 
 type RpcRequest = (method: string, params: unknown) => Promise<unknown>;
@@ -779,6 +780,7 @@ export function App({ request }: { request: RpcRequest }) {
   const tutorSurfaceRef = useRef<HTMLElement | null>(null);
   const continueButtonRef = useRef<HTMLButtonElement | null>(null);
   const lastFocusedReadyActionKeyRef = useRef<string | null>(null);
+  const userPointerDownRef = useRef(false);
   const answerReadyNotificationPendingRef = useRef(false);
   const latestNotifiedAssistantIdRef = useRef<string | null>(null);
   const latestAlignedAssistantKeyRef = useRef<string | null>(null);
@@ -804,6 +806,21 @@ export function App({ request }: { request: RpcRequest }) {
     const onChange = (event: MediaQueryListEvent) => setSystemThemeDark(event.matches);
     media.addEventListener("change", onChange);
     return () => media.removeEventListener("change", onChange);
+  }, []);
+
+  useEffect(() => {
+    const markPointerDown = () => { userPointerDownRef.current = true; };
+    const clearPointerDown = () => { userPointerDownRef.current = false; };
+    window.addEventListener("pointerdown", markPointerDown, true);
+    window.addEventListener("pointerup", clearPointerDown, true);
+    window.addEventListener("pointercancel", clearPointerDown, true);
+    window.addEventListener("blur", clearPointerDown);
+    return () => {
+      window.removeEventListener("pointerdown", markPointerDown, true);
+      window.removeEventListener("pointerup", clearPointerDown, true);
+      window.removeEventListener("pointercancel", clearPointerDown, true);
+      window.removeEventListener("blur", clearPointerDown);
+    };
   }, []);
 
   useEffect(() => {
@@ -1756,7 +1773,6 @@ export function App({ request }: { request: RpcRequest }) {
     if (
       viewMode !== "chat"
       || !showProgressActions
-      || busy
       || selectedModuleWaiting
       || continuePrefetchState !== "ready"
       || !readyContinueFocusKey
@@ -1764,9 +1780,30 @@ export function App({ request }: { request: RpcRequest }) {
       lastFocusedReadyActionKeyRef.current = null;
       return;
     }
+    // Wait through the tutor's foreground turn without forgetting an already handled ready key.
+    // This preserves normal post-answer autofocus while preventing a later busy toggle from
+    // retrying a key that was deliberately suppressed during user input or text selection.
+    if (busy) return;
     if (lastFocusedReadyActionKeyRef.current === readyContinueFocusKey) return;
+    // Consume this ready key even when focus is suppressed. A later unrelated render must not
+    // steal focus after the learner finishes typing or releases an existing selection.
     lastFocusedReadyActionKeyRef.current = readyContinueFocusKey;
-    continueButtonRef.current?.focus({ preventScroll: true });
+    const target = continueButtonRef.current;
+    const activeElement = document.activeElement;
+    const activeElementIsIdle = !activeElement
+      || activeElement === document.body
+      || activeElement === document.documentElement
+      || activeElement === target;
+    const protectedSurfaceOpen = Boolean(document.querySelector(
+      '[role="dialog"], .selection-toolbar, .lookup-popover, .selection-side-chat'
+    ));
+    if (!shouldAutoFocusReadyAction({
+      pointerDown: userPointerDownRef.current,
+      hasTextSelection: hasExpandedTextSelection(window.getSelection()),
+      activeElementIsIdle,
+      protectedSurfaceOpen,
+    })) return;
+    target?.focus({ preventScroll: true });
   }, [busy, continuePrefetchState, readyContinueFocusKey, selectedModuleWaiting, showProgressActions, viewMode]);
   const canContinueFromCompletedModule = Boolean(
     !sessionReadOnly
