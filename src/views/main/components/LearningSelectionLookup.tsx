@@ -183,11 +183,14 @@ export function LearningSelectionLookup({
       x: point.x,
       y: point.y,
     };
-    setSideChat({
-      key: `annotation:${annotation.id}`,
+    const key = `annotation:${annotation.id}`;
+    const existingDraft = sideChatDraftsRef.current.get(key);
+    setSideChat(existingDraft || {
+      key,
       selection,
       selectedText: annotation.selectedText,
       annotationId: annotation.id,
+      hasUnsavedChanges: false,
       thread: questionThreadFromResult(annotation.result, annotation.createdAt),
       status: "ready",
       x: point.x,
@@ -273,7 +276,7 @@ export function LearningSelectionLookup({
       const key = sideChatKey(nextSelection);
       const existing = sideChatDraftsRef.current.get(key);
       const panelPoint = clampSideChatPoint(sourceSelection.x - 488, sourceSelection.y);
-      if (sideChatRef.current && !sideChatRef.current.annotationId && (sideChatRef.current.thread || sideChatRef.current.pendingUserText)) {
+      if (sideChatRef.current?.hasUnsavedChanges || sideChatRef.current?.pendingUserText) {
         sideChatDraftsRef.current.set(sideChatRef.current.key, sideChatRef.current);
       }
       setSelection(nextSelection);
@@ -378,28 +381,32 @@ export function LearningSelectionLookup({
     if (!materialId || panel.status === "asking" || panel.status === "saving") return;
     const normalized = userText.replace(/\s+/g, " ").trim();
     if (!normalized) return;
-    const askingPanel = { ...panel, status: "asking" as const, pendingUserText: normalized, error: undefined };
+    const askingPanel = {
+      ...panel,
+      status: "asking" as const,
+      pendingUserText: normalized,
+      hasUnsavedChanges: true,
+      error: undefined,
+    };
     setSideChat((current) => current?.key === panel.key ? askingPanel : current);
-    if (!panel.annotationId) sideChatDraftsRef.current.set(panel.key, askingPanel);
+    sideChatDraftsRef.current.set(panel.key, askingPanel);
     try {
       const response = (await request("annotations.askTurn", {
         materialId,
         chunkId: panel.selection.chunkId,
         selectedText: panel.selection.text,
         userText: normalized,
-        ...(panel.annotationId ? { annotationId: panel.annotationId } : panel.thread ? { draftThread: panel.thread } : {}),
-      })) as { thread: QuestionThreadResult; annotation?: MaterialAnnotation };
+        ...(panel.thread ? { draftThread: panel.thread } : {}),
+      })) as { thread: QuestionThreadResult };
       const readyPanel: SideChatSession = {
         ...panel,
         thread: response.thread,
-        annotationId: response.annotation?.id || panel.annotationId,
+        hasUnsavedChanges: true,
         status: "ready",
         pendingUserText: undefined,
-        error: response.annotation?.syncWarning,
+        error: undefined,
       };
-      if (response.annotation) onAnnotationSaved?.(response.annotation);
-      if (!readyPanel.annotationId) sideChatDraftsRef.current.set(panel.key, readyPanel);
-      else sideChatDraftsRef.current.delete(panel.key);
+      sideChatDraftsRef.current.set(panel.key, readyPanel);
       setSideChat((current) => current?.key === panel.key ? readyPanel : current);
     } catch (error) {
       const failedPanel: SideChatSession = {
@@ -408,32 +415,39 @@ export function LearningSelectionLookup({
         pendingUserText: normalized,
         error: (error as Error).message || String(error),
       };
-      if (!panel.annotationId) sideChatDraftsRef.current.set(panel.key, failedPanel);
+      sideChatDraftsRef.current.set(panel.key, failedPanel);
       setSideChat((current) => current?.key === panel.key ? failedPanel : current);
     }
   }
 
   async function saveSideChat(panel: SideChatSession) {
-    if (!materialId || !panel.thread || panel.annotationId || panel.status === "asking" || panel.status === "saving") return;
+    if (!materialId || !panel.thread || !panel.hasUnsavedChanges || panel.status === "asking" || panel.status === "saving") return;
     setSideChat((current) => current?.key === panel.key ? { ...current, status: "saving", error: undefined } : current);
     try {
-      const saved = (await request("annotations.save", {
-        materialId,
-        chunkId: panel.selection.chunkId,
-        surface: "chat",
-        anchorMessageId: panel.selection.anchorMessageId || null,
-        anchorBlockId: panel.selection.anchorBlockId || null,
-        textAnchor: panel.selection.textAnchor || null,
-        kind: "question",
-        selectedText: panel.selection.text,
-        result: panel.thread,
-        sourceMeta: panel.thread.sourceMeta,
-      })) as MaterialAnnotation;
+      const saved = (await request(
+        panel.annotationId ? "annotations.updateQuestionThread" : "annotations.save",
+        panel.annotationId ? {
+          annotationId: panel.annotationId,
+          thread: panel.thread,
+        } : {
+          materialId,
+          chunkId: panel.selection.chunkId,
+          surface: "chat",
+          anchorMessageId: panel.selection.anchorMessageId || null,
+          anchorBlockId: panel.selection.anchorBlockId || null,
+          textAnchor: panel.selection.textAnchor || null,
+          kind: "question",
+          selectedText: panel.selection.text,
+          result: panel.thread,
+          sourceMeta: panel.thread.sourceMeta,
+        },
+      )) as MaterialAnnotation;
       onAnnotationSaved?.(saved);
       sideChatDraftsRef.current.delete(panel.key);
       setSideChat((current) => current?.key === panel.key ? {
         ...current,
         annotationId: saved.id,
+        hasUnsavedChanges: false,
         thread: saved.result.kind === "question_thread" ? saved.result : current.thread,
         status: "ready",
         error: saved.syncWarning,
@@ -450,12 +464,15 @@ export function LearningSelectionLookup({
 
   function closeSideChat(panel = sideChatRef.current) {
     if (!panel) return;
-    if (!panel.annotationId && (panel.thread || panel.pendingUserText)) {
+    if (panel.hasUnsavedChanges || panel.pendingUserText) {
       const stashed = panel.status === "asking" ? { ...panel, status: "ready" as const, pendingUserText: undefined } : panel;
       sideChatDraftsRef.current.set(panel.key, stashed);
       setClosedDraft(stashed);
       if (closedDraftTimerRef.current != null) window.clearTimeout(closedDraftTimerRef.current);
-      closedDraftTimerRef.current = window.setTimeout(() => setClosedDraft(null), 7000);
+      closedDraftTimerRef.current = window.setTimeout(() => {
+        setClosedDraft(null);
+        if (stashed.annotationId) sideChatDraftsRef.current.delete(stashed.key);
+      }, 7000);
     }
     setSideChat(null);
     window.getSelection()?.removeAllRanges();
@@ -609,7 +626,7 @@ export function LearningSelectionLookup({
       ) : null}
       {closedDraft ? (
         <div className="side-chat-undo-toast" role="status">
-          <span>저장하지 않은 사이드 대화를 닫았습니다.</span>
+          <span>{closedDraft.annotationId ? "저장하지 않은 추가 대화를 닫았습니다." : "저장하지 않은 사이드 대화를 닫았습니다."}</span>
           <button
             type="button"
             onClick={() => {

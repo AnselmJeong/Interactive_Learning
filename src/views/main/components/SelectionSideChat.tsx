@@ -10,6 +10,7 @@ export type SelectionSideChatState = {
   selectedText: string;
   thread?: QuestionThreadResult;
   annotationId?: string;
+  hasUnsavedChanges?: boolean;
   status: "ready" | "asking" | "saving" | "error";
   pendingUserText?: string;
   error?: string;
@@ -55,6 +56,8 @@ export function SelectionSideChat({
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const transcriptRef = useRef<HTMLDivElement | null>(null);
   const busy = panel.status === "asking" || panel.status === "saving";
+  const saved = Boolean(panel.annotationId) && !panel.hasUnsavedChanges;
+  const saveLabel = saved ? "저장됨" : panel.annotationId ? "변경 저장" : "저장";
 
   useEffect(() => {
     composerRef.current?.focus();
@@ -127,14 +130,14 @@ export function SelectionSideChat({
         <div className="side-chat-header-actions">
           <button
             type="button"
-            className={panel.annotationId ? "saved" : "save"}
+            className={saved ? "saved" : "save"}
             onClick={onSave}
-            disabled={Boolean(panel.annotationId) || !panel.thread?.messages.length || busy}
-            aria-label={panel.annotationId ? "주석으로 저장됨" : "주석으로 저장"}
-            title={panel.annotationId ? "저장됨 · 이후 대화는 자동 저장됩니다" : "주석으로 저장"}
+            disabled={!panel.hasUnsavedChanges || !panel.thread?.messages.length || busy}
+            aria-label={saved ? "주석으로 저장됨" : panel.annotationId ? "추가 대화 저장" : "주석으로 저장"}
+            title={saved ? "저장됨" : panel.annotationId ? "추가한 대화를 기존 주석에 저장" : "주석으로 저장"}
           >
             <Save size={15} />
-            <span>{panel.annotationId ? "저장됨" : "저장"}</span>
+            <span>{saveLabel}</span>
           </button>
           <button type="button" onClick={onClose} aria-label="사이드 대화 닫기" title="닫기">
             <X size={16} />

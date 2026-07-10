@@ -154,9 +154,8 @@ export type AppRPC = {
           selectedText: string;
           userText: string;
           draftThread?: QuestionThreadResult;
-          annotationId?: string;
         };
-        response: { thread: QuestionThreadResult; annotation?: MaterialAnnotation };
+        response: { thread: QuestionThreadResult };
       };
       "annotations.lookup": { params: { materialId: string; chunkId: string; selectedText: string }; response: LookupResult };
       "annotations.findImages": { params: { materialId: string; chunkId: string; selectedText: string }; response: ImageLookupResult };
@@ -176,6 +175,7 @@ export type AppRPC = {
         response: MaterialAnnotation;
       };
       "annotations.updateNote": { params: { annotationId: string; note: string }; response: MaterialAnnotation };
+      "annotations.updateQuestionThread": { params: { annotationId: string; thread: QuestionThreadResult }; response: MaterialAnnotation };
       "annotations.delete": { params: { annotationId: string }; response: { deleted: boolean; syncWarning?: string } };
       "sessions.list": { params: { materialId: string }; response: SessionSummary[] };
       "sessions.start": { params: { materialId: string; mode: "new" | "continue"; sessionId?: string }; response: { session: SessionSnapshot; context: TutorContext; messageSet: LearningMessageSetSummary; firstTurn?: TutorTurnOutput } };

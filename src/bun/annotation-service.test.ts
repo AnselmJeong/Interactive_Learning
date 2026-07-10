@@ -5,8 +5,9 @@ import { join } from "node:path";
 import type { ChatParams } from "./openai-compatible-client";
 import type { MaterialArtifacts } from "../shared/artifact-types";
 import { closeDbForTests, getDb } from "./project-db";
-import { saveMaterialAnnotation } from "./annotation-store";
+import { getMaterialAnnotation, saveMaterialAnnotation } from "./annotation-store";
 import { AnnotationService } from "./annotation-service";
+import { questionThreadFromResult } from "../shared/question-thread";
 
 function artifacts(): MaterialArtifacts {
   return {
@@ -126,7 +127,7 @@ describe("annotation side-chat service", () => {
     ]);
   });
 
-  test("continues a legacy annotation in place and writes the snapshot", async () => {
+  test("keeps a continued legacy thread as a draft until explicitly saved", async () => {
     const legacy = saveMaterialAnnotation({
       materialId: "material-1",
       chunkId: "chunk-1",
@@ -146,48 +147,46 @@ describe("annotation side-chat service", () => {
       },
       sourceMeta: [],
     });
+    if (legacy.result.kind !== "question") throw new Error("Expected a legacy question annotation");
 
     const response = await service.askTurn({
       materialId: "material-1",
       chunkId: "chunk-1",
       selectedText: "selected claim",
       userText: "후속 질문",
-      annotationId: legacy.id,
+      draftThread: questionThreadFromResult(legacy.result, legacy.createdAt),
     });
 
-    expect(response.annotation?.id).toBe(legacy.id);
-    expect(response.annotation?.result.kind).toBe("question_thread");
     expect(response.thread.messages.map((message) => message.content)).toEqual(["첫 질문", "기존 답변", "후속 질문", "첫 답변"]);
+    expect(getMaterialAnnotation(legacy.id)?.result.kind).toBe("question");
+
+    const saved = await service.updateQuestionThread({ annotationId: legacy.id, thread: response.thread });
+    expect(saved.id).toBe(legacy.id);
+    expect(saved.result.kind).toBe("question_thread");
     const snapshotPath = join(tempRoot, "project-1", "materials", "material-1", "annotations.json");
     const snapshot = JSON.parse(await readFile(snapshotPath, "utf8"));
     expect(snapshot[0]?.id).toBe(legacy.id);
     expect(snapshot[0]?.result?.kind).toBe("question_thread");
   });
 
-  test("rejects an annotation from another material context before calling the provider", async () => {
+  test("rejects explicit thread updates for non-question annotations", async () => {
     const saved = saveMaterialAnnotation({
       materialId: "material-1",
       chunkId: "chunk-1",
-      kind: "question",
+      kind: "highlight",
       selectedText: "selected claim",
-      result: {
-        kind: "question",
-        title: "질문",
-        body: "답변",
-        query: "selected claim",
-        provider: "ai",
-        retrievedAt: "2026-07-09T00:00:00.000Z",
-        sourceMeta: [],
-      },
+      result: { kind: "highlight", style: "yellow" },
       sourceMeta: [],
     });
-    await expect(service.askTurn({
-      materialId: "other-material",
+
+    const draft = await service.askTurn({
+      materialId: "material-1",
       chunkId: "chunk-1",
       selectedText: "selected claim",
-      userText: "후속 질문",
-      annotationId: saved.id,
-    })).rejects.toThrow("does not belong");
-    expect(calls).toHaveLength(0);
+      userText: "질문",
+    });
+
+    await expect(service.updateQuestionThread({ annotationId: saved.id, thread: draft.thread }))
+      .rejects.toThrow("Only question annotations");
   });
 });

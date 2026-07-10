@@ -363,6 +363,7 @@ const rpc = BrowserView.defineRPC<AppRPC>({
       "annotations.findImages": (params) => annotations.findImages(params),
       "annotations.save": (params) => annotations.save(params),
       "annotations.updateNote": (params) => annotations.updateNote(params),
+      "annotations.updateQuestionThread": (params) => annotations.updateQuestionThread(params),
       "annotations.delete": ({ annotationId }) => annotations.delete(annotationId),
       "sessions.list": ({ materialId }) => tutor.listSessions(materialId),
       "sessions.start": ({ materialId, mode, sessionId }) => tutor.start(materialId, { mode, sessionId }),

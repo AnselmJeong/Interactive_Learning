@@ -1,7 +1,7 @@
 import { ChevronDown, LocateFixed, MessageSquare, Trash2 } from "lucide-react";
 import { useState } from "react";
 import type { MaterialAnnotation } from "../../../shared/artifact-types";
-import { firstQuestion, questionCount, questionMessages } from "../../../shared/question-thread";
+import { questionMessages } from "../../../shared/question-thread";
 import { MarkdownContent } from "./MarkdownContent";
 
 type QuestionThreadAnnotationCardProps = {
@@ -13,16 +13,6 @@ type QuestionThreadAnnotationCardProps = {
   onLocate: (annotation: MaterialAnnotation) => boolean;
   onDelete: (annotationId: string) => void;
 };
-
-function updatedLabel(timestamp: number) {
-  const elapsed = Math.max(0, Date.now() - timestamp);
-  const minutes = Math.floor(elapsed / 60_000);
-  if (minutes < 1) return "방금 전";
-  if (minutes < 60) return `${minutes}분 전`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}시간 전`;
-  return new Date(timestamp).toLocaleDateString();
-}
 
 export function QuestionThreadAnnotationCard({
   annotation,
@@ -55,10 +45,31 @@ export function QuestionThreadAnnotationCard({
         >
           <span className="question-thread-label">사이드 대화</span>
           <strong>{annotation.selectedText}</strong>
-          <em>{firstQuestion(result)}</em>
-          <small>{questionCount(result)}개 질문 · {updatedLabel(annotation.updatedAt)}</small>
           <ChevronDown size={16} aria-hidden="true" />
         </button>
+        <div className="question-thread-header-actions">
+          <button
+            type="button"
+            className="annotation-card-icon-button"
+            onClick={() => {
+              const located = onLocate(annotation);
+              setLocateFailed(!located);
+            }}
+            title="원문 위치"
+            aria-label="원문 위치"
+          >
+            <LocateFixed size={14} />
+          </button>
+          <button
+            type="button"
+            className="annotation-card-icon-button danger"
+            onClick={() => onDelete(annotation.id)}
+            title="삭제"
+            aria-label="삭제"
+          >
+            <Trash2 size={14} />
+          </button>
+        </div>
       </header>
 
       <div id={contentId} className="question-thread-collapse" aria-hidden={!expanded}>
@@ -88,18 +99,6 @@ export function QuestionThreadAnnotationCard({
           <footer>
             <button type="button" className="primary" onClick={() => onContinue(annotation)}>
               <MessageSquare size={14} /> 대화 계속
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                const located = onLocate(annotation);
-                setLocateFailed(!located);
-              }}
-            >
-              <LocateFixed size={14} /> 원문 위치
-            </button>
-            <button type="button" className="danger" onClick={() => onDelete(annotation.id)}>
-              <Trash2 size={14} /> 삭제
             </button>
           </footer>
         </div>

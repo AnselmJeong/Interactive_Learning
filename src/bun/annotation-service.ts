@@ -19,7 +19,7 @@ import type {
   TextSelectionAnchor,
 } from "../shared/artifact-types";
 import type { AppSettings } from "../shared/settings-types";
-import { isQuestionThreadResult, questionThreadFromResult } from "../shared/question-thread";
+import { isQuestionThreadResult } from "../shared/question-thread";
 
 type ProviderClientContext = {
   publicSettings: AppSettings;
@@ -42,7 +42,11 @@ type SelectionQuestionInput = SelectionLookupInput & {
 type SelectionQuestionTurnInput = SelectionLookupInput & {
   userText: string;
   draftThread?: QuestionThreadResult;
-  annotationId?: string;
+};
+
+type UpdateQuestionThreadInput = {
+  annotationId: string;
+  thread: QuestionThreadResult;
 };
 
 type SaveLookupInput = {
@@ -820,31 +824,12 @@ export class AnnotationService {
     return this.aiAnswerSelectionQuestion(selectedText, question, context);
   }
 
-  async askTurn(input: SelectionQuestionTurnInput): Promise<{ thread: QuestionThreadResult; annotation?: MaterialAnnotation }> {
-    if (input.draftThread && input.annotationId) throw new Error("Provide either draftThread or annotationId, not both");
+  async askTurn(input: SelectionQuestionTurnInput): Promise<{ thread: QuestionThreadResult }> {
     const userText = input.userText.replace(/\s+/g, " ").trim().slice(0, SELECTION_QUESTION_CHARS);
     if (!userText) throw new Error("Question is empty");
 
-    let selectedText = normalizeSelectedPassage(input.selectedText, SELECTION_QUESTION_CONTEXT_CHARS);
-    let previousThread = validateDraftThread(input.draftThread);
-    let existingAnnotation = null;
-
-    if (input.annotationId) {
-      existingAnnotation = getMaterialAnnotation(input.annotationId);
-      if (!existingAnnotation) throw new Error("Annotation not found");
-      if (existingAnnotation.kind !== "question") throw new Error("Only question annotations can continue as a side chat");
-      if (existingAnnotation.materialId !== input.materialId || existingAnnotation.chunkId !== input.chunkId) {
-        throw new Error("Annotation does not belong to the requested material and chunk");
-      }
-      const requestedText = normalizeSelectedPassage(input.selectedText, SELECTION_QUESTION_CONTEXT_CHARS).toLowerCase();
-      const storedText = normalizeSelectedPassage(existingAnnotation.selectedText, SELECTION_QUESTION_CONTEXT_CHARS).toLowerCase();
-      if (requestedText !== storedText) throw new Error("Selected text does not match the saved annotation");
-      if (existingAnnotation.result.kind !== "question" && existingAnnotation.result.kind !== "question_thread") {
-        throw new Error("Saved annotation does not contain a question thread");
-      }
-      selectedText = normalizeSelectedPassage(existingAnnotation.selectedText, SELECTION_QUESTION_CONTEXT_CHARS);
-      previousThread = validateDraftThread(questionThreadFromResult(existingAnnotation.result, existingAnnotation.createdAt));
-    }
+    const selectedText = normalizeSelectedPassage(input.selectedText, SELECTION_QUESTION_CONTEXT_CHARS);
+    const previousThread = validateDraftThread(input.draftThread);
 
     if (!selectedText) throw new Error("Selected text is empty");
     if ((previousThread?.messages.length || 0) > QUESTION_THREAD_MAX_MESSAGES - 2) throw new Error("Side-chat has reached its storage limit");
@@ -871,11 +856,22 @@ export class AnnotationService {
       sourceMeta: answer.sourceMeta,
     };
 
-    if (!existingAnnotation) return { thread };
-    const updated = updateMaterialAnnotationResult(existingAnnotation.id, thread, thread.sourceMeta);
+    return { thread };
+  }
+
+  async updateQuestionThread(input: UpdateQuestionThreadInput) {
+    const existing = getMaterialAnnotation(input.annotationId);
+    if (!existing) throw new Error("Annotation not found");
+    if (existing.kind !== "question") throw new Error("Only question annotations can save a side-chat thread");
+    if (existing.result.kind !== "question" && existing.result.kind !== "question_thread") {
+      throw new Error("Saved annotation does not contain a question thread");
+    }
+    const thread = validateDraftThread(input.thread);
+    if (!thread) throw new Error("Side-chat draft is invalid");
+    const updated = updateMaterialAnnotationResult(existing.id, thread, thread.sourceMeta);
     if (!updated) throw new Error("Annotation update failed");
     const syncWarning = await writeAnnotationsSnapshotRecoverable(updated.materialId);
-    return { thread, annotation: syncWarning ? { ...updated, syncWarning } : updated };
+    return syncWarning ? { ...updated, syncWarning } : updated;
   }
 
   async lookup(input: SelectionLookupInput): Promise<LookupResult> {

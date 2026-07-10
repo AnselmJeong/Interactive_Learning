@@ -92,9 +92,9 @@ flowchart LR
 
 1. 저장 전에는 현재 앱 실행 동안만 유지되는 draft로 취급한다.
 2. `주석으로 저장`을 누르면 question annotation 한 건을 생성한다.
-3. 저장 이후의 추가 질문과 답변은 같은 annotation에 자동 반영한다.
+3. 저장 이후의 추가 질문과 답변도 draft로 유지하고, 사용자가 `변경 저장`을 눌렀을 때만 같은 annotation에 반영한다.
 4. 저장된 annotation의 `대화 계속`을 누르면 동일한 history로 side-chat 창을 다시 연다.
-5. 저장하지 않은 대화를 닫으면 즉시 파기하지 않고 Undo toast로 한 번 복원할 수 있게 한다.
+5. 저장하지 않은 대화를 닫으면 Undo toast로 한 번 복원할 수 있게 하되, 저장본에 추가한 draft는 Undo 시간이 지나면 폐기한다.
 
 ## 💾 데이터 모델과 호환성
 
@@ -152,7 +152,7 @@ function questionMessages(result: LookupResult | QuestionThreadResult) {
 }
 ```
 
-레거시 데이터를 읽는 시점에 DB를 수정하지 않는다. 사용자가 `대화 계속`을 선택하고 새 턴을 추가할 때만 `question_thread` 형식으로 갱신한다.
+레거시 데이터를 읽거나 새 턴을 추가하는 시점에는 DB를 수정하지 않는다. 사용자가 추가된 대화를 명시적으로 저장할 때만 `question_thread` 형식으로 갱신한다.
 
 ## 🌐 RPC와 AI context
 
@@ -168,20 +168,16 @@ function questionMessages(result: LookupResult | QuestionThreadResult) {
     selectedText: string;
     userText: string;
     draftThread?: QuestionThreadResult;
-    annotationId?: string;
   };
   response: {
     thread: QuestionThreadResult;
-    annotation?: MaterialAnnotation;
   };
 };
 ```
 
-`draftThread`와 `annotationId`는 동시에 받지 않는다.
-
-- `annotationId` 없음: 전달된 draft를 검증하고 새 thread만 반환
-- `annotationId` 있음: DB에서 annotation과 thread를 읽고 새 턴을 추가한 뒤 snapshot까지 갱신
-- annotation의 material, chunk, kind가 요청과 일치하지 않으면 거부
+- 전달된 draft를 검증하고 새 thread만 반환하며 annotation을 자동 갱신하지 않음
+- 저장된 대화를 재개할 때도 UI가 저장본을 draft로 전달함
+- 별도의 `annotations.updateQuestionThread`가 사용자의 명시적 저장 때만 기존 annotation과 snapshot을 갱신
 - client가 전달한 provider 또는 model 값을 실행 설정으로 신뢰하지 않음
 
 ### Prompt 구성
@@ -224,7 +220,7 @@ AI 요청은 다음 순서로 구성한다.
 - assistant 메시지는 별도 카드 없이 본문형으로 표시
 - 선택 텍스트는 한 줄 ellipsis가 기본이며 명시적으로 펼칠 수 있음
 - `주석으로 저장`은 header의 단일 주요 작업으로 유지
-- 저장 후에는 버튼을 `저장됨` 상태로 바꾸고 이후 변경은 자동 저장
+- 저장 후에는 버튼을 `저장됨` 상태로 바꾸고, 새 턴이 생기면 `변경 저장`으로 다시 활성화
 - transcript 안에 카드나 별도 accordion을 중첩하지 않음
 
 ### 상호작용과 접근성
@@ -313,7 +309,8 @@ accordion header는 실제 `button`을 사용하고 `aria-expanded`, `aria-contr
 - [ ] 첫 질문 뒤 두 번째 질문이 앞선 assistant answer를 AI history로 전달함
 - [ ] 저장 전 thread가 `annotations.askTurn` 응답으로 누적됨
 - [ ] 저장된 annotation에 새 턴을 추가하면 같은 annotation id가 유지됨
-- [ ] 저장된 갱신이 `annotations.json` snapshot에 반영됨
+- [ ] 후속 턴 생성만으로는 저장된 annotation과 snapshot이 바뀌지 않음
+- [ ] `변경 저장`을 선택한 뒤에만 갱신이 `annotations.json` snapshot에 반영됨
 - [ ] 앱 재실행 후 전체 transcript가 복원됨
 - [ ] 기존 `result.kind === "question"` annotation이 정상 표시됨
 - [ ] 레거시 annotation에 새 턴을 추가하면 `question_thread`로 변환됨
@@ -347,7 +344,7 @@ bun test
 - Side chat은 메인 tutor의 진행 대화가 아니다.
 - 선택 텍스트와 side-chat history가 대화의 경계를 정의한다.
 - 저장은 사용자가 명시적으로 선택한다.
-- 한 번 저장한 thread의 후속 턴은 자동 저장한다.
+- 한 번 저장한 thread의 후속 턴도 사용자가 `변경 저장`을 선택할 때만 반영한다.
 - 저장된 annotation은 기본적으로 접혀 있다.
 - 펼친 annotation에서 전체 기록을 보고 대화를 계속할 수 있다.
 - 초기 구현은 기존 annotation 저장 구조를 확장하며 새 DB table을 만들지 않는다.

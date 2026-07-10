@@ -1269,7 +1269,8 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   color: var(--ink);
   font-size: 13px;
 }
-.chat-annotation-card > header button {
+.chat-annotation-card > header > .annotation-card-icon-button,
+.question-thread-header-actions > .annotation-card-icon-button {
   width: 28px;
   min-height: 28px;
   border: 0;
@@ -1280,9 +1281,14 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   color: var(--muted);
   background: transparent;
 }
-.chat-annotation-card > header button:hover {
-  color: var(--danger);
+.chat-annotation-card > header > .annotation-card-icon-button:hover,
+.question-thread-header-actions > .annotation-card-icon-button:hover {
+  color: var(--ink);
   background: rgba(38, 36, 33, 0.08);
+}
+.chat-annotation-card > header > .annotation-card-icon-button.danger:hover,
+.question-thread-header-actions > .annotation-card-icon-button.danger:hover {
+  color: var(--danger);
 }
 .chat-annotation-card .markdown-content {
   color: var(--ink-soft);
@@ -1328,18 +1334,19 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   overflow: hidden;
 }
 .chat-annotation-card.question-thread > header {
-  display: block;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 4px;
 }
-.question-thread-toggle {
+.chat-annotation-card.question-thread .question-thread-toggle {
   width: 100%;
   min-height: 0;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   grid-template-areas:
     "label chevron"
-    "selection chevron"
-    "question chevron"
-    "meta chevron";
+    "selection chevron";
   gap: 3px 12px;
   border: 0;
   border-radius: 0;
@@ -1347,6 +1354,12 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   text-align: left;
   background: transparent;
   color: var(--ink);
+}
+.question-thread-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px 0 0;
 }
 .question-thread-toggle:hover { background: rgba(126, 161, 212, 0.08); }
 .question-thread-toggle .question-thread-label {
@@ -1364,22 +1377,6 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 13px;
-}
-.question-thread-toggle em {
-  grid-area: question;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--ink-soft);
-  font-size: 13.5px;
-  font-style: normal;
-  font-weight: 680;
-}
-.question-thread-toggle small {
-  grid-area: meta;
-  color: var(--muted);
-  font-size: 11.5px;
 }
 .question-thread-toggle > svg {
   grid-area: chevron;
@@ -1466,7 +1463,6 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   color: var(--ink-soft);
 }
 .question-thread-collapse footer button.primary { background: var(--question-accent); border-color: var(--question-accent); color: white; }
-.question-thread-collapse footer button.danger { margin-left: auto; color: var(--danger); }
 .answer-sources {
   margin-top: 14px;
   border-top: 1px solid var(--line);

@@ -333,10 +333,22 @@ function ChatSavedAnnotationCard({
       <header>
         <span>{annotationKindLabel(annotation.kind)}</span>
         {isQuestion ? null : <strong>{annotation.selectedText}</strong>}
-        <button type="button" onClick={() => onLocate(annotation)} title="원문 위치">
+        <button
+          type="button"
+          className="annotation-card-icon-button"
+          onClick={() => onLocate(annotation)}
+          title="원문 위치"
+          aria-label="원문 위치"
+        >
           <LocateFixed size={14} />
         </button>
-        <button type="button" onClick={() => onDelete(annotation.id)} title="삭제">
+        <button
+          type="button"
+          className="annotation-card-icon-button danger"
+          onClick={() => onDelete(annotation.id)}
+          title="삭제"
+          aria-label="삭제"
+        >
           <Trash2 size={14} />
         </button>
       </header>
