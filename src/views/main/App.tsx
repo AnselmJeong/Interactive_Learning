@@ -1679,7 +1679,9 @@ export function App({ request }: { request: RpcRequest }) {
   // the learner's current position and advances with each new chunk the tutor opens.
   const currentChunkId = context?.session.currentChunkId || null;
   const reachedChunks = coveredChunks + (currentChunkId && !context?.session.coveredChunkIds.includes(currentChunkId) ? 1 : 0);
-  const progressText = artifacts ? `${reachedChunks}/${totalChunks}` : "0/0";
+  const learningProgressValue = totalChunks ? Math.min(reachedChunks, totalChunks) : 0;
+  const progressText = artifacts ? `${learningProgressValue}/${totalChunks}` : "0/0";
+  const progressPercent = totalChunks ? Math.round((learningProgressValue / totalChunks) * 100) : 0;
   const materialMessageSets = activeMaterial ? messageSetsByMaterial[activeMaterial.id] || [] : [];
   const resumableSession = state.sessions.find((item) => item.status === "active") || null;
   const activeMessageSet = (session?.messageSetId ? materialMessageSets.find((item) => item.id === session.messageSetId) : null)
@@ -1687,15 +1689,20 @@ export function App({ request }: { request: RpcRequest }) {
     || null;
   const consumedPreparedMessages = session?.messages.filter((message) => Boolean(message.originPreparedMessageId)).length || 0;
   const unreadPreparedMessages = Math.max(0, (activeMessageSet?.completedMessages || 0) - consumedPreparedMessages);
-  const preparedMessagesText = activeMessageSet
-    ? activeMessageSet.status === "ready"
-      ? `${activeMessageSet.completedMessages}개 메시지 준비됨`
-      : `${activeMessageSet.completedMessages}/${activeMessageSet.totalMessages || "?"} 준비됨`
-    : "";
+  const preparedMessages = activeMessageSet?.completedMessages || 0;
+  const totalPreparedMessages = activeMessageSet?.totalMessages || 0;
+  const preparedProgressValue = totalPreparedMessages ? Math.min(preparedMessages, totalPreparedMessages) : 0;
+  const preparationPercent = totalPreparedMessages
+    ? Math.round((preparedProgressValue / totalPreparedMessages) * 100)
+    : 0;
+  const preparationText = activeMessageSet
+    ? totalPreparedMessages
+      ? `${preparedMessages}/${totalPreparedMessages} 메시지 (${preparationPercent}%)`
+      : `${preparedMessages}개 메시지`
+    : "준비 전";
   const activeModule = context?.moduleOutline.find((item) => item.status === "in_progress");
   const activeModuleTitle = activeModule ? displayModuleTitle(activeModule) : "";
   const buddyModuleTitle = activeModuleTitle || selectedModuleTitle;
-  const progressPercent = totalChunks ? Math.round((reachedChunks / totalChunks) * 100) : 0;
   const latestAssistant = [...currentMessages].reverse().find((message) => message.role === "assistant");
   const latestAssistantId = latestAssistant?.id || null;
   const canReturnToProgress = !selectedModuleWaiting && (latestAssistant?.stateUpdate?.conversationMode === "detour" || latestAssistant?.stateUpdate?.turnMode === "digress");
@@ -2178,10 +2185,33 @@ export function App({ request }: { request: RpcRequest }) {
                 <strong>{artifacts.coursePlan.modules.length} modules</strong>
               </div>
               <div className="course-progress">
-                <span>Progress · {progressText} 대목 ({progressPercent}%)</span>
-                {preparedMessagesText ? <small>{preparedMessagesText}</small> : null}
-                <div className="lesson-bar">
-                  <i style={{ width: `${progressPercent}%` }} />
+                <div className="course-progress-row preparation-progress">
+                  <span>준비 진도 · {preparationText}</span>
+                  <div
+                    className="course-progress-bar"
+                    role="progressbar"
+                    aria-label="학습 메시지 준비 진도"
+                    aria-valuemin={0}
+                    aria-valuemax={totalPreparedMessages || 100}
+                    aria-valuenow={preparedProgressValue}
+                    aria-valuetext={preparationText}
+                  >
+                    <i style={{ transform: `scaleX(${preparationPercent / 100})` }} />
+                  </div>
+                </div>
+                <div className="course-progress-row learning-progress">
+                  <span>학습 진도 · {progressText} 대목 ({progressPercent}%)</span>
+                  <div
+                    className="course-progress-bar"
+                    role="progressbar"
+                    aria-label="학습 진도"
+                    aria-valuemin={0}
+                    aria-valuemax={totalChunks || 100}
+                    aria-valuenow={learningProgressValue}
+                    aria-valuetext={`${progressText} 대목, ${progressPercent}%`}
+                  >
+                    <i style={{ transform: `scaleX(${progressPercent / 100})` }} />
+                  </div>
                 </div>
               </div>
             </div>
