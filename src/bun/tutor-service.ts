@@ -961,7 +961,7 @@ export class TutorService {
          (id, material_id, status, provider, model, tutor_language, learning_level, material_fingerprint,
           annotation_snapshot_hash, annotation_snapshot_json, prompt_version, generation_context_hash, total_messages, completed_messages,
           next_route_index, created_at, updated_at)
-         VALUES (?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)`
+         VALUES (?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)`
       )
       .run(
         id,
