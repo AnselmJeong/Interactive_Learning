@@ -25,7 +25,7 @@ import { stripFigureMarkdown } from "./figure-text";
 import { placeAnnotationsForMessages, shouldRenderInlineAnnotation } from "./annotation-placement";
 import { annotationCardId, focusAnnotationInline } from "./annotation-inline-links";
 import { playAnswerReadySound, primeAnswerReadySound } from "./notification-sound";
-import { nextPrefetchStatusForSession } from "./prefetch-status";
+import { continuePrefetchStateForPreparedRoute, continueReadyFocusKeyForPreparedRoute, nextPrefetchStatusForSession } from "./prefetch-status";
 import { shouldSubmitTextArea } from "./submit-shortcut";
 
 type RpcRequest = (method: string, params: unknown) => Promise<unknown>;
@@ -759,6 +759,7 @@ export function App({ request }: { request: RpcRequest }) {
   const [pendingAnnotationDeletion, setPendingAnnotationDeletion] = useState<MaterialAnnotation | null>(null);
   const tutorSurfaceRef = useRef<HTMLElement | null>(null);
   const continueButtonRef = useRef<HTMLButtonElement | null>(null);
+  const lastFocusedReadyActionKeyRef = useRef<string | null>(null);
   const answerReadyNotificationPendingRef = useRef(false);
   const latestNotifiedAssistantIdRef = useRef<string | null>(null);
   const latestAlignedAssistantKeyRef = useRef<string | null>(null);
@@ -1599,15 +1600,18 @@ export function App({ request }: { request: RpcRequest }) {
   const latestAssistantId = latestAssistant?.id || null;
   const canReturnToProgress = !selectedModuleWaiting && (latestAssistant?.stateUpdate?.conversationMode === "detour" || latestAssistant?.stateUpdate?.turnMode === "digress");
   const batchPreparedReady = unreadPreparedMessages > 0;
-  const continuePrefetchState = batchPreparedReady
-    ? "ready"
-    : activeMessageSet?.status === "generating" || activeMessageSet?.status === "queued" || activeMessageSet?.status === "interrupted"
-      ? "generating"
-      : activeMessageSet?.status === "failed" || activeMessageSet?.status === "waiting_for_provider"
-        ? "failed"
-        : "idle";
+  const continuePrefetchState = continuePrefetchStateForPreparedRoute(prefetchStatus, activeMessageSet, unreadPreparedMessages, session?.id);
   const continueButtonClass = `continue-button prefetch-${continuePrefetchState}`;
   const useReadyReturnButton = canReturnToProgress && continuePrefetchState === "ready";
+  const readyContinueFocusKey = continueReadyFocusKeyForPreparedRoute({
+    prefetchStatus,
+    messageSet: activeMessageSet,
+    activeSessionId: session?.id,
+    lastRevealedRouteIndex: session?.lastRevealedRouteIndex ?? -1,
+    unreadPreparedMessages,
+    latestAssistantId,
+    action: useReadyReturnButton ? "return" : "continue",
+  });
   const continueButtonAria = continuePrefetchState === "generating"
     ? "계속해줘, 이어질 설명 준비 중"
     : useReadyReturnButton
@@ -1641,6 +1645,22 @@ export function App({ request }: { request: RpcRequest }) {
   const allModulesCovered = totalChunks > 0 && coveredChunks >= totalChunks;
   const showCompletionActions = Boolean(!sessionReadOnly && !selectedModuleWaiting && allModulesCovered);
   const showProgressActions = Boolean(!sessionReadOnly && !selectedModuleReadOnly && !allModulesCovered);
+  useEffect(() => {
+    if (
+      viewMode !== "chat"
+      || !showProgressActions
+      || busy
+      || selectedModuleWaiting
+      || continuePrefetchState !== "ready"
+      || !readyContinueFocusKey
+    ) {
+      lastFocusedReadyActionKeyRef.current = null;
+      return;
+    }
+    if (lastFocusedReadyActionKeyRef.current === readyContinueFocusKey) return;
+    lastFocusedReadyActionKeyRef.current = readyContinueFocusKey;
+    continueButtonRef.current?.focus({ preventScroll: true });
+  }, [busy, continuePrefetchState, readyContinueFocusKey, selectedModuleWaiting, showProgressActions, viewMode]);
   const canContinueFromCompletedModule = Boolean(
     !sessionReadOnly
       && selectedModuleReadOnly

@@ -1,6 +1,14 @@
 import { describe, expect, test } from "bun:test";
 import type { LearningMessageBatchStatus, TutorPrefetchStatus } from "../../shared/tutor-types";
-import { continuePrefetchStateForSession, continueReadyFocusKey, hasPreparedBatchMessage, nextPrefetchStatusForSession } from "./prefetch-status";
+import {
+  continuePrefetchStateForPreparedRoute,
+  continuePrefetchStateForSession,
+  continueReadyFocusKey,
+  continueReadyFocusKeyForPreparedRoute,
+  hasPreparedBatchMessage,
+  nextPrefetchStatusForSession,
+} from "./prefetch-status";
+import type { LearningMessageSetSummary } from "../../shared/tutor-types";
 
 function status(sessionId: string, state: TutorPrefetchStatus["status"]): TutorPrefetchStatus {
   return { sessionId, kind: "default_continue", status: state, updatedAt: Date.now() };
@@ -18,6 +26,25 @@ function batch(sessionId: string, visiblePreparedRemaining: number): LearningMes
     totalSteps: visiblePreparedRemaining,
     updatedAt: Date.now(),
     error: null,
+  };
+}
+
+function messageSet(overrides: Partial<LearningMessageSetSummary> = {}): LearningMessageSetSummary {
+  return {
+    id: "set-1",
+    materialId: "material-1",
+    status: "ready",
+    provider: "ollama",
+    model: "model-1",
+    tutorLanguage: "ko",
+    learningLevel: "medium",
+    completedMessages: 10,
+    totalMessages: 10,
+    nextRouteIndex: 10,
+    createdAt: 100,
+    updatedAt: 200,
+    error: null,
+    ...overrides,
   };
 }
 
@@ -60,5 +87,54 @@ describe("continue prefetch state", () => {
 
   test("does not create a focus key for non-ready sessions", () => {
     expect(continueReadyFocusKey(status("current", "generating"), batch("other", 2), "current")).toBeNull();
+  });
+});
+
+describe("prepared route autofocus", () => {
+  test("treats unread message-set messages as a ready continue action", () => {
+    expect(continuePrefetchStateForPreparedRoute(status("current", "generating"), messageSet(), 3, "current")).toBe("ready");
+  });
+
+  test("falls back to a ready legacy prefetch when no prepared route message exists", () => {
+    expect(continuePrefetchStateForPreparedRoute(status("current", "ready"), null, 0, "current")).toBe("ready");
+  });
+
+  test("ignores a ready legacy prefetch from another session", () => {
+    expect(continuePrefetchStateForPreparedRoute(status("other", "ready"), null, 0, "current")).toBe("idle");
+  });
+
+  test("changes the focus key after continuing to a new assistant message", () => {
+    const base = {
+      prefetchStatus: null,
+      messageSet: messageSet(),
+      activeSessionId: "session-1",
+      lastRevealedRouteIndex: 2,
+      unreadPreparedMessages: 7,
+      action: "continue" as const,
+    };
+    const before = continueReadyFocusKeyForPreparedRoute({ ...base, latestAssistantId: "assistant-1" });
+    const after = continueReadyFocusKeyForPreparedRoute({
+      ...base,
+      lastRevealedRouteIndex: 3,
+      unreadPreparedMessages: 6,
+      latestAssistantId: "assistant-2",
+    });
+
+    expect(before).not.toBe(after);
+  });
+
+  test("changes the focus key when a detour turns continue into return to progress", () => {
+    const base = {
+      prefetchStatus: null,
+      messageSet: messageSet(),
+      activeSessionId: "session-1",
+      lastRevealedRouteIndex: 2,
+      unreadPreparedMessages: 7,
+      latestAssistantId: "assistant-detour",
+    };
+
+    expect(continueReadyFocusKeyForPreparedRoute({ ...base, action: "continue" })).not.toBe(
+      continueReadyFocusKeyForPreparedRoute({ ...base, action: "return" })
+    );
   });
 });

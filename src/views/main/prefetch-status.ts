@@ -1,4 +1,4 @@
-import type { LearningMessageBatchStatus, TutorPrefetchStatus } from "../../shared/tutor-types";
+import type { LearningMessageBatchStatus, LearningMessageSetSummary, TutorPrefetchStatus } from "../../shared/tutor-types";
 
 export type ContinuePrefetchState = "idle" | "generating" | "ready" | "failed";
 
@@ -51,6 +51,53 @@ export function continueReadyFocusKey(
   }
   if (prefetchStatus?.sessionId === activeSessionId && prefetchStatus.status === "ready") {
     return ["prefetch", activeSessionId, prefetchStatus.updatedAt ?? "ready"].join(":");
+  }
+  return null;
+}
+
+export function continuePrefetchStateForPreparedRoute(
+  prefetchStatus: TutorPrefetchStatus | null,
+  messageSet: LearningMessageSetSummary | null,
+  unreadPreparedMessages: number,
+  activeSessionId: string | null | undefined,
+): ContinuePrefetchState {
+  if (unreadPreparedMessages > 0) return "ready";
+  const currentPrefetchStatus = prefetchStatus && prefetchStatus.sessionId === activeSessionId ? prefetchStatus.status : null;
+  if (currentPrefetchStatus === "ready") return "ready";
+  if (messageSet?.status === "generating" || messageSet?.status === "queued" || messageSet?.status === "interrupted") {
+    return "generating";
+  }
+  if (messageSet?.status === "failed" || messageSet?.status === "waiting_for_provider") return "failed";
+  if (currentPrefetchStatus === "generating" || currentPrefetchStatus === "failed") {
+    return currentPrefetchStatus;
+  }
+  return "idle";
+}
+
+export function continueReadyFocusKeyForPreparedRoute(input: {
+  prefetchStatus: TutorPrefetchStatus | null;
+  messageSet: LearningMessageSetSummary | null;
+  activeSessionId: string | null | undefined;
+  lastRevealedRouteIndex: number;
+  unreadPreparedMessages: number;
+  latestAssistantId: string | null;
+  action: "continue" | "return";
+}) {
+  const { prefetchStatus, messageSet, activeSessionId, lastRevealedRouteIndex, unreadPreparedMessages, latestAssistantId, action } = input;
+  if (!activeSessionId || !latestAssistantId) return null;
+  if (messageSet && unreadPreparedMessages > 0) {
+    return [
+      "message-set",
+      activeSessionId,
+      messageSet.id,
+      lastRevealedRouteIndex,
+      unreadPreparedMessages,
+      latestAssistantId,
+      action,
+    ].join(":");
+  }
+  if (prefetchStatus?.sessionId === activeSessionId && prefetchStatus.status === "ready") {
+    return ["prefetch", activeSessionId, prefetchStatus.updatedAt ?? "ready", latestAssistantId, action].join(":");
   }
   return null;
 }
