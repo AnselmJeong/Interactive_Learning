@@ -56,7 +56,57 @@ describe("project database migrations", () => {
     expect(columns).toContain("batch_run_id");
     expect(columns).toContain("cursor_before_json");
     expect(columns).toContain("cursor_after_json");
+    expect(columns).toContain("origin_prepared_message_id");
+    expect(columns).toContain("conversation_kind");
     expect(indexes).toContain("idx_learning_messages_prepared_batch");
+    const tables = getDb().query<{ name: string }, []>("SELECT name FROM sqlite_master WHERE type = 'table'").all().map((row) => row.name);
+    expect(tables).toContain("learning_message_sets");
+    expect(tables).toContain("prepared_learning_messages");
+    expect(tables).toContain("session_module_progress");
+    const materialColumns = getDb()
+      .query<{ name: string }, []>("PRAGMA table_info(learning_materials)")
+      .all()
+      .map((column) => column.name);
+    expect(materialColumns).toContain("overview_json");
+  });
+
+  test("moves legacy prepared batch rows into immutable message sets and binds the session", () => {
+    const now = Date.now();
+    const database = getDb();
+    database.query("INSERT INTO projects (id, title, created_at, updated_at) VALUES ('project-1', 'Project', ?, ?)").run(now, now);
+    database.query("INSERT INTO learning_materials (id, project_id, title, status, created_at, updated_at) VALUES ('material-1', 'project-1', 'Material', 'ready', ?, ?)").run(now, now);
+    database.query(
+      `INSERT INTO learning_sessions
+       (id, project_id, material_id, title, status, current_module_id, completed_module_ids_json, current_chunk_id,
+        covered_chunk_ids_json, model, created_at, updated_at)
+       VALUES ('session-1', 'project-1', 'material-1', 'Session', 'active', 'module-1', '[]', 'chunk-1', '[]', 'model-1', ?, ?)`
+    ).run(now, now);
+    database.query(
+      `INSERT INTO learning_message_batch_runs
+       (id, session_id, material_id, status, route_kind, provider, model, settings_fingerprint, material_fingerprint,
+        prompt_version, total_steps, completed_steps, created_at, updated_at)
+       VALUES ('legacy-run', 'session-1', 'material-1', 'ready', 'default_continue', 'openai', 'model-1', 'settings', 'material',
+        'prompt-v1', 2, 2, ?, ?)`
+    ).run(now, now);
+    database.query(
+      `INSERT INTO learning_messages
+       (id, session_id, role, content, module_id, source_refs_json, choices_json, blocks_json, delivery_state,
+        batch_run_id, cursor_before_json, cursor_after_json, created_at, ordinal)
+       VALUES
+       ('visible-route', 'session-1', 'assistant', 'Visible route', 'module-1', '["chunk-1"]', '[]', '[]', 'visible',
+        'legacy-run', '{"currentModuleId":"module-1","currentChunkId":"chunk-1","coveredChunkIds":[],"completedModuleIds":[]}',
+        '{"currentModuleId":"module-1","currentChunkId":"chunk-1","coveredChunkIds":[],"completedModuleIds":[]}', ?, 0),
+       ('prepared-route', 'session-1', 'assistant', 'Prepared route', 'module-1', '["chunk-2"]', '[]', '[]', 'prepared',
+        'legacy-run', '{"currentModuleId":"module-1","currentChunkId":"chunk-1","coveredChunkIds":[],"completedModuleIds":[]}',
+        '{"currentModuleId":"module-1","currentChunkId":"chunk-2","coveredChunkIds":["chunk-1"],"completedModuleIds":[]}', ?, 1)`
+    ).run(now, now);
+    closeDbForTests();
+
+    const migrated = getDb();
+    expect(migrated.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM prepared_learning_messages WHERE message_set_id = 'legacy-run'").get()?.count).toBe(2);
+    expect(migrated.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM learning_messages WHERE delivery_state != 'visible'").get()?.count).toBe(0);
+    expect(migrated.query<{ message_set_id: string | null }, []>("SELECT message_set_id FROM learning_sessions WHERE id = 'session-1'").get()?.message_set_id).toBe("legacy-run");
+    expect(migrated.query<{ origin_prepared_message_id: string | null }, []>("SELECT origin_prepared_message_id FROM learning_messages WHERE id = 'visible-route'").get()?.origin_prepared_message_id).toBe("legacy-prepared-visible-route");
   });
 
   test("adds annotation anchor_json before rebuilding legacy annotation constraints", async () => {

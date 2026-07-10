@@ -19,6 +19,7 @@ export function ProjectDropdown({
 }) {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement | null>(null);
+  const scrollable = projects.length > 4;
 
   useEffect(() => {
     if (!open) return;
@@ -44,7 +45,7 @@ export function ProjectDropdown({
 
       {open ? (
         <div className="pd-panel">
-          <div className="pd-list">
+          <div className={`pd-list ${scrollable ? "scrollable" : ""}`}>
             {projects.length ? (
               projects.map((project) => (
                 <div

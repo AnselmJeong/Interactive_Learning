@@ -48,7 +48,7 @@ describe("project manifest recovery", () => {
       expect(manifest.id).toBe("project-a");
       expect(manifest.title).toBe("Drive Synced Course");
       expect(manifest.archivedAt).toBe(null);
-      expect(manifest.schemaVersion).toBe(2);
+      expect(manifest.schemaVersion).toBe(3);
       expect(manifest.learningLevel).toBe("medium");
     } finally {
       await rm(root, { recursive: true, force: true });
@@ -82,7 +82,7 @@ describe("project manifest learning level", () => {
       learningLevel: "hard",
     });
 
-    expect(manifest.schemaVersion).toBe(2);
+    expect(manifest.schemaVersion).toBe(3);
     expect(manifest.learningLevel).toBe("hard");
   });
 });

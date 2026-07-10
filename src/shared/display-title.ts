@@ -74,3 +74,8 @@ export function displayableOutlineTitle(title: string, leadingTitles: string[] =
   }
   return normalized;
 }
+
+export function displayableModuleTitle(title: string, leadingTitles: string[] = []) {
+  const outlineTitle = displayableOutlineTitle(title, leadingTitles);
+  return outlineTitle.replace(/^\d{1,3}\s*[.)]\s+/u, "").trim();
+}

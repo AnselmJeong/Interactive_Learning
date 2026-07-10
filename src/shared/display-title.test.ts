@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { displayableCourseTitle, displayableHeadingPath, displayableOutlineTitle, displayableSourceTitle, plainDisplayText } from "./display-title";
+import { displayableCourseTitle, displayableHeadingPath, displayableModuleTitle, displayableOutlineTitle, displayableSourceTitle, plainDisplayText } from "./display-title";
 
 describe("display title text", () => {
   test("strips markdown bold wrappers from Korean module titles", () => {
@@ -19,6 +19,13 @@ describe("display title text", () => {
 
   test("preserves numbered source titles with periods", () => {
     expect(displayableSourceTitle("1. Turning Aristotle into Arithmetic", "chapter-1.md")).toBe("1. Turning Aristotle into Arithmetic");
+  });
+
+  test("removes redundant serial numbers only from module titles", () => {
+    expect(displayableModuleTitle("1. Turning Aristotle into Arithmetic")).toBe("Turning Aristotle into Arithmetic");
+    expect(displayableModuleTitle("02) Making Choices")).toBe("Making Choices");
+    expect(displayableModuleTitle("Version 1.0")).toBe("Version 1.0");
+    expect(displayableModuleTitle("1984 and Political Language")).toBe("1984 and Political Language");
   });
 
   test("removes only known file extensions from source fallbacks", () => {

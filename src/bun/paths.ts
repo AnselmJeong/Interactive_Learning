@@ -1,9 +1,10 @@
 import { existsSync, mkdirSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { defaultUserDataBase } from "./platform-utils";
 
 const APP_DATA_DIR_NAME = "learnie";
 let configuredUserDataBase: string | null = null;
+let configuredDatabaseBase: string | null = null;
 
 function ensureDir(path: string) {
   if (!existsSync(path)) {
@@ -21,8 +22,22 @@ export function configureAppDataBase(path: string | null | undefined) {
   configuredUserDataBase = path || null;
 }
 
+export function stableDatabaseBase(userDataBase: string) {
+  const normalized = resolve(userDataBase);
+  return basename(normalized) === "dev" ? join(dirname(normalized), "stable") : normalized;
+}
+
+export function configureDatabaseBase(path: string | null | undefined) {
+  configuredDatabaseBase = path || null;
+}
+
 export function dataPath(...parts: string[]) {
   return join(appDataDir(), ...parts);
+}
+
+export function databasePath(...parts: string[]) {
+  const base = process.env.LEARNIE_APP_DATA_ROOT || configuredDatabaseBase || configuredUserDataBase || defaultUserDataBase({});
+  return join(ensureDir(join(base, APP_DATA_DIR_NAME)), ...parts);
 }
 
 export function projectRoot() {

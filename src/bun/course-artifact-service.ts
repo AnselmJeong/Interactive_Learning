@@ -12,13 +12,15 @@ import type {
   LecturePlan,
   MaterialArtifacts,
   MaterialManifest,
+  MaterialOverview,
   PresentationPlan,
   SourceChunk,
   SourceFigure,
   VisualSpec,
 } from "../shared/artifact-types";
 import type { MaterialSummary } from "../shared/rpc-types";
-import { displayableCourseTitle, displayableHeadingPath, displayableOutlineTitle, plainDisplayText } from "../shared/display-title";
+import { displayableCourseTitle, displayableHeadingPath, displayableModuleTitle, displayableOutlineTitle, plainDisplayText } from "../shared/display-title";
+import type { AiChatClient } from "./openai-compatible-client";
 
 type MaterialRow = {
   id: string;
@@ -29,6 +31,8 @@ type MaterialRow = {
   manifest_path: string | null;
   concept_map_path: string | null;
   course_plan_path: string | null;
+  overview_path: string | null;
+  overview_json: string | null;
   lecture_plan_path: string | null;
   presentation_plan_path: string | null;
   critic_report_path: string | null;
@@ -95,6 +99,90 @@ function signalsFromText(text: string) {
 function compactText(text: string, max = 180) {
   const normalized = text.replace(/\s+/g, " ").trim();
   return `${normalized.slice(0, max)}${normalized.length > max ? "..." : ""}`;
+}
+
+export const MATERIAL_OVERVIEW_GENERATOR_VERSION = "material-overview-v2-llm-full-source";
+
+export type MaterialOverviewRuntime = {
+  client: AiChatClient;
+  model: string;
+};
+
+type MaterialOverviewRuntimeProvider = () => Promise<MaterialOverviewRuntime>;
+
+function fullSourceContext(chunks: SourceChunk[]) {
+  return chunks
+    .map((chunk, index) => {
+      const heading = displayableHeadingPath(chunk.headingPath) || `대목 ${index + 1}`;
+      return `[대목 ${index + 1} · ${heading} · ${chunk.locator}]\n${chunk.text.trim()}`;
+    })
+    .join("\n\n");
+}
+
+function validOverviewParagraph(value: unknown) {
+  if (!value || typeof value !== "object") return null;
+  const paragraph = (value as { paragraph?: unknown }).paragraph;
+  if (typeof paragraph !== "string") return null;
+  const normalized = paragraph.replace(/\s+/g, " ").trim();
+  if (normalized.length < 80 || normalized.length > 1_200) return null;
+  if (/[A-Za-z]/.test(normalized)) return null;
+  if (/전체\s*\d+\s*개\s*대목|학습에서는|원문을 직접 읽지 않아도|모듈|module/i.test(normalized)) return null;
+  return normalized;
+}
+
+export function isCurrentMaterialOverview(overview: MaterialOverview | null | undefined) {
+  return overview?.generatorVersion === MATERIAL_OVERVIEW_GENERATOR_VERSION && Boolean(validOverviewParagraph(overview));
+}
+
+export async function generateMaterialOverview(
+  title: string,
+  chunks: SourceChunk[],
+  runtime: MaterialOverviewRuntime
+): Promise<MaterialOverview> {
+  const sourceContext = fullSourceContext(chunks);
+  const system = [
+    "당신은 주어진 원문 전체의 핵심 주제를 정확하게 요약하는 편집자다.",
+    "반드시 원문 전체를 종합하여 이 글이 무엇을 다루는지, 중심 문제와 핵심 주장, 주요 개념의 관계나 긴장을 한국어 한 문단 3~5문장으로 설명한다.",
+    "학습 방법, 학습 가치, 모듈, 목차, 대목 수, 독자가 해야 할 일을 언급하지 않는다.",
+    "원문의 문장을 그대로 인용하거나 영어를 섞지 말고, 고유명사와 전문 용어도 자연스러운 한국어 표기로 쓴다.",
+    "근거 없는 일반론과 '핵심 구조를 자기 말로 설명한다' 같은 상투적인 문장을 쓰지 않는다.",
+    "반환 형식은 반드시 {\"paragraph\":\"한국어 요약\"} 형태의 JSON 객체 하나다.",
+  ].join(" ");
+  const sourceMessage = `자료 제목: ${title}\n\n다음은 요약해야 할 원문 전체다. 일부만 골라 요약하지 말고 처음부터 끝까지 종합하라.\n\n${sourceContext}`;
+  let lastResponse: unknown = null;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const messages = [
+      { role: "system" as const, content: system },
+      { role: "user" as const, content: sourceMessage },
+      ...(attempt && lastResponse
+        ? [
+            { role: "assistant" as const, content: JSON.stringify(lastResponse) },
+            {
+              role: "user" as const,
+              content: "이 응답은 조건을 어겼다. 영어와 학습 안내 및 목차 언급을 모두 제거하고, 원문 전체의 주제와 주장만 한국어 한 문단으로 다시 작성하라.",
+            },
+          ]
+        : []),
+    ];
+    lastResponse = await runtime.client.chatJson({
+      model: runtime.model,
+      messages,
+      temperature: 0.2,
+      maxTokens: 900,
+      timeoutMs: 180_000,
+      thinking: "disabled",
+    });
+    const paragraph = validOverviewParagraph(lastResponse);
+    if (paragraph) {
+      return {
+        paragraph,
+        sourceChunkIds: chunks.map((chunk) => chunk.id),
+        generatedAt: new Date().toISOString(),
+        generatorVersion: MATERIAL_OVERVIEW_GENERATOR_VERSION,
+      };
+    }
+  }
+  throw new Error("AI가 원문 전체에 대한 한국어 주제 요약을 올바른 형식으로 생성하지 못했습니다");
 }
 
 function sourceSpark(text: string) {
@@ -183,7 +271,7 @@ function sanitizeCoursePlan(coursePlan: CoursePlan): CoursePlan {
     title: displayableCourseTitle(coursePlan.title) || plainDisplayText(coursePlan.title) || coursePlan.title,
     modules: coursePlan.modules.map((module) => ({
       ...module,
-      title: displayableOutlineTitle(module.title) || plainDisplayText(module.title) || module.title,
+      title: displayableModuleTitle(module.title) || plainDisplayText(module.title) || module.title,
       learningGoal: plainDisplayText(module.learningGoal) || module.learningGoal,
     })),
   };
@@ -294,6 +382,8 @@ export class CourseArtifactService {
   private readonly artifactCache = new Map<string, ArtifactCacheEntry>();
   private readonly generationPromises = new Map<string, Promise<MaterialSummary>>();
 
+  constructor(private readonly materialOverviewRuntime?: MaterialOverviewRuntimeProvider) {}
+
   private projectRoot(projectId: string) {
     const row = getDb().query<{ root_path: string | null }, [string]>("SELECT root_path FROM projects WHERE id = ?").get(projectId);
     return row?.root_path || dataPath("projects");
@@ -352,6 +442,7 @@ export class CourseArtifactService {
       if (!sourceChunks.length) throw new Error("No chunks were extracted for selected sources");
       const conceptMap = buildConcepts(sourceChunks);
       const coursePlan = buildCoursePlan(title, sourceChunks, conceptMap, sourceTitleForChunk);
+      const overview = await this.createMaterialOverview(title, sourceChunks);
       const visuals = buildVisuals(sourceChunks, sourceTitleForChunk);
       const lecturePlan = buildLecturePlan(id, sourceChunks, sourceTitleForChunk);
       const presentationPlan = buildPresentationPlan(id, sourceChunks, sourceTitleForChunk);
@@ -382,6 +473,7 @@ export class CourseArtifactService {
         manifest: join(dir, "material_manifest.json"),
         concepts: join(dir, "concept_map.json"),
         course: join(dir, "course_plan.json"),
+        overview: join(dir, "material_overview.json"),
         lecture: join(dir, "lecture_plan.json"),
         presentation: join(dir, "presentation_plan.json"),
         critic: join(dir, "critic_report.json"),
@@ -395,6 +487,7 @@ export class CourseArtifactService {
         writeFile(paths.manifest, `${JSON.stringify(manifest, null, 2)}\n`, "utf8"),
         writeFile(paths.concepts, `${JSON.stringify(conceptMap, null, 2)}\n`, "utf8"),
         writeFile(paths.course, `${JSON.stringify(coursePlan, null, 2)}\n`, "utf8"),
+        writeFile(paths.overview, `${JSON.stringify(overview, null, 2)}\n`, "utf8"),
         writeFile(paths.lecture, `${JSON.stringify(lecturePlan, null, 2)}\n`, "utf8"),
         writeFile(paths.presentation, `${JSON.stringify(presentationPlan, null, 2)}\n`, "utf8"),
         writeFile(paths.critic, `${JSON.stringify(criticReport, null, 2)}\n`, "utf8"),
@@ -408,7 +501,7 @@ export class CourseArtifactService {
       getDb()
         .query(
           `UPDATE learning_materials
-           SET status = 'ready', manifest_path = ?, concept_map_path = ?, course_plan_path = ?,
+           SET status = 'ready', manifest_path = ?, concept_map_path = ?, course_plan_path = ?, overview_path = ?, overview_json = ?,
                lecture_plan_path = ?, presentation_plan_path = ?, critic_report_path = ?,
                visual_specs_path = ?, source_index_path = ?, updated_at = ?
            WHERE id = ?`
@@ -417,6 +510,8 @@ export class CourseArtifactService {
           paths.manifest,
           paths.concepts,
           paths.course,
+          paths.overview,
+          JSON.stringify(overview),
           paths.lecture,
           paths.presentation,
           paths.critic,
@@ -485,7 +580,7 @@ export class CourseArtifactService {
   async getArtifacts(materialId: string): Promise<MaterialArtifacts> {
     const row = this.getRow(materialId);
     const cached = this.artifactCache.get(materialId);
-    if (cached?.updatedAt === row.updated_at) {
+    if (cached?.updatedAt === row.updated_at && (!this.materialOverviewRuntime || isCurrentMaterialOverview(cached.artifacts.overview))) {
       return { ...cached.artifacts, annotations: listMaterialAnnotations(materialId) };
     }
     const artifacts = await this.loadHeavyArtifacts(row);
@@ -510,10 +605,12 @@ export class CourseArtifactService {
       readFile(row.source_index_path, "utf8").then((raw) => JSON.parse(raw) as Record<string, { sourceId: string; title: string; locator: string }>),
     ]);
     const sourceChunks = await this.loadMaterialSourceChunks(row);
+    const overview = await this.loadMaterialOverview(row, sourceChunks);
     const figures = await this.loadMaterialFigures(row);
     const figureIndex = await this.loadMaterialFigureIndex(row, figures);
     return {
       manifest,
+      overview,
       conceptMap,
       coursePlan: sanitizeCoursePlan(coursePlan),
       lecturePlan,
@@ -525,6 +622,53 @@ export class CourseArtifactService {
       figures,
       figureIndex,
     };
+  }
+
+  private async loadMaterialOverview(row: MaterialRow, sourceChunks: SourceChunk[]) {
+    const overviewPath = row.overview_path || (row.manifest_path ? join(dirname(row.manifest_path), "material_overview.json") : null);
+    if (row.overview_json) {
+      try {
+        const databaseOverview = JSON.parse(row.overview_json) as MaterialOverview;
+        if (isCurrentMaterialOverview(databaseOverview)) return databaseOverview;
+      } catch {
+        // Invalid legacy JSON is replaced from the artifact file or regenerated below.
+      }
+    }
+    let storedOverview: MaterialOverview | null = null;
+    if (overviewPath) {
+      try {
+        storedOverview = JSON.parse(await readFile(overviewPath, "utf8")) as MaterialOverview;
+        if (isCurrentMaterialOverview(storedOverview)) {
+          this.persistMaterialOverview(row.id, storedOverview, overviewPath);
+          return storedOverview;
+        }
+      } catch {
+        storedOverview = null;
+      }
+    }
+    if (!this.materialOverviewRuntime) {
+      if (storedOverview?.paragraph?.trim()) return storedOverview;
+      throw new Error("Material overview is missing");
+    }
+    const overview = await this.createMaterialOverview(row.title, sourceChunks);
+    this.persistMaterialOverview(row.id, overview, overviewPath);
+    if (overviewPath) {
+      await writeFile(overviewPath, `${JSON.stringify(overview, null, 2)}\n`, "utf8").catch((error) => {
+        console.warn("Failed to mirror material overview to artifact file", error);
+      });
+    }
+    return overview;
+  }
+
+  private persistMaterialOverview(materialId: string, overview: MaterialOverview, overviewPath: string | null) {
+    getDb()
+      .query("UPDATE learning_materials SET overview_json = ?, overview_path = COALESCE(?, overview_path) WHERE id = ?")
+      .run(JSON.stringify(overview), overviewPath, materialId);
+  }
+
+  private async createMaterialOverview(title: string, sourceChunks: SourceChunk[]) {
+    if (!this.materialOverviewRuntime) throw new Error("AI provider is required to summarize the full source");
+    return generateMaterialOverview(title, sourceChunks, await this.materialOverviewRuntime());
   }
 
   private async loadMaterialSourceChunks(row: MaterialRow) {

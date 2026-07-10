@@ -10,8 +10,9 @@ import { deleteSessionSnapshot, writeSessionSnapshot } from "./project-bundle-sy
 import { classifyProgressionCommand } from "../shared/progression-command";
 import { plainDisplayText } from "../shared/display-title";
 import type { CourseModule, LectureModulePlan, MaterialArtifacts, PresentationModulePlan, SourceChunk, VisualSpec } from "../shared/artifact-types";
-import type { LearningMessageBatchStatus, SessionSnapshot, SessionSummary, SourceRef, TutorContentBlock, TutorContext, TutorIntent, TutorMessage, TutorPrefetchStatus, TutorStateUpdate, TutorTurnOutput } from "../shared/tutor-types";
+import type { LearningMessageBatchStatus, LearningMessageSetStatus, LearningMessageSetSummary, SessionSnapshot, SessionSummary, SourceRef, TutorContentBlock, TutorContext, TutorIntent, TutorMessage, TutorPrefetchStatus, TutorStateUpdate, TutorTurnOutput } from "../shared/tutor-types";
 import { normalizeLearningLevel, tutorLevelInstruction, type LearningLevel } from "../shared/learning-levels";
+import type { AiProviderId, TutorLanguage } from "../shared/settings-types";
 
 // "start_module": open the first source chunk of a (new) module with a content summary.
 // "continue_chunk": keep the cursor on the current source chunk and continue teaching it.
@@ -39,6 +40,8 @@ const PREFETCH_PROVIDER_TIMEOUT_MS = 120 * 1000;
 const PREFETCH_CONSUME_MAX_WAIT_MS = 100 * 1000;
 const MAX_ACTIVE_PREFETCH_JOBS = 2;
 const MAX_BATCH_STEPS = 160;
+const MESSAGE_SET_LEASE_MS = 30_000;
+const MESSAGE_SET_WAIT_MS = 120_000;
 const TERM_RENDERING_RULE = [
   "TERM RENDERING RULE:",
   "When teaching in Korean, never replace foreign proper nouns or culturally specific technical terms with Korean-only transliterations.",
@@ -126,6 +129,15 @@ function originalTermCandidates(chunks: SourceChunk[], limit = 18) {
   return [...candidates];
 }
 
+function materialAnnotationContext(artifacts: MaterialArtifacts) {
+  const annotations = (artifacts.annotations || []).filter((annotation) => (annotation.scope || "material") === "material").slice(0, 24);
+  if (!annotations.length) return "";
+  return `Material annotations captured when this route version was created:\n${annotations.map((annotation) => {
+    const result = JSON.stringify(annotation.result).replace(/\s+/g, " ").slice(0, 320);
+    return `- [${annotation.chunkId}] ${annotation.kind}: ${annotation.selectedText.slice(0, 180)}${result ? ` -> ${result}` : ""}`;
+  }).join("\n")}`;
+}
+
 // Detects an explicit learner confirmation to end the session after all modules are done.
 function isFinishConfirmation(text: string) {
   const t = text.trim();
@@ -150,6 +162,10 @@ type SessionRow = {
   current_chunk_id: string | null;
   covered_chunk_ids_json: string;
   model: string | null;
+  message_set_id: string | null;
+  last_revealed_route_index: number;
+  last_revealed_message_id: string | null;
+  started_at: number | null;
   created_at: number;
   updated_at: number;
 };
@@ -173,6 +189,8 @@ type MessageRow = {
   batch_run_id: string | null;
   cursor_before_json: string | null;
   cursor_after_json: string | null;
+  origin_prepared_message_id: string | null;
+  conversation_kind: "main" | "detour";
   created_at: number;
   ordinal: number;
 };
@@ -192,7 +210,7 @@ type TutorPrefetchRow = {
   target_module_id: string | null;
   target_chunk_id: string | null;
   cursor_after_json: string;
-  provider: string;
+  provider: AiProviderId;
   model: string;
   settings_fingerprint: string;
   material_fingerprint: string;
@@ -220,6 +238,50 @@ type LearningMessageBatchRunRow = {
   error: string | null;
   created_at: number;
   updated_at: number;
+};
+
+type LearningMessageSetRow = {
+  id: string;
+  material_id: string;
+  status: LearningMessageSetStatus;
+  provider: AiProviderId;
+  model: string;
+  tutor_language: TutorLanguage;
+  learning_level: string;
+  material_fingerprint: string;
+  annotation_snapshot_hash: string;
+  annotation_snapshot_json: string;
+  prompt_version: string;
+  generation_context_hash: string;
+  total_messages: number;
+  completed_messages: number;
+  next_route_index: number;
+  generation_owner_id: string | null;
+  lease_expires_at: number | null;
+  last_checkpoint_at: number | null;
+  resume_count: number;
+  error: string | null;
+  created_at: number;
+  updated_at: number;
+};
+
+type PreparedLearningMessageRow = {
+  id: string;
+  message_set_id: string;
+  route_index: number;
+  module_id: string;
+  module_index: number;
+  source_chunk_id: string | null;
+  target_event: PlannedProgressTurn["targetEvent"] | "start_module";
+  content: string;
+  blocks_json: string;
+  source_refs_json: string;
+  choices_json: string;
+  visual_id: string | null;
+  state_update_json: string | null;
+  route_before_json: string;
+  route_after_json: string;
+  created_at: number;
 };
 
 type PlannedProgressTurn = {
@@ -324,6 +386,8 @@ function toMessage(row: MessageRow): TutorMessage {
     stateUpdate: row.state_update_json ? JSON.parse(row.state_update_json) : undefined,
     createdAt: row.created_at,
     ordinal: row.ordinal,
+    originPreparedMessageId: row.origin_prepared_message_id,
+    conversationKind: row.conversation_kind || "main",
   };
 }
 
@@ -692,6 +756,7 @@ function isProgressTurnEvent(event: TurnPayload["event"]) {
 
 type TutorPrefetchEmitter = (status: TutorPrefetchStatus) => void;
 type LearningMessageBatchEmitter = (status: LearningMessageBatchStatus) => void;
+type LearningMessageSetEmitter = (status: LearningMessageSetSummary) => void;
 
 export class TutorService {
   private readonly artifacts = new CourseArtifactService();
@@ -700,13 +765,559 @@ export class TutorService {
   private readonly activePrefetches = new Map<string, string>();
   private readonly activeBatchRuns = new Map<string, string>();
   private readonly cancelledBatchRuns = new Set<string>();
+  private readonly generationOwnerId = crypto.randomUUID();
+  private readonly activeMessageSetRuns = new Map<string, Promise<void>>();
+  private readonly pausedMessageSets = new Set<string>();
+  private readonly generationRuntimeOverrides = new Map<string, { provider: AiProviderId; model: string; tutorLanguage: TutorLanguage; learningLevel: LearningLevel }>();
   private readonly chunkModuleMaps = new WeakMap<MaterialArtifacts["coursePlan"], Map<string, CourseModule>>();
   private readonly sessionMutations = new SessionMutationQueue();
 
   constructor(
     private readonly emitPrefetchStatus?: TutorPrefetchEmitter,
-    private readonly emitBatchStatus?: LearningMessageBatchEmitter
+    private readonly emitBatchStatus?: LearningMessageBatchEmitter,
+    private readonly emitMessageSetStatus?: LearningMessageSetEmitter
   ) {}
+
+  private messageSetSummary(row: LearningMessageSetRow): LearningMessageSetSummary {
+    return {
+      id: row.id,
+      materialId: row.material_id,
+      status: row.status,
+      provider: row.provider,
+      model: row.model,
+      tutorLanguage: row.tutor_language,
+      learningLevel: row.learning_level,
+      completedMessages: row.completed_messages,
+      totalMessages: row.total_messages,
+      nextRouteIndex: row.next_route_index,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      error: row.error,
+    };
+  }
+
+  private getMessageSetRow(messageSetId: string) {
+    const row = getDb().query<LearningMessageSetRow, [string]>("SELECT * FROM learning_message_sets WHERE id = ?").get(messageSetId);
+    if (!row) throw new Error("Prepared message set not found");
+    return row;
+  }
+
+  private emitMessageSet(messageSetId: string) {
+    try {
+      this.emitMessageSetStatus?.(this.messageSetSummary(this.getMessageSetRow(messageSetId)));
+    } catch {
+      /* progress pushes are best-effort */
+    }
+  }
+
+  private recordMessageSetEvent(messageSetId: string, eventType: string, reasonCode: string | null, actor: string, details: Record<string, unknown> = {}) {
+    getDb()
+      .query(
+        `INSERT INTO learning_message_set_events
+         (id, message_set_id, event_type, reason_code, actor, details_json, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(crypto.randomUUID(), messageSetId, eventType, reasonCode, actor, JSON.stringify(details), Date.now());
+  }
+
+  async messageSetStatus(materialId: string): Promise<LearningMessageSetSummary[]> {
+    return getDb()
+      .query<LearningMessageSetRow, [string]>(
+        "SELECT * FROM learning_message_sets WHERE material_id = ? ORDER BY updated_at DESC, created_at DESC"
+      )
+      .all(materialId)
+      .map((row) => this.messageSetSummary(row));
+  }
+
+  private async messageSetRuntime(materialId: string, artifacts: MaterialArtifacts, requireApiKey = true) {
+    const material = this.artifacts.getRow(materialId);
+    const settings = await this.settings.get();
+    const provider = settings.aiProvider;
+    const model = settings.providers[provider].selectedModel;
+    const key = requireApiKey ? await this.secrets.getApiKey(provider) : null;
+    if (!model || (requireApiKey && !key?.value)) return null;
+    const learningLevel = this.projectLearningLevel(material.project_id);
+    const materialFingerprint = this.materialFingerprint(artifacts);
+    const materialAnnotations = (artifacts.annotations || []).filter((annotation) => (annotation.scope || "material") === "material");
+    const annotationSnapshotHash = stableHash(
+      materialAnnotations.map((annotation) => ({
+        id: annotation.id,
+        kind: annotation.kind,
+        chunkId: annotation.chunkId,
+        selectedText: annotation.selectedText,
+        updatedAt: annotation.updatedAt,
+      }))
+    );
+    const generationContextHash = stableHash({
+      materialFingerprint,
+      provider,
+      model,
+      tutorLanguage: settings.tutorLanguage,
+      learningLevel,
+      promptVersion: MESSAGE_BATCH_PROMPT_VERSION,
+      annotationSnapshotHash,
+      materialAnnotations,
+    });
+    return {
+      provider,
+      model,
+      tutorLanguage: settings.tutorLanguage,
+      learningLevel,
+      materialFingerprint,
+      annotationSnapshotHash,
+      materialAnnotations,
+      generationContextHash,
+    };
+  }
+
+  private initialRouteSession(materialId: string, projectId: string, title: string, model: string, artifacts: MaterialArtifacts): SessionSnapshot {
+    const firstChunk = this.orderedCurriculum(artifacts)[0];
+    const firstModule = this.ownerModuleOf(artifacts, firstChunk?.id);
+    const now = Date.now();
+    return {
+      id: `prepared-route-${materialId}`,
+      projectId,
+      materialId,
+      title,
+      status: "active",
+      currentModuleId: firstModule?.id || null,
+      completedModuleIds: [],
+      currentChunkId: firstChunk?.id || null,
+      coveredChunkIds: [],
+      model,
+      messageSetId: null,
+      lastRevealedRouteIndex: -1,
+      lastRevealedMessageId: null,
+      messages: [],
+      createdAt: now,
+      updatedAt: now,
+    };
+  }
+
+  private estimateMessageSetSize(session: SessionSnapshot, artifacts: MaterialArtifacts) {
+    const firstChunk = this.currentChunkOf(artifacts, session);
+    const firstModule = this.ownerModuleOf(artifacts, firstChunk?.id);
+    const firstOutput = this.virtualOutputForPlan({
+      kind: "default_continue",
+      targetEvent: "start_module",
+      moduleId: firstModule.id,
+      baseCurrentChunkId: session.currentChunkId,
+      baseCoveredChunkIds: [],
+      targetChunkId: firstChunk?.id || null,
+      coveredChunkIdsAfter: [],
+      completedModuleIdsAfter: [],
+      cursorAfter: this.cursorFromSession(session),
+    });
+    const seeded = this.virtualSessionAfterOutput(session, {
+      kind: "default_continue",
+      targetEvent: "start_module",
+      moduleId: firstModule.id,
+      baseCurrentChunkId: session.currentChunkId,
+      baseCoveredChunkIds: [],
+      targetChunkId: firstChunk?.id || null,
+      coveredChunkIdsAfter: [],
+      completedModuleIdsAfter: [],
+      cursorAfter: this.cursorFromSession(session),
+    }, firstOutput);
+    return Math.min(MAX_BATCH_STEPS, 1 + this.estimateDefaultContinueSteps(seeded, artifacts));
+  }
+
+  async prepareMessages(materialId: string, forceNewVersion = false, ensureFirstMessage = false): Promise<LearningMessageSetSummary> {
+    const material = this.artifacts.getRow(materialId);
+    const artifacts = await this.artifacts.getArtifacts(materialId);
+    const runtime = await this.messageSetRuntime(materialId, artifacts, true);
+    if (!runtime) throw new Error("Settings에서 learning model과 API key를 먼저 설정하세요.");
+
+    const compatible = getDb()
+      .query<LearningMessageSetRow, [string, string]>(
+        `SELECT * FROM learning_message_sets
+         WHERE material_id = ? AND generation_context_hash = ? AND status NOT IN ('cancelled', 'superseded')
+         ORDER BY CASE status WHEN 'ready' THEN 0 WHEN 'generating' THEN 1 ELSE 2 END, updated_at DESC LIMIT 1`
+      )
+      .get(materialId, runtime.generationContextHash);
+    if (compatible && !forceNewVersion) {
+      if (["interrupted", "waiting_for_provider", "partial", "failed", "queued", "paused"].includes(compatible.status)) {
+        if (compatible.status === "paused") {
+          getDb().query("UPDATE learning_message_sets SET status = 'interrupted', updated_at = ? WHERE id = ?").run(Date.now(), compatible.id);
+        }
+        await this.launchMessageSetGeneration(compatible.id, ensureFirstMessage);
+      } else if (ensureFirstMessage && compatible.completed_messages === 0) {
+        await this.waitForPreparedRoute(compatible.id, 0);
+      }
+      return this.messageSetSummary(this.getMessageSetRow(compatible.id));
+    }
+
+    if (forceNewVersion && compatible) {
+      this.recordMessageSetEvent(compatible.id, "new_version_created", "manual_new_version", "materials.prepareMessages");
+    }
+
+    const id = crypto.randomUUID();
+    const now = Date.now();
+    const initial = this.initialRouteSession(materialId, material.project_id, material.title, runtime.model, artifacts);
+    const totalMessages = this.estimateMessageSetSize(initial, artifacts);
+    getDb()
+      .query(
+        `INSERT INTO learning_message_sets
+         (id, material_id, status, provider, model, tutor_language, learning_level, material_fingerprint,
+          annotation_snapshot_hash, annotation_snapshot_json, prompt_version, generation_context_hash, total_messages, completed_messages,
+          next_route_index, created_at, updated_at)
+         VALUES (?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, ?, ?)`
+      )
+      .run(
+        id,
+        materialId,
+        runtime.provider,
+        runtime.model,
+        runtime.tutorLanguage,
+        runtime.learningLevel,
+        runtime.materialFingerprint,
+        runtime.annotationSnapshotHash,
+        JSON.stringify(runtime.materialAnnotations),
+        MESSAGE_BATCH_PROMPT_VERSION,
+        runtime.generationContextHash,
+        totalMessages,
+        now,
+        now
+      );
+    this.recordMessageSetEvent(id, "created", forceNewVersion ? "manual_new_version" : "compatible_set_missing", "materials.prepareMessages");
+    await this.launchMessageSetGeneration(id, ensureFirstMessage);
+    return this.messageSetSummary(this.getMessageSetRow(id));
+  }
+
+  private async launchMessageSetGeneration(messageSetId: string, ensureFirstMessage = false) {
+    const active = this.activeMessageSetRuns.get(messageSetId);
+    if (active) {
+      if (ensureFirstMessage) await this.waitForPreparedRoute(messageSetId, 0);
+      return;
+    }
+    if (this.activeMessageSetRuns.size >= MAX_ACTIVE_PREFETCH_JOBS) {
+      getDb().query("UPDATE learning_message_sets SET status = 'queued', error = NULL, updated_at = ? WHERE id = ? AND status NOT IN ('ready', 'paused', 'cancelled', 'superseded')")
+        .run(Date.now(), messageSetId);
+      this.emitMessageSet(messageSetId);
+      if (ensureFirstMessage) await this.waitForPreparedRoute(messageSetId, 0);
+      return;
+    }
+    const row = this.getMessageSetRow(messageSetId);
+    if (row.status === "ready" || row.status === "paused" || row.status === "cancelled" || row.status === "superseded") return;
+    if (
+      row.status === "generating" &&
+      row.generation_owner_id &&
+      row.generation_owner_id !== this.generationOwnerId &&
+      (row.lease_expires_at || 0) > Date.now()
+    ) {
+      if (ensureFirstMessage) await this.waitForPreparedRoute(messageSetId, 0);
+      return;
+    }
+    this.pausedMessageSets.delete(messageSetId);
+    const now = Date.now();
+    const acquired = getDb()
+      .query(
+        `UPDATE learning_message_sets
+         SET status = 'generating', generation_owner_id = ?, lease_expires_at = ?, error = NULL,
+             resume_count = resume_count + ?, updated_at = ?
+         WHERE id = ? AND (
+           status != 'generating' OR generation_owner_id = ? OR lease_expires_at IS NULL OR lease_expires_at <= ?
+         )`
+      )
+      .run(this.generationOwnerId, now + MESSAGE_SET_LEASE_MS, row.next_route_index > 0 ? 1 : 0, now, messageSetId, this.generationOwnerId, now);
+    if (!acquired.changes) {
+      if (ensureFirstMessage) await this.waitForPreparedRoute(messageSetId, 0);
+      return;
+    }
+    this.recordMessageSetEvent(messageSetId, row.next_route_index > 0 ? "resumed" : "generation_started", null, "message_set_generator");
+    this.emitMessageSet(messageSetId);
+    const generation = (async () => {
+      if (ensureFirstMessage && row.next_route_index === 0) {
+        await this.generateMessageSet(messageSetId, 1);
+      }
+      await this.generateMessageSet(messageSetId, MAX_BATCH_STEPS);
+    })()
+      .finally(() => {
+        if (this.activeMessageSetRuns.get(messageSetId) === generation) this.activeMessageSetRuns.delete(messageSetId);
+        void this.launchNextQueuedMessageSet();
+      });
+    this.activeMessageSetRuns.set(messageSetId, generation);
+    void generation.catch((error) => console.warn(`[message-set] generation failed for ${messageSetId}: ${compactError(error)}`));
+    if (ensureFirstMessage) await this.waitForPreparedRoute(messageSetId, 0);
+  }
+
+  private async launchNextQueuedMessageSet() {
+    if (this.activeMessageSetRuns.size >= MAX_ACTIVE_PREFETCH_JOBS) return;
+    const next = getDb()
+      .query<{ id: string }, []>("SELECT id FROM learning_message_sets WHERE status = 'queued' ORDER BY updated_at ASC LIMIT 1")
+      .get();
+    if (next) await this.launchMessageSetGeneration(next.id, false);
+  }
+
+  private async rebuildPreparedRouteSession(set: LearningMessageSetRow, artifacts: MaterialArtifacts) {
+    const material = this.artifacts.getRow(set.material_id);
+    let session = {
+      ...this.initialRouteSession(set.material_id, material.project_id, material.title, set.model, artifacts),
+      id: `prepared-route-${set.id}`,
+    };
+    const rows = getDb()
+      .query<PreparedLearningMessageRow, [string]>(
+        "SELECT * FROM prepared_learning_messages WHERE message_set_id = ? ORDER BY route_index ASC"
+      )
+      .all(set.id);
+    for (const row of rows) {
+      const cursorAfter = JSON.parse(row.route_after_json) as PreparedMessageCursor;
+      const output = this.messageOutputFromPreparedRow(row);
+      const plan: PlannedProgressTurn = {
+        kind: "default_continue",
+        targetEvent: row.target_event,
+        moduleId: row.module_id,
+        baseCurrentChunkId: session.currentChunkId,
+        baseCoveredChunkIds: session.coveredChunkIds,
+        targetChunkId: row.source_chunk_id,
+        coveredChunkIdsAfter: cursorAfter.coveredChunkIds,
+        completedModuleIdsAfter: cursorAfter.completedModuleIds,
+        cursorAfter,
+      };
+      session = this.virtualSessionAfterOutput(session, plan, output);
+    }
+    return session;
+  }
+
+  private async generateMessageSet(messageSetId: string, routeLimit: number) {
+    let generated = 0;
+    try {
+      while (generated < routeLimit) {
+        const set = this.getMessageSetRow(messageSetId);
+        if (set.status !== "generating" || this.pausedMessageSets.has(messageSetId)) return;
+        if (set.next_route_index >= MAX_BATCH_STEPS) {
+          getDb().query("UPDATE learning_message_sets SET status = 'partial', error = ?, generation_owner_id = NULL, lease_expires_at = NULL, updated_at = ? WHERE id = ?")
+            .run("안전 한도까지 준비했습니다. 이어서 만들 수 있습니다.", Date.now(), messageSetId);
+          this.recordMessageSetEvent(messageSetId, "partial", "route_limit", "message_set_generator");
+          this.emitMessageSet(messageSetId);
+          return;
+        }
+        const currentArtifacts = await this.artifacts.getArtifacts(set.material_id);
+        const materialFingerprint = this.materialFingerprint(currentArtifacts);
+        const key = await this.secrets.getApiKey(set.provider);
+        if (!key.value || materialFingerprint !== set.material_fingerprint) {
+          const error = materialFingerprint !== set.material_fingerprint
+            ? "Source material이 변경되어 이 prepared version을 더 만들 수 없습니다. 기존 준비분은 보존됩니다."
+            : "Learning provider API key를 설정하면 준비를 이어갑니다.";
+          getDb().query("UPDATE learning_message_sets SET status = 'waiting_for_provider', error = ?, generation_owner_id = NULL, lease_expires_at = NULL, updated_at = ? WHERE id = ?")
+            .run(error, Date.now(), messageSetId);
+          this.recordMessageSetEvent(messageSetId, "waiting", materialFingerprint !== set.material_fingerprint ? "material_changed" : "provider_not_configured", "message_set_generator");
+          this.emitMessageSet(messageSetId);
+          return;
+        }
+        const artifacts: MaterialArtifacts = {
+          ...currentArtifacts,
+          annotations: JSON.parse(set.annotation_snapshot_json || "[]"),
+        };
+
+        const session = await this.rebuildPreparedRouteSession(set, artifacts);
+        const routeBefore = this.cursorFromSession(session);
+        let targetEvent: PreparedLearningMessageRow["target_event"];
+        let targetChunkId: string | null;
+        let output: TutorTurnOutput;
+        let routeAfter = routeBefore;
+        this.generationRuntimeOverrides.set(session.id, {
+          provider: set.provider,
+          model: set.model,
+          tutorLanguage: set.tutor_language,
+          learningLevel: normalizeLearningLevel(set.learning_level),
+        });
+        const heartbeat = setInterval(() => {
+          const now = Date.now();
+          getDb().query(
+            "UPDATE learning_message_sets SET lease_expires_at = ?, updated_at = ? WHERE id = ? AND status = 'generating' AND generation_owner_id = ?"
+          ).run(now + MESSAGE_SET_LEASE_MS, now, messageSetId, this.generationOwnerId);
+        }, Math.floor(MESSAGE_SET_LEASE_MS / 3));
+        try {
+          if (set.next_route_index === 0) {
+            targetEvent = "start_module";
+            targetChunkId = session.currentChunkId;
+            output = await this.generateTutorTurnDraft(session, artifacts, { event: "start_module" });
+          } else {
+            const plan = this.planDefaultContinue(session, artifacts);
+            targetEvent = plan.targetEvent;
+            targetChunkId = plan.targetChunkId;
+            routeAfter = plan.cursorAfter;
+            output = await this.generatePlannedProgressTurn(session, artifacts, plan);
+          }
+        } finally {
+          clearInterval(heartbeat);
+          this.generationRuntimeOverrides.delete(session.id);
+        }
+        const routeIndex = set.next_route_index;
+        const moduleIndex = getDb()
+          .query<{ count: number }, [string, string]>(
+            "SELECT COUNT(*) AS count FROM prepared_learning_messages WHERE message_set_id = ? AND module_id = ?"
+          )
+          .get(messageSetId, output.moduleId)?.count || 0;
+        const now = Date.now();
+        const isComplete = targetEvent === "finish_prompt";
+        const committed = getDb().transaction(() => {
+          const current = this.getMessageSetRow(messageSetId);
+          if (current.status !== "generating" || current.generation_owner_id !== this.generationOwnerId || current.next_route_index !== routeIndex) return false;
+          getDb()
+            .query(
+              `INSERT OR IGNORE INTO prepared_learning_messages
+               (id, message_set_id, route_index, module_id, module_index, source_chunk_id, target_event, content,
+                blocks_json, source_refs_json, choices_json, visual_id, state_update_json, route_before_json, route_after_json, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+            )
+            .run(
+              `${messageSetId}:${routeIndex}`,
+              messageSetId,
+              routeIndex,
+              output.moduleId,
+              moduleIndex,
+              targetChunkId,
+              targetEvent,
+              output.message,
+              JSON.stringify(output.blocks || []),
+              JSON.stringify(output.sourceRefs),
+              JSON.stringify(output.choices),
+              output.diagram,
+              JSON.stringify(output.stateUpdate),
+              JSON.stringify(routeBefore),
+              JSON.stringify(routeAfter),
+              now
+            );
+          const completed = getDb()
+            .query<{ count: number }, [string]>("SELECT COUNT(*) AS count FROM prepared_learning_messages WHERE message_set_id = ?")
+            .get(messageSetId)?.count || 0;
+          getDb()
+            .query(
+              `UPDATE learning_message_sets
+               SET status = ?, completed_messages = ?, next_route_index = ?, total_messages = CASE WHEN ? THEN ? ELSE total_messages END,
+                   last_checkpoint_at = ?, lease_expires_at = ?, generation_owner_id = CASE WHEN ? THEN NULL ELSE generation_owner_id END, updated_at = ?
+               WHERE id = ?`
+            )
+            .run(isComplete ? "ready" : "generating", completed, routeIndex + 1, isComplete ? 1 : 0, completed, now, now + MESSAGE_SET_LEASE_MS, isComplete ? 1 : 0, now, messageSetId);
+          return true;
+        }).immediate();
+        if (!committed) return;
+        generated += 1;
+        this.emitMessageSet(messageSetId);
+        if (isComplete) {
+          this.recordMessageSetEvent(messageSetId, "ready", null, "message_set_generator", { completedMessages: routeIndex + 1 });
+          return;
+        }
+      }
+      const latest = this.getMessageSetRow(messageSetId);
+      if (latest.status === "generating" && latest.next_route_index >= MAX_BATCH_STEPS) {
+        getDb().query("UPDATE learning_message_sets SET status = 'partial', error = ?, updated_at = ? WHERE id = ?")
+          .run("안전 한도까지 준비했습니다. 이어서 만들 수 있습니다.", Date.now(), messageSetId);
+        this.recordMessageSetEvent(messageSetId, "partial", "route_limit", "message_set_generator");
+        this.emitMessageSet(messageSetId);
+      }
+    } catch (error) {
+      const row = this.getMessageSetRow(messageSetId);
+      if (row.status === "generating") {
+        const nextStatus: LearningMessageSetStatus = isProviderConnectionError(error)
+          ? "waiting_for_provider"
+          : row.completed_messages > 0 ? "partial" : "failed";
+        getDb().query("UPDATE learning_message_sets SET status = ?, error = ?, generation_owner_id = NULL, lease_expires_at = NULL, updated_at = ? WHERE id = ?")
+          .run(nextStatus, compactError(error), Date.now(), messageSetId);
+        this.recordMessageSetEvent(messageSetId, "generation_failed", isProviderConnectionError(error) ? "provider_unavailable" : "generation_error", "message_set_generator", { error: compactError(error) });
+        this.emitMessageSet(messageSetId);
+      }
+      throw error;
+    }
+  }
+
+  async resumeMessageSetGeneration(messageSetId: string) {
+    const row = this.getMessageSetRow(messageSetId);
+    if (["ready", "cancelled", "superseded"].includes(row.status)) return this.messageSetSummary(row);
+    this.pausedMessageSets.delete(messageSetId);
+    if (row.status === "paused") {
+      getDb().query("UPDATE learning_message_sets SET status = 'interrupted', updated_at = ? WHERE id = ?").run(Date.now(), messageSetId);
+    }
+    await this.launchMessageSetGeneration(messageSetId, false);
+    return this.messageSetSummary(this.getMessageSetRow(messageSetId));
+  }
+
+  async pauseMessageSetGeneration(messageSetId: string) {
+    const row = this.getMessageSetRow(messageSetId);
+    if (row.status === "ready" || row.status === "cancelled" || row.status === "superseded") return this.messageSetSummary(row);
+    this.pausedMessageSets.add(messageSetId);
+    getDb().query("UPDATE learning_message_sets SET status = 'paused', generation_owner_id = NULL, lease_expires_at = NULL, updated_at = ? WHERE id = ?")
+      .run(Date.now(), messageSetId);
+    this.recordMessageSetEvent(messageSetId, "paused", "user_requested", "materials.pauseMessageSetGeneration");
+    this.emitMessageSet(messageSetId);
+    return this.messageSetSummary(this.getMessageSetRow(messageSetId));
+  }
+
+  async recoverInterruptedMessageSets() {
+    const now = Date.now();
+    getDb()
+      .query(
+        `UPDATE learning_message_sets
+         SET status = 'interrupted', generation_owner_id = NULL, lease_expires_at = NULL, updated_at = ?
+         WHERE status = 'generating' AND (lease_expires_at IS NULL OR lease_expires_at < ?)`
+      )
+      .run(now, now);
+    const candidates = getDb()
+      .query<{ id: string }, []>(
+        `SELECT id FROM learning_message_sets
+         WHERE status IN ('interrupted', 'waiting_for_provider')
+         ORDER BY CASE WHEN EXISTS (
+           SELECT 1 FROM learning_sessions session
+           WHERE session.message_set_id = learning_message_sets.id AND session.status = 'active'
+         ) THEN 0 ELSE 1 END, updated_at ASC
+         LIMIT ${MAX_ACTIVE_PREFETCH_JOBS}`
+      )
+      .all();
+    for (const candidate of candidates) await this.launchMessageSetGeneration(candidate.id, false);
+    const foreignLease = getDb()
+      .query<{ lease_expires_at: number | null }, [string]>(
+        `SELECT lease_expires_at FROM learning_message_sets
+         WHERE status = 'generating' AND generation_owner_id IS NOT NULL AND generation_owner_id != ?
+         ORDER BY lease_expires_at ASC LIMIT 1`
+      )
+      .get(this.generationOwnerId)?.lease_expires_at;
+    if (foreignLease) {
+      const delay = Math.max(50, foreignLease - Date.now() + 50);
+      setTimeout(() => void this.recoverInterruptedMessageSets().catch(() => undefined), delay);
+    }
+    return candidates.length;
+  }
+
+  markGeneratingMessageSetsInterrupted() {
+    const now = Date.now();
+    const result = getDb()
+      .query(
+        `UPDATE learning_message_sets
+         SET status = 'interrupted', generation_owner_id = NULL, lease_expires_at = NULL, updated_at = ?
+         WHERE status = 'generating' AND generation_owner_id = ?`
+      )
+      .run(now, this.generationOwnerId);
+    return result.changes;
+  }
+
+  private async waitForPreparedRoute(messageSetId: string, routeIndex: number, timeoutMs = MESSAGE_SET_WAIT_MS) {
+    const started = Date.now();
+    while (Date.now() - started < timeoutMs) {
+      const row = getDb()
+        .query<PreparedLearningMessageRow, [string, number]>(
+          "SELECT * FROM prepared_learning_messages WHERE message_set_id = ? AND route_index = ?"
+        )
+        .get(messageSetId, routeIndex);
+      if (row) return row;
+      const set = this.getMessageSetRow(messageSetId);
+      if (
+        set.status === "generating" &&
+        set.generation_owner_id !== this.generationOwnerId &&
+        (set.lease_expires_at || 0) <= Date.now()
+      ) {
+        getDb().query("UPDATE learning_message_sets SET status = 'interrupted', generation_owner_id = NULL, lease_expires_at = NULL, updated_at = ? WHERE id = ? AND status = 'generating'")
+          .run(Date.now(), messageSetId);
+        await this.launchMessageSetGeneration(messageSetId, false);
+      }
+      if (["failed", "waiting_for_provider", "paused", "cancelled", "superseded"].includes(set.status)) {
+        throw new Error(set.error || "다음 학습 메시지를 아직 준비할 수 없습니다.");
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    throw new Error("다음 학습 메시지를 준비하는 데 시간이 오래 걸리고 있습니다. 잠시 후 다시 시도해 주세요.");
+  }
 
   async listSessions(materialId: string): Promise<SessionSummary[]> {
     const rows = getDb()
@@ -737,7 +1348,8 @@ export class TutorService {
       if (target) {
         return this.sessionMutations.run(target, async () => {
           await this.repairSessionCursorForSession(target, { persistSnapshot: true, stalePrefetches: true });
-          return { session: this.snapshot(target), context: await this.context(target) };
+          const set = await this.ensureSessionMessageSet(target);
+          return { session: this.snapshot(target), context: await this.context(target), messageSet: set };
         });
       }
       throw new Error("No active session is available for this material. Start fresh to create a new session.");
@@ -749,21 +1361,30 @@ export class TutorService {
     if (!firstModule) throw new Error("Course plan has no modules");
     const firstChunk = this.orderedCurriculum(artifacts)[0];
 
-    const settings = await this.settings.get();
+    const messageSet = await this.prepareMessages(materialId, false, true);
     const id = crypto.randomUUID();
     const now = Date.now();
     getDb()
       .query(
         `INSERT INTO learning_sessions
-         (id, project_id, material_id, title, status, current_module_id, completed_module_ids_json, current_chunk_id, covered_chunk_ids_json, model, created_at, updated_at)
-         VALUES (?, ?, ?, ?, 'active', ?, '[]', ?, '[]', ?, ?, ?)`
+         (id, project_id, material_id, title, status, current_module_id, completed_module_ids_json, current_chunk_id, covered_chunk_ids_json,
+          model, message_set_id, last_revealed_route_index, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 'active', ?, '[]', ?, '[]', ?, ?, -1, ?, ?)`
       )
-      .run(id, material.project_id, materialId, material.title, firstModule.id, firstChunk?.id || null, settings.selectedModel, now, now);
+      .run(id, material.project_id, materialId, material.title, firstModule.id, firstChunk?.id || null, messageSet.model, messageSet.id, now, now);
 
-    const firstTurn = await this.createTutorTurn(id, { event: "start_module" });
+    const firstTurn = await this.revealPreparedMessageUnlocked(id);
     await this.persistSessionSnapshot(id);
-    this.scheduleDefaultContinue(id, "assistant_turn");
-    return { session: this.snapshot(id), context: await this.context(id), firstTurn };
+    return { session: this.snapshot(id), context: await this.context(id), messageSet, firstTurn };
+  }
+
+  private async ensureSessionMessageSet(sessionId: string) {
+    const row = this.getSessionRow(sessionId);
+    if (row.message_set_id) return this.messageSetSummary(this.getMessageSetRow(row.message_set_id));
+    const set = await this.prepareMessages(row.material_id, false, false);
+    getDb().query("UPDATE learning_sessions SET message_set_id = ?, model = ?, updated_at = ? WHERE id = ?")
+      .run(set.id, set.model, Date.now(), sessionId);
+    return set;
   }
 
   async load(sessionId: string) {
@@ -772,7 +1393,7 @@ export class TutorService {
 
   private async loadUnlocked(sessionId: string) {
     await this.repairSessionCursorForSession(sessionId, { persistSnapshot: true, stalePrefetches: true });
-    this.scheduleDefaultContinue(sessionId, "session_loaded");
+    if (!this.getSessionRow(sessionId).message_set_id) this.scheduleDefaultContinue(sessionId, "session_loaded");
     return { session: this.snapshot(sessionId), context: await this.context(sessionId) };
   }
 
@@ -828,7 +1449,7 @@ export class TutorService {
     const typedProgressionCommand = classifyProgressionCommand(text);
     if (typedProgressionCommand) {
       if (typedProgressionCommand === "return_to_progress") return this.returnToProgressUnlocked(sessionId);
-      return this.advanceUnlocked(sessionId, "paragraph");
+      return this.continueSessionUnlocked(sessionId);
     }
     const session = this.snapshotHeader(sessionId);
     const inserted = this.insertMessage({
@@ -838,11 +1459,12 @@ export class TutorService {
       moduleId: session.currentModuleId || undefined,
       sourceRefs: [],
       choices: [],
+      conversationKind: "detour",
     });
     try {
-      const output = await this.createTutorTurn(sessionId, { event: "user_message", userText: text });
+      const output = await this.createTutorTurn(sessionId, { event: "user_message", userText: text }, "detour");
       await this.persistSessionSnapshot(sessionId);
-      if (output.stateUpdate.turnMode !== "digress") this.scheduleDefaultContinue(sessionId, "assistant_turn");
+      if (!session.messageSetId && output.stateUpdate.turnMode !== "digress") this.scheduleDefaultContinue(sessionId, "assistant_turn");
       return { session: this.snapshot(sessionId), context: await this.context(sessionId), output };
     } catch (error) {
       // Kill the failed turn: drop the dangling user message so the learner can resubmit cleanly
@@ -854,7 +1476,25 @@ export class TutorService {
   }
 
   async advance(sessionId: string, mode: "chunk" | "paragraph" | "module") {
-    return this.sessionMutations.run(sessionId, () => this.advanceUnlocked(sessionId, mode));
+    if (mode === "module") {
+      const session = this.snapshotHeader(sessionId);
+      const artifacts = await this.artifacts.getArtifacts(session.materialId);
+      const modules = artifacts.coursePlan.modules;
+      const currentIndex = modules.findIndex((module) => module.id === session.currentModuleId);
+      const next = modules[Math.min(modules.length - 1, Math.max(0, currentIndex + 1))];
+      if (next) return this.resumeModule(sessionId, next.id) as Promise<{ session: SessionSnapshot; context: TutorContext; output: TutorTurnOutput }>;
+    }
+    return this.continueSession(sessionId);
+  }
+
+  async continueSession(sessionId: string) {
+    return this.sessionMutations.run(sessionId, () => this.continueSessionUnlocked(sessionId));
+  }
+
+  private async continueSessionUnlocked(sessionId: string) {
+    const output = await this.revealPreparedMessageUnlocked(sessionId);
+    await this.persistSessionSnapshot(sessionId);
+    return { session: this.snapshot(sessionId), context: await this.context(sessionId), output };
   }
 
   private async advanceUnlocked(sessionId: string, mode: "chunk" | "paragraph" | "module") {
@@ -902,6 +1542,12 @@ export class TutorService {
   }
 
   private async returnToProgressUnlocked(sessionId: string) {
+    const boundSetId = this.getSessionRow(sessionId).message_set_id;
+    if (boundSetId) {
+      const output = await this.revealPreparedMessageUnlocked(sessionId, { returning: true });
+      await this.persistSessionSnapshot(sessionId);
+      return { session: this.snapshot(sessionId), context: await this.context(sessionId), output };
+    }
     let session = this.snapshotForPlanning(sessionId);
     if (session.status !== "active") throw new Error("This session is not active");
     const artifacts = await this.artifacts.getArtifacts(session.materialId);
@@ -930,7 +1576,15 @@ export class TutorService {
   }
 
   async selectModule(sessionId: string, moduleId: string) {
-    return this.sessionMutations.run(sessionId, () => this.selectModuleUnlocked(sessionId, moduleId));
+    return this.resumeModule(sessionId, moduleId);
+  }
+
+  async resumeModule(sessionId: string, moduleId: string) {
+    return this.sessionMutations.run(sessionId, async () => {
+      const output = await this.revealPreparedMessageUnlocked(sessionId, { moduleId });
+      await this.persistSessionSnapshot(sessionId);
+      return { session: this.snapshot(sessionId), context: await this.context(sessionId), output };
+    });
   }
 
   private async selectModuleUnlocked(sessionId: string, moduleId: string) {
@@ -949,7 +1603,7 @@ export class TutorService {
   }
 
   async openModule(sessionId: string, moduleId: string) {
-    return this.sessionMutations.run(sessionId, () => this.openModuleUnlocked(sessionId, moduleId));
+    return this.resumeModule(sessionId, moduleId) as Promise<{ session: SessionSnapshot; context: TutorContext; output: TutorTurnOutput }>;
   }
 
   private async openModuleUnlocked(sessionId: string, moduleId: string) {
@@ -1034,6 +1688,9 @@ export class TutorService {
       currentChunkId: row.current_chunk_id,
       coveredChunkIds: jsonArray(row.covered_chunk_ids_json),
       model: row.model || "",
+      messageSetId: row.message_set_id,
+      lastRevealedRouteIndex: row.last_revealed_route_index ?? -1,
+      lastRevealedMessageId: row.last_revealed_message_id,
       messages,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
@@ -1053,6 +1710,9 @@ export class TutorService {
       currentChunkId: row.current_chunk_id,
       coveredChunkIds: jsonArray(row.covered_chunk_ids_json),
       model: row.model || "",
+      messageSetId: row.message_set_id,
+      lastRevealedRouteIndex: row.last_revealed_route_index ?? -1,
+      lastRevealedMessageId: row.last_revealed_message_id,
       messages: [],
       createdAt: row.created_at,
       updatedAt: row.updated_at,
@@ -1140,6 +1800,13 @@ export class TutorService {
       completedModuleCount: completedModuleIds.length,
       totalModuleCount,
       messageCount: row.message_count || 0,
+      messageSetId: row.message_set_id,
+      preparedCount: row.message_set_id ? this.getMessageSetRow(row.message_set_id).completed_messages : 0,
+      consumedCount: row.message_set_id
+        ? getDb().query<{ count: number }, [string]>(
+            "SELECT COUNT(*) AS count FROM learning_messages WHERE session_id = ? AND origin_prepared_message_id IS NOT NULL"
+          ).get(row.id)?.count || 0
+        : 0,
       model: row.model || "",
       createdAt: row.created_at,
       updatedAt: row.updated_at,
@@ -1166,6 +1833,8 @@ export class TutorService {
     batchRunId?: string | null;
     cursorBefore?: PreparedMessageCursor;
     cursorAfter?: PreparedMessageCursor;
+    originPreparedMessageId?: string | null;
+    conversationKind?: "main" | "detour";
   }) {
     return getDb().transaction(() => this.insertMessageRow(input))();
   }
@@ -1184,6 +1853,8 @@ export class TutorService {
     batchRunId?: string | null;
     cursorBefore?: PreparedMessageCursor;
     cursorAfter?: PreparedMessageCursor;
+    originPreparedMessageId?: string | null;
+    conversationKind?: "main" | "detour";
   }) {
     const now = Date.now();
     const id = crypto.randomUUID();
@@ -1200,8 +1871,8 @@ export class TutorService {
       .query(
         `INSERT INTO learning_messages
          (id, session_id, role, content, blocks_json, module_id, source_refs_json, choices_json, visual_id, state_update_json,
-          delivery_state, batch_run_id, cursor_before_json, cursor_after_json, created_at, ordinal)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          delivery_state, batch_run_id, cursor_before_json, cursor_after_json, origin_prepared_message_id, conversation_kind, created_at, ordinal)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         id,
@@ -1218,6 +1889,8 @@ export class TutorService {
         input.batchRunId || null,
         input.cursorBefore ? JSON.stringify(input.cursorBefore) : null,
         input.cursorAfter ? JSON.stringify(input.cursorAfter) : null,
+        input.originPreparedMessageId || null,
+        input.conversationKind || "main",
         now,
         ordinal
       );
@@ -1238,7 +1911,7 @@ export class TutorService {
     for (const row of rows) update.run(row.ordinal + by, row.id);
   }
 
-  private insertAssistantTurn(sessionId: string, output: TutorTurnOutput) {
+  private insertAssistantTurn(sessionId: string, output: TutorTurnOutput, conversationKind: "main" | "detour" = "main") {
     this.insertMessage({
       sessionId,
       role: "assistant",
@@ -1249,6 +1922,7 @@ export class TutorService {
       choices: output.choices,
       visualId: output.diagram,
       stateUpdate: output.stateUpdate,
+      conversationKind,
     });
   }
 
@@ -1276,7 +1950,7 @@ export class TutorService {
     };
   }
 
-  private async createTutorTurn(sessionId: string, payload: TurnPayload): Promise<TutorTurnOutput> {
+  private async createTutorTurn(sessionId: string, payload: TurnPayload, conversationKind: "main" | "detour" = "main"): Promise<TutorTurnOutput> {
     const session = this.snapshotForPlanning(sessionId);
     const guard = this.sessionCommitGuard(session);
     const artifacts = await this.artifacts.getArtifacts(session.materialId);
@@ -1323,13 +1997,14 @@ export class TutorService {
         choices: farewell.choices,
         visualId: farewell.diagram,
         stateUpdate: farewell.stateUpdate,
+        conversationKind,
       });
       return farewell;
     }
 
     const sanitized = await this.generateTutorTurnDraft(session, artifacts, payload);
     this.assertSessionCommitGuard(sessionId, guard);
-    this.insertAssistantTurn(sessionId, sanitized);
+    this.insertAssistantTurn(sessionId, sanitized, conversationKind);
     return sanitized;
   }
 
@@ -2101,6 +2776,217 @@ export class TutorService {
     };
   }
 
+  private messageOutputFromPreparedRow(row: PreparedLearningMessageRow): TutorTurnOutput {
+    return {
+      message: row.content,
+      blocks: jsonBlocks(row.blocks_json),
+      diagram: row.visual_id,
+      visualPlacement: null,
+      choices: jsonArray(row.choices_json),
+      progress: 0,
+      moduleId: row.module_id,
+      sourceRefs: jsonArray(row.source_refs_json),
+      stateUpdate: row.state_update_json ? JSON.parse(row.state_update_json) : {
+        nextPhase: "explain",
+        readyToContinue: true,
+        nextSuggestedStep: "continue",
+        detectedConfusion: null,
+      },
+    };
+  }
+
+  private nextPreparedRow(sessionId: string, messageSetId: string, afterRouteIndex: number, moduleId?: string) {
+    if (moduleId) {
+      const moduleProgress = getDb()
+        .query<{ last_revealed_module_index: number }, [string, string]>(
+          "SELECT last_revealed_module_index FROM session_module_progress WHERE session_id = ? AND module_id = ?"
+        )
+        .get(sessionId, moduleId)?.last_revealed_module_index ?? -1;
+      return getDb()
+        .query<PreparedLearningMessageRow, [string, string, number, string]>(
+          `SELECT p.* FROM prepared_learning_messages p
+           WHERE p.message_set_id = ? AND p.module_id = ? AND p.module_index > ?
+             AND NOT EXISTS (
+               SELECT 1 FROM learning_messages visible
+               WHERE visible.session_id = ? AND visible.origin_prepared_message_id = p.id
+             )
+           ORDER BY p.module_index ASC LIMIT 1`
+        )
+        .get(messageSetId, moduleId, moduleProgress, sessionId);
+    }
+    const after = getDb()
+      .query<PreparedLearningMessageRow, [string, number, string]>(
+        `SELECT p.* FROM prepared_learning_messages p
+         WHERE p.message_set_id = ? AND p.route_index > ?
+           AND NOT EXISTS (
+             SELECT 1 FROM learning_messages visible
+             WHERE visible.session_id = ? AND visible.origin_prepared_message_id = p.id
+           )
+         ORDER BY p.route_index ASC LIMIT 1`
+      )
+      .get(messageSetId, afterRouteIndex, sessionId);
+    if (after) return after;
+    return getDb()
+      .query<PreparedLearningMessageRow, [string, string]>(
+        `SELECT p.* FROM prepared_learning_messages p
+         WHERE p.message_set_id = ?
+           AND NOT EXISTS (
+             SELECT 1 FROM learning_messages visible
+             WHERE visible.session_id = ? AND visible.origin_prepared_message_id = p.id
+           )
+         ORDER BY p.route_index ASC LIMIT 1`
+      )
+      .get(messageSetId, sessionId);
+  }
+
+  private async waitForNextSessionPreparedRow(sessionId: string, messageSetId: string, afterRouteIndex: number, moduleId?: string) {
+    let row = this.nextPreparedRow(sessionId, messageSetId, afterRouteIndex, moduleId);
+    if (row) return row;
+    let set = this.getMessageSetRow(messageSetId);
+    if (["queued", "interrupted", "waiting_for_provider", "partial", "failed"].includes(set.status)) {
+      await this.launchMessageSetGeneration(messageSetId, false);
+    }
+    const started = Date.now();
+    while (Date.now() - started < MESSAGE_SET_WAIT_MS) {
+      row = this.nextPreparedRow(sessionId, messageSetId, afterRouteIndex, moduleId);
+      if (row) return row;
+      set = this.getMessageSetRow(messageSetId);
+      if (
+        set.status === "generating" &&
+        set.generation_owner_id !== this.generationOwnerId &&
+        (set.lease_expires_at || 0) <= Date.now()
+      ) {
+        getDb().query("UPDATE learning_message_sets SET status = 'interrupted', generation_owner_id = NULL, lease_expires_at = NULL, updated_at = ? WHERE id = ? AND status = 'generating'")
+          .run(Date.now(), messageSetId);
+        await this.launchMessageSetGeneration(messageSetId, false);
+        continue;
+      }
+      if (set.status === "paused") throw new Error("메시지 준비가 일시 중지되어 있습니다. ‘이어서 만들기’를 선택해 주세요.");
+      if (set.status === "cancelled" || set.status === "superseded") throw new Error("이 session이 연결된 prepared version은 더 이상 생성할 수 없습니다.");
+      if (set.status === "waiting_for_provider" || set.status === "failed") throw new Error(set.error || "다음 메시지를 준비할 수 없습니다.");
+      if (set.status === "ready") throw new Error(moduleId ? "이 module에서 더 읽지 않은 메시지가 없습니다." : "준비된 학습 route를 모두 확인했습니다.");
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    throw new Error("다음 학습 메시지를 준비하는 데 시간이 오래 걸리고 있습니다. 다른 화면을 이용한 뒤 다시 시도해 주세요.");
+  }
+
+  private cursorFromPreparedRow(row: PreparedLearningMessageRow, session: SessionSnapshot): PreparedMessageCursor {
+    try {
+      const parsed = JSON.parse(row.route_after_json) as Partial<PreparedMessageCursor>;
+      return {
+        currentModuleId: parsed.currentModuleId ?? row.module_id,
+        currentChunkId: parsed.currentChunkId ?? row.source_chunk_id ?? session.currentChunkId,
+        coveredChunkIds: Array.isArray(parsed.coveredChunkIds) ? parsed.coveredChunkIds : session.coveredChunkIds,
+        completedModuleIds: Array.isArray(parsed.completedModuleIds) ? parsed.completedModuleIds : session.completedModuleIds,
+      };
+    } catch {
+      return {
+        currentModuleId: row.module_id,
+        currentChunkId: row.source_chunk_id || session.currentChunkId,
+        coveredChunkIds: session.coveredChunkIds,
+        completedModuleIds: session.completedModuleIds,
+      };
+    }
+  }
+
+  private async revealPreparedMessageUnlocked(sessionId: string, options: { returning?: boolean; moduleId?: string } = {}) {
+    const session = this.snapshotHeader(sessionId);
+    if (session.status !== "active") throw new Error("This session is not active");
+    const messageSet = await this.ensureSessionMessageSet(sessionId);
+    const row = await this.waitForNextSessionPreparedRow(
+      sessionId,
+      messageSet.id,
+      session.lastRevealedRouteIndex,
+      options.moduleId
+    );
+    let output = this.messageOutputFromPreparedRow(row);
+    if (options.returning) output = this.withReturningBridge(output);
+    const generatedCursor = this.cursorFromPreparedRow(row, session);
+    const coveredCandidates = uniqueStrings([...session.coveredChunkIds, ...generatedCursor.coveredChunkIds]);
+    const actuallyCoveredChunkIds = coveredCandidates.filter((chunkId) => {
+      const unread = getDb()
+        .query<{ count: number }, [string, string, string, string]>(
+          `SELECT COUNT(*) AS count FROM prepared_learning_messages p
+           WHERE p.message_set_id = ? AND p.source_chunk_id = ? AND p.id != ?
+             AND NOT EXISTS (
+               SELECT 1 FROM learning_messages visible
+               WHERE visible.session_id = ? AND visible.origin_prepared_message_id = p.id
+             )`
+        )
+        .get(messageSet.id, chunkId, row.id, sessionId)?.count || 0;
+      return unread === 0;
+    });
+    const completedModuleIds = uniqueStrings([...session.completedModuleIds, ...generatedCursor.completedModuleIds]).filter((moduleId) => {
+      const unread = getDb()
+        .query<{ count: number }, [string, string, string, string]>(
+          `SELECT COUNT(*) AS count FROM prepared_learning_messages p
+           WHERE p.message_set_id = ? AND p.module_id = ? AND p.id != ?
+             AND NOT EXISTS (
+               SELECT 1 FROM learning_messages visible
+               WHERE visible.session_id = ? AND visible.origin_prepared_message_id = p.id
+             )`
+        )
+        .get(messageSet.id, moduleId, row.id, sessionId)?.count || 0;
+      return unread === 0;
+    });
+    const cursorAfter: PreparedMessageCursor = {
+      currentModuleId: options.moduleId ? row.module_id : generatedCursor.currentModuleId,
+      currentChunkId: options.moduleId ? row.source_chunk_id || session.currentChunkId : generatedCursor.currentChunkId,
+      coveredChunkIds: actuallyCoveredChunkIds,
+      completedModuleIds,
+    };
+    let visibleMessageId = "";
+    getDb().transaction(() => {
+      const current = this.getSessionRow(sessionId);
+      if (current.message_set_id !== messageSet.id) throw new Error("Session message set changed before reveal");
+      const inserted = this.insertMessageRow({
+        sessionId,
+        role: "assistant",
+        content: output.message,
+        blocks: output.blocks,
+        moduleId: output.moduleId,
+        sourceRefs: output.sourceRefs,
+        choices: output.choices,
+        visualId: output.diagram,
+        stateUpdate: output.stateUpdate,
+        originPreparedMessageId: row.id,
+        conversationKind: "main",
+      });
+      visibleMessageId = inserted.id;
+      const now = Date.now();
+      getDb()
+        .query(
+          `UPDATE learning_sessions
+           SET current_module_id = ?, current_chunk_id = ?, covered_chunk_ids_json = ?, completed_module_ids_json = ?,
+               last_revealed_route_index = ?, last_revealed_message_id = ?, started_at = COALESCE(started_at, ?), updated_at = ?
+           WHERE id = ?`
+        )
+        .run(
+          cursorAfter.currentModuleId,
+          cursorAfter.currentChunkId,
+          JSON.stringify(cursorAfter.coveredChunkIds),
+          JSON.stringify(cursorAfter.completedModuleIds),
+          row.route_index,
+          visibleMessageId,
+          now,
+          now,
+          sessionId
+        );
+      getDb()
+        .query(
+          `INSERT INTO session_module_progress
+           (session_id, module_id, last_revealed_module_index, last_revealed_message_id, updated_at)
+           VALUES (?, ?, ?, ?, ?)
+           ON CONFLICT(session_id, module_id) DO UPDATE SET
+             last_revealed_module_index = MAX(session_module_progress.last_revealed_module_index, excluded.last_revealed_module_index),
+             last_revealed_message_id = excluded.last_revealed_message_id,
+             updated_at = excluded.updated_at`
+        )
+        .run(sessionId, row.module_id, row.module_index, visibleMessageId, now);
+    }).immediate();
+    return output;
+  }
+
   private preparedCursorMatches(session: SessionSnapshot, cursor: PreparedMessageCursor) {
     return (
       session.currentModuleId === cursor.currentModuleId &&
@@ -2378,7 +3264,8 @@ export class TutorService {
       type: "bridge",
       body: "좋아요. 방금 곁가지는 여기서 잠시 접고, 원래 흐름의 다음 대목으로 돌아가겠습니다.",
     };
-    const blocks = [bridge, ...(output.blocks || [])];
+    const routeBlocks = output.blocks?.length ? output.blocks : output.message.trim() ? [{ type: "paragraph" as const, body: output.message }] : [];
+    const blocks = [bridge, ...routeBlocks];
     return {
       ...output,
       blocks,
@@ -2440,10 +3327,8 @@ export class TutorService {
     payload: TurnPayload,
     attempt = 0
   ) {
-    const settings = await this.settings.get();
-    const key = await this.secrets.getApiKey(settings.aiProvider);
-    if (!settings.providers[settings.aiProvider].selectedModel || !key.value) throw new Error("AI provider is not configured");
-    const client = createAiProviderClient(settings, key.value);
+    const runtime = await this.tutorProviderRuntime(session);
+    const { settings, client } = runtime;
     const languageInstruction = tutorLanguageInstruction(settings.tutorLanguage);
     const chunks = this.contextualChunks(artifacts, module, payload.userText, focusChunk?.id);
     const concepts = artifacts.conceptMap.filter((concept) => module.conceptIds.includes(concept.id));
@@ -2451,7 +3336,8 @@ export class TutorService {
     const originalTermLine = originalTerms.length
       ? `Original terms visible in the current context. Preserve these spellings when mentioning them, or add them in parentheses after a Korean gloss/transliteration: ${originalTerms.join(", ")}`
       : "";
-    const levelInstruction = tutorLevelInstruction(this.projectLearningLevel(session.projectId));
+    const levelInstruction = tutorLevelInstruction(runtime.learningLevel);
+    const annotationContext = materialAnnotationContext(artifacts);
     const intent = classifyIntent(payload.userText || "", payload.event);
     const allComplete = artifacts.sourceChunks.length > 0 && session.coveredChunkIds.length >= artifacts.sourceChunks.length;
     const instruction = allComplete
@@ -2537,7 +3423,8 @@ Lecture plan: ${JSON.stringify(lecturePlan)}
 Presentation plan: ${JSON.stringify(presentationPlan)}
 Concepts: ${concepts.map((concept) => `${concept.name}: ${concept.definition}`).join("\n")}
 ${courseOverviewLine}
-${focusLine}
+	${focusLine}
+	${annotationContext}
 	Surrounding source chunks (context only — teach the current chunk above): ${chunks.map((chunk) => `[${chunk.id}] ${chunk.text}`).join("\n\n")}
 Available visual ids: ${visualIds.join(", ")}
 Block schema:
@@ -2574,6 +3461,31 @@ Output schema: {"message":"plain text fallback summary","blocks":[/* 2-4 blocks 
     return result as Partial<TutorTurnOutput>;
   }
 
+  private async tutorProviderRuntime(session: SessionSnapshot) {
+    const current = await this.settings.get();
+    const override = this.generationRuntimeOverrides.get(session.id);
+    const provider = override?.provider || current.aiProvider;
+    const model = override?.model || current.providers[provider].selectedModel;
+    const key = await this.secrets.getApiKey(provider);
+    if (!model || !key.value) throw new Error("AI provider is not configured");
+    const settings = override
+      ? {
+          ...current,
+          aiProvider: provider,
+          tutorLanguage: override.tutorLanguage,
+          providers: {
+            ...current.providers,
+            [provider]: { ...current.providers[provider], selectedModel: model },
+          },
+        }
+      : current;
+    return {
+      settings,
+      client: createAiProviderClient(settings, key.value, provider),
+      learningLevel: override?.learningLevel || this.projectLearningLevel(session.projectId),
+    };
+  }
+
   private async aiTutorTextRepairOutput(
     artifacts: MaterialArtifacts,
     module: CourseModule,
@@ -2581,11 +3493,8 @@ Output schema: {"message":"plain text fallback summary","blocks":[/* 2-4 blocks 
     session: SessionSnapshot,
     payload: TurnPayload
   ): Promise<Partial<TutorTurnOutput>> {
-    const settings = await this.settings.get();
-    const key = await this.secrets.getApiKey(settings.aiProvider);
-    if (!settings.providers[settings.aiProvider].selectedModel || !key.value) throw new Error("AI provider is not configured");
-
-    const client = createAiProviderClient(settings, key.value);
+    const runtime = await this.tutorProviderRuntime(session);
+    const { settings, client } = runtime;
     const languageInstruction = tutorLanguageInstruction(settings.tutorLanguage);
     const chunks = this.contextualChunks(artifacts, module, payload.userText, focusChunk?.id);
     const concepts = artifacts.conceptMap.filter((concept) => module.conceptIds.includes(concept.id));
@@ -2593,7 +3502,8 @@ Output schema: {"message":"plain text fallback summary","blocks":[/* 2-4 blocks 
     const originalTermLine = originalTerms.length
       ? `Original terms visible in the current context. Preserve these spellings when mentioning them, or add them in parentheses after a Korean gloss/transliteration: ${originalTerms.join(", ")}`
       : "";
-    const levelInstruction = tutorLevelInstruction(this.projectLearningLevel(session.projectId));
+    const levelInstruction = tutorLevelInstruction(runtime.learningLevel);
+    const annotationContext = materialAnnotationContext(artifacts);
     const intent = classifyIntent(payload.userText || "", payload.event);
     const isDigression = DIGRESSION_INTENTS.has(intent);
     const ready = payload.event === "user_message" && intent === "satisfied";
@@ -2618,6 +3528,7 @@ Current topic: ${module.title}
 Internal objective: ${module.learningGoal}
 Concepts: ${concepts.map((concept) => `${concept.name}: ${concept.definition}`).join("\n")}
 ${focusLine}
+${annotationContext}
 Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${chunk.text}`).join("\n\n")}`,
         },
         ...clampHistory(session.messages),

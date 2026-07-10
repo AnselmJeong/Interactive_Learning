@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { canReuseMaterialForGeneration, materialGenerationKey } from "./course-artifact-service";
+import { canReuseMaterialForGeneration, generateMaterialOverview, materialGenerationKey } from "./course-artifact-service";
+import type { SourceChunk } from "../shared/artifact-types";
+import type { AiChatClient, ChatParams } from "./openai-compatible-client";
 
 describe("material generation dedupe", () => {
   test("does not reuse interrupted generating material rows", () => {
@@ -13,5 +15,57 @@ describe("material generation dedupe", () => {
       materialGenerationKey("project-a", ["source-a", "source-b"])
     );
     expect(materialGenerationKey("project-b", ["source-a", "source-b"])).not.toBe(materialGenerationKey("project-a", ["source-a", "source-b"]));
+  });
+});
+
+describe("material overview", () => {
+  test("sends every source chunk to the model and stores a Korean-only subject summary", async () => {
+    const chunks: SourceChunk[] = [
+      { id: "chunk-1", headingPath: ["Opening tension"], locator: "p. 1", kind: "body", text: "The source begins by challenging a familiar assumption. It then establishes the central problem.", confidence: 1 },
+      { id: "chunk-2", headingPath: ["Consequences"], locator: "p. 2", kind: "body", text: "The later argument traces the consequences through a concrete case.", confidence: 1 },
+    ];
+    let requestMessages: ChatParams["messages"] = [];
+    const client = {
+      listModels: async () => [],
+      chatText: async () => "",
+      chatJson: async (params: ChatParams) => {
+        requestMessages = params.messages;
+        return {
+          paragraph: "이 글은 익숙한 가정에 의문을 제기하며 문제 해결이 어떤 전제와 선택을 통해 구체적인 결과로 이어지는지를 다룬다. 중심 논지는 문제를 정의하는 방식이 가능한 해법의 범위와 결과를 결정한다는 데 있으며, 추상적인 판단과 실제 사례 사이의 긴장을 함께 분석한다. 이를 통해 사고 과정과 선택의 결과가 서로 분리된 단계가 아니라 하나의 연속된 구조임을 보여준다.",
+        };
+      },
+    } satisfies AiChatClient;
+    const overview = await generateMaterialOverview("A difficult source", chunks, { client, model: "test-model" });
+    const sourcePrompt = requestMessages.find((message) => message.role === "user")?.content || "";
+    expect(sourcePrompt).toContain(chunks[0]!.text);
+    expect(sourcePrompt).toContain(chunks[1]!.text);
+    expect(overview.paragraph).not.toMatch(/[A-Za-z]/);
+    expect(overview.sourceChunkIds).toEqual(["chunk-1", "chunk-2"]);
+    expect(overview.generatorVersion).toBe("material-overview-v2-llm-full-source");
+  });
+
+  test("retries when the model includes English or generic learning copy", async () => {
+    let calls = 0;
+    const client = {
+      listModels: async () => [],
+      chatText: async () => "",
+      chatJson: async () => {
+        calls += 1;
+        return calls === 1
+          ? { paragraph: "This source explains modules. 학습에서는 핵심 구조를 자기 말로 설명합니다." }
+          : {
+              paragraph: "이 글은 인간이 문제를 발견하고 해법을 선택하는 과정에서 어떤 논리적 전제가 작동하는지를 분석한다. 문제의 표현 방식과 선택 가능한 행동의 범위가 서로 영향을 주고받으며, 합리적 판단처럼 보이는 과정에도 역사적 조건과 실천적 제약이 개입한다는 점이 중심 주장이다. 결국 사고와 행동은 분리된 절차가 아니라 환경 속에서 함께 형성되는 구조로 제시된다.",
+            };
+      },
+    } satisfies AiChatClient;
+    const chunks: SourceChunk[] = [
+      { id: "chunk-1", headingPath: [], locator: "p. 1", kind: "body", text: "Complete source text.", confidence: 1 },
+    ];
+
+    const overview = await generateMaterialOverview("Source", chunks, { client, model: "test-model" });
+
+    expect(calls).toBe(2);
+    expect(overview.paragraph).not.toMatch(/[A-Za-z]/);
+    expect(overview.paragraph).not.toContain("학습에서는");
   });
 });

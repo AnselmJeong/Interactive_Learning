@@ -216,3 +216,101 @@ describe("prepared learning messages", () => {
     expect(row?.status).toBe("stale");
   });
 });
+
+describe("immutable prepared message route", () => {
+  let tempRoot = "";
+
+  beforeEach(async () => {
+    tempRoot = await mkdtemp(join(tmpdir(), "learnie-message-set-test-"));
+    process.env.LEARNIE_APP_DATA_ROOT = tempRoot;
+    closeDbForTests();
+  });
+
+  afterEach(async () => {
+    closeDbForTests();
+    delete process.env.LEARNIE_APP_DATA_ROOT;
+    if (tempRoot) await rm(tempRoot, { recursive: true, force: true });
+    tempRoot = "";
+  });
+
+  function seedRoute() {
+    const now = Date.now();
+    const db = getDb();
+    db.query("INSERT INTO projects (id, title, created_at, updated_at) VALUES ('project-route', 'Project', ?, ?)").run(now, now);
+    db.query("INSERT INTO learning_materials (id, project_id, title, status, created_at, updated_at) VALUES ('material-route', 'project-route', 'Material', 'ready', ?, ?)").run(now, now);
+    db.query(
+      `INSERT INTO learning_message_sets
+       (id, material_id, status, provider, model, tutor_language, learning_level, material_fingerprint,
+        annotation_snapshot_hash, prompt_version, generation_context_hash, total_messages, completed_messages,
+        next_route_index, created_at, updated_at)
+       VALUES ('set-route', 'material-route', 'ready', 'openai', 'model', 'ko', 'medium', 'material', 'annotations',
+        'prompt', 'context', 3, 3, 3, ?, ?)`
+    ).run(now, now);
+    db.query(
+      `INSERT INTO learning_sessions
+       (id, project_id, material_id, title, status, current_module_id, completed_module_ids_json, current_chunk_id,
+        covered_chunk_ids_json, model, message_set_id, last_revealed_route_index, created_at, updated_at)
+       VALUES ('session-route', 'project-route', 'material-route', 'Session', 'active', 'module-a', '[]', 'chunk-a1', '[]',
+        'model', 'set-route', -1, ?, ?)`
+    ).run(now, now);
+    const insert = db.query(
+      `INSERT INTO prepared_learning_messages
+       (id, message_set_id, route_index, module_id, module_index, source_chunk_id, target_event, content, blocks_json,
+        source_refs_json, choices_json, state_update_json, route_before_json, route_after_json, created_at)
+       VALUES (?, 'set-route', ?, ?, ?, ?, ?, ?, '[]', ?, '[]', ?, ?, ?, ?)`
+    );
+    const state = (moduleId: string, chunkId: string, covered: string[] = []) => JSON.stringify({
+      currentModuleId: moduleId,
+      currentChunkId: chunkId,
+      coveredChunkIds: covered,
+      completedModuleIds: [],
+    });
+    const update = JSON.stringify({ nextPhase: "explain", readyToContinue: true, nextSuggestedStep: "continue", detectedConfusion: null, turnMode: "teach" });
+    insert.run("prepared-a0", 0, "module-a", 0, "chunk-a1", "start_module", "A0", '["chunk-a1"]', update, state("module-a", "chunk-a1"), state("module-a", "chunk-a1"), now);
+    insert.run("prepared-a1", 1, "module-a", 1, "chunk-a2", "next_chunk", "A1", '["chunk-a2"]', update, state("module-a", "chunk-a1"), state("module-a", "chunk-a2", ["chunk-a1"]), now + 1);
+    insert.run("prepared-b0", 2, "module-b", 0, "chunk-b1", "start_module", "B0", '["chunk-b1"]', update, state("module-a", "chunk-a2", ["chunk-a1"]), state("module-b", "chunk-b1", ["chunk-a1", "chunk-a2"]), now + 2);
+  }
+
+  test("detours add only visible transcript rows and return reveals the exact unread route message", async () => {
+    seedRoute();
+    const service = new TutorService();
+    const internal = service as unknown as {
+      revealPreparedMessageUnlocked: (id: string, options?: { returning?: boolean }) => Promise<{ message: string }>;
+      insertMessage: (input: { sessionId: string; role: "user" | "assistant"; content: string; sourceRefs: string[]; conversationKind: "detour" }) => void;
+    };
+    expect((await internal.revealPreparedMessageUnlocked("session-route")).message).toBe("A0");
+    internal.insertMessage({ sessionId: "session-route", role: "user", content: "Detour question", sourceRefs: [], conversationKind: "detour" });
+    internal.insertMessage({ sessionId: "session-route", role: "assistant", content: "Detour answer", sourceRefs: [], conversationKind: "detour" });
+    expect((await internal.revealPreparedMessageUnlocked("session-route", { returning: true })).message).toContain("A1");
+
+    const db = getDb();
+    expect(db.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM prepared_learning_messages WHERE message_set_id = 'set-route'").get()?.count).toBe(3);
+    expect(db.query<{ value: string }, []>("SELECT group_concat(origin_prepared_message_id, ',') AS value FROM learning_messages WHERE origin_prepared_message_id IS NOT NULL ORDER BY ordinal").get()?.value).toBe("prepared-a0,prepared-a1");
+    expect(db.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM learning_messages WHERE conversation_kind = 'detour'").get()?.count).toBe(2);
+  });
+
+  test("module jump preserves the prior module pointer and resumes at its next unread message", async () => {
+    seedRoute();
+    const service = new TutorService();
+    const internal = service as unknown as {
+      revealPreparedMessageUnlocked: (id: string, options?: { moduleId?: string }) => Promise<{ message: string }>;
+    };
+    expect((await internal.revealPreparedMessageUnlocked("session-route")).message).toBe("A0");
+    expect((await internal.revealPreparedMessageUnlocked("session-route", { moduleId: "module-b" })).message).toBe("B0");
+    const jumpProgress = getDb().query<{ covered_chunk_ids_json: string; completed_module_ids_json: string }, []>(
+      "SELECT covered_chunk_ids_json, completed_module_ids_json FROM learning_sessions WHERE id = 'session-route'"
+    ).get();
+    expect(JSON.parse(jumpProgress?.covered_chunk_ids_json || "[]")).toEqual(["chunk-a1"]);
+    expect(JSON.parse(jumpProgress?.completed_module_ids_json || "[]")).toEqual([]);
+    expect((await internal.revealPreparedMessageUnlocked("session-route", { moduleId: "module-a" })).message).toBe("A1");
+
+    const origins = getDb()
+      .query<{ origin_prepared_message_id: string }, []>(
+        "SELECT origin_prepared_message_id FROM learning_messages WHERE origin_prepared_message_id IS NOT NULL ORDER BY ordinal"
+      )
+      .all()
+      .map((row) => row.origin_prepared_message_id);
+    expect(origins).toEqual(["prepared-a0", "prepared-b0", "prepared-a1"]);
+    expect(getDb().query<{ count: number }, []>("SELECT COUNT(*) AS count FROM prepared_learning_messages WHERE message_set_id = 'set-route'").get()?.count).toBe(3);
+  });
+});

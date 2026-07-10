@@ -15,7 +15,7 @@ const rpc = Electroview.defineRPC<AppRPC>({
       "tutor.turnCompleted": (payload) => window.dispatchEvent(new CustomEvent("tutor-completed", { detail: payload })),
       "tutor.turnError": (payload) => window.dispatchEvent(new CustomEvent("tutor-error", { detail: payload })),
       "tutor.prefetchStatus": (payload) => window.dispatchEvent(new CustomEvent("tutor-prefetch-status", { detail: payload })),
-      "sessions.batchMessagesStatus": (payload) => window.dispatchEvent(new CustomEvent("session-batch-status", { detail: payload })),
+      "materials.messageSetProgress": (payload) => window.dispatchEvent(new CustomEvent("message-set-progress", { detail: payload })),
       "app.openAbout": () => window.dispatchEvent(new CustomEvent("app-open-about")),
     },
   },

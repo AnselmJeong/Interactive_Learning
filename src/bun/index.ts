@@ -1,4 +1,4 @@
-import { BrowserView, Utils } from "electrobun/bun";
+import Electrobun, { BrowserView, Utils } from "electrobun/bun";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { ProjectService } from "./project-service";
@@ -15,20 +15,22 @@ import type { AiProviderConnectionInput, AppRPC, BuddyMessageInput } from "../sh
 import type { AiProviderKeyState } from "../shared/settings-types";
 import { modelSupportsVision } from "../shared/vision-models";
 import { openFilesystemPath } from "./platform-utils";
-import { configureAppDataBase } from "./paths";
+import { configureAppDataBase, configureDatabaseBase, stableDatabaseBase } from "./paths";
 import { normalizeSelectedPaths } from "./file-dialog-selection";
 
 configureAppDataBase(Utils.paths.userData);
+configureDatabaseBase(stableDatabaseBase(Utils.paths.userData));
 
 const projects = new ProjectService();
 const settings = new SettingsService();
 const secrets = new AiProviderSettingsService();
 const sources = new SourceService();
-const materials = new CourseArtifactService();
+const materials = new CourseArtifactService(materialOverviewRuntime);
 const annotations = new AnnotationService(materials, providerClient);
 const tutor = new TutorService(
   (status) => sendToView("tutor.prefetchStatus", status),
-  (status) => sendToView("sessions.batchMessagesStatus", status)
+  undefined,
+  (status) => sendToView("materials.messageSetProgress", status)
 );
 const MAX_FIGURE_VISION_IMAGE_BYTES = 6_000_000;
 
@@ -39,6 +41,11 @@ void Promise.resolve(materials.recoverInterruptedGenerations()).then((count) => 
   if (count) console.warn(`Recovered ${count} interrupted material generation(s).`);
 }).catch((error) => {
   console.warn("Failed to recover interrupted material generations", error);
+});
+void tutor.recoverInterruptedMessageSets().then((count) => {
+  if (count) console.warn(`Resumed ${count} interrupted prepared message set(s).`);
+}).catch((error) => {
+  console.warn("Failed to recover interrupted prepared message sets", error);
 });
 
 function sendToView(message: string, payload: unknown) {
@@ -76,6 +83,13 @@ async function providerClient(input: AiProviderConnectionInput = {}) {
     apiKey,
     client: createAiProviderClient(publicSettings, apiKey.value, provider),
   };
+}
+
+async function materialOverviewRuntime() {
+  const runtime = await providerClient();
+  const model = runtime.publicSettings.providers[runtime.provider].selectedModel;
+  if (!model) throw new Error("학습 모델을 먼저 선택해야 자료 전체 요약을 만들 수 있습니다");
+  return { client: runtime.client, model };
 }
 
 async function providerStatus(reachable = false, error?: string, input: AiProviderConnectionInput = {}) {
@@ -336,6 +350,10 @@ const rpc = BrowserView.defineRPC<AppRPC>({
       },
       "materials.list": ({ projectId }) => materials.list(projectId),
       "materials.getArtifacts": ({ materialId }) => materials.getArtifacts(materialId),
+      "materials.prepareMessages": ({ materialId, forceNewVersion }) => tutor.prepareMessages(materialId, Boolean(forceNewVersion)),
+      "materials.messageSetStatus": ({ materialId }) => tutor.messageSetStatus(materialId),
+      "materials.resumeMessageSetGeneration": ({ messageSetId }) => tutor.resumeMessageSetGeneration(messageSetId),
+      "materials.pauseMessageSetGeneration": ({ messageSetId }) => tutor.pauseMessageSetGeneration(messageSetId),
       "figures.getAsset": ({ materialId, figureId }) => getFigureAsset(materialId, figureId),
       "figures.explain": ({ materialId, figureId, userPrompt, contextChunkIds }) => explainFigure(materialId, figureId, userPrompt, contextChunkIds),
       "annotations.define": (params) => annotations.define(params),
@@ -350,14 +368,13 @@ const rpc = BrowserView.defineRPC<AppRPC>({
       "sessions.start": ({ materialId, mode, sessionId }) => tutor.start(materialId, { mode, sessionId }),
       "sessions.load": ({ sessionId }) => tutor.load(sessionId),
       "sessions.advance": ({ sessionId, mode }) => tutor.advance(sessionId, mode),
+      "sessions.continue": ({ sessionId }) => tutor.continueSession(sessionId),
       "sessions.returnToProgress": ({ sessionId }) => tutor.returnToProgress(sessionId),
       "sessions.prefetchStatus": ({ sessionId }) => tutor.prefetchStatus(sessionId),
-      "sessions.batchMessagesStart": ({ materialId, sessionId, force }) => tutor.batchMessagesStart(materialId, { sessionId, force }),
-      "sessions.batchMessagesCancel": ({ sessionId }) => tutor.batchMessagesCancel(sessionId),
-      "sessions.batchMessagesStatus": ({ materialId, sessionId }) => tutor.batchMessagesStatus(materialId, sessionId),
       "sessions.delete": ({ sessionId }) => tutor.deleteSession(sessionId),
       "sessions.selectModule": ({ sessionId, moduleId }) => tutor.selectModule(sessionId, moduleId),
       "sessions.openModule": ({ sessionId, moduleId }) => tutor.openModule(sessionId, moduleId),
+      "sessions.resumeModule": ({ sessionId, moduleId }) => tutor.resumeModule(sessionId, moduleId),
       "tutor.sendTurn": async ({ sessionId, userText }) => {
         sendToView("tutor.turnStarted", { sessionId });
         try {
@@ -375,6 +392,7 @@ const rpc = BrowserView.defineRPC<AppRPC>({
         if (typeof patch.projectRootFolder === "string") {
           await projects.migrateUnsetProjectRoots(next.projectRootFolder);
         }
+        void tutor.recoverInterruptedMessageSets().catch(() => undefined);
         return next;
       },
       "settings.chooseProjectRootFolder": async () => {
@@ -408,6 +426,7 @@ const rpc = BrowserView.defineRPC<AppRPC>({
       "aiProvider.status": () => providerStatus(),
       "aiProvider.updateSettings": async (patch) => {
         await secrets.update(patch);
+        void tutor.recoverInterruptedMessageSets().catch(() => undefined);
         return providerStatus();
       },
       "aiProvider.listModels": async (input) => {
@@ -449,3 +468,6 @@ const rpc = BrowserView.defineRPC<AppRPC>({
 
 const mainWindow = createMainWindow(rpc as never);
 installApplicationMenu(() => sendToView("app.openAbout", {}));
+Electrobun.events.on("before-quit", () => {
+  tutor.markGeneratingMessageSetsInterrupted();
+});

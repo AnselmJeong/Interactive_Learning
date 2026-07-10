@@ -1,10 +1,10 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Archive, BookOpen, Check, Info, Loader2, LocateFixed, MessageSquare, Moon, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Play, Send, Settings, Sun, Trash2, Upload } from "lucide-react";
+import { Archive, BookOpen, Check, Info, Loader2, LocateFixed, MessageSquare, Moon, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Play, Send, Settings, Sparkles, Sun, Trash2, Upload } from "lucide-react";
 import type { MaterialSummary, PreparedSourceImport, ProjectArchiveExport, ProjectSummary, SourceSummary } from "../../shared/rpc-types";
 import type { AppSettings, AiProviderStatus, ChatSubmitShortcut, ProviderModel } from "../../shared/settings-types";
 import type { MaterialAnnotation, MaterialArtifacts } from "../../shared/artifact-types";
-import type { LearningMessageBatchStatus, SessionSnapshot, SessionSummary, SourceRef, TutorContext, TutorMessage, TutorPrefetchStatus } from "../../shared/tutor-types";
-import { displayableCourseTitle, displayableHeadingPath, displayableOutlineTitle, displayableSourceTitle } from "../../shared/display-title";
+import type { LearningMessageSetSummary, SessionSnapshot, SessionSummary, SourceRef, TutorContext, TutorMessage, TutorPrefetchStatus } from "../../shared/tutor-types";
+import { displayableCourseTitle, displayableHeadingPath, displayableModuleTitle, displayableOutlineTitle, displayableSourceTitle } from "../../shared/display-title";
 import { SettingsModal } from "./components/SettingsModal";
 import { VisualRenderer } from "./components/VisualRenderer";
 import { MarkdownContent } from "./components/MarkdownContent";
@@ -17,6 +17,7 @@ import { SourceImportModal } from "./components/SourceImportModal";
 import { AboutModal } from "./components/AboutModal";
 import { SourceFigureCard } from "./components/SourceFigureCard";
 import { LearningBuddy } from "./components/LearningBuddy";
+import { SourceLearningPreview } from "./components/SourceLearningPreview";
 import { AnnotationInlineScope } from "./components/AnnotationInlineScope";
 import { QuestionThreadAnnotationCard } from "./components/QuestionThreadAnnotationCard";
 import { figureIdForExplanationAnnotation } from "./figure-annotations";
@@ -24,7 +25,7 @@ import { stripFigureMarkdown } from "./figure-text";
 import { placeAnnotationsForMessages, shouldRenderInlineAnnotation } from "./annotation-placement";
 import { annotationCardId, focusAnnotationInline } from "./annotation-inline-links";
 import { playAnswerReadySound, primeAnswerReadySound } from "./notification-sound";
-import { continuePrefetchStateForSession, continueReadyFocusKey, hasPreparedBatchMessage, nextPrefetchStatusForSession } from "./prefetch-status";
+import { nextPrefetchStatusForSession } from "./prefetch-status";
 import { shouldSubmitTextArea } from "./submit-shortcut";
 
 type RpcRequest = (method: string, params: unknown) => Promise<unknown>;
@@ -96,22 +97,6 @@ function continueButtonTitle(status: TutorPrefetchStatus | null) {
   if (status?.status === "ready") return target ? `${target}이 준비되었습니다.` : "이어질 설명이 준비되었습니다.";
   if (status?.status === "failed") return "미리 준비하지 못했습니다. 누르면 바로 새로 요청합니다.";
   return "계속 진행";
-}
-
-function batchStatusLabel(status: LearningMessageBatchStatus | null) {
-  if (!status || status.status === "idle") return "전체 메시지 일괄 제작";
-  const progress = status.totalSteps > 0 ? `${status.completedSteps}/${status.totalSteps}` : `${status.completedSteps}`;
-  if (status.status === "generating" || status.status === "queued") return `메시지 생성 중 ${progress}`;
-  if (status.status === "partial") return status.preparedCount > 0 ? `일부 메시지 준비됨 ${status.preparedCount}` : "생성 중지됨";
-  if (status.status === "ready") return "전체 메시지 준비됨";
-  if (status.status === "failed") return "메시지 생성 실패";
-  if (status.status === "cancelled") return "생성 중지됨";
-  return "다시 만들기";
-}
-
-function batchPreparedLabel(status: LearningMessageBatchStatus | null) {
-  if (!status?.visiblePreparedRemaining) return "";
-  return `${status.visiblePreparedRemaining}개 메시지 준비됨`;
 }
 
 function displayableLearningGoal(module: CoursePlanModule) {
@@ -738,11 +723,12 @@ export function App({ request }: { request: RpcRequest }) {
   const [expandedSourceMessages, setExpandedSourceMessages] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [batchActionBusy, setBatchActionBusy] = useState(false);
+  const [sessionStartBusy, setSessionStartBusy] = useState(false);
   const [confirmationBusy, setConfirmationBusy] = useState(false);
   const [destructiveConfirmation, setDestructiveConfirmation] = useState<DestructiveConfirmation | null>(null);
   const [tutorThinking, setTutorThinking] = useState(false);
   const [prefetchStatus, setPrefetchStatus] = useState<TutorPrefetchStatus | null>(null);
-  const [batchStatus, setBatchStatus] = useState<LearningMessageBatchStatus | null>(null);
+  const [messageSetsByMaterial, setMessageSetsByMaterial] = useState<Record<string, LearningMessageSetSummary[]>>({});
   const [status, setStatus] = useState(READY_STATUS);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
@@ -755,15 +741,16 @@ export function App({ request }: { request: RpcRequest }) {
   const [rightPaneOpen, setRightPaneOpen] = useState(true);
   const [systemThemeDark, setSystemThemeDark] = useState(false);
   const [selectedModuleId, setSelectedModuleId] = useState<string | null>(null);
+  const [resumeScrollAnchorId, setResumeScrollAnchorId] = useState<string | null>(null);
   const [composerFocusToken, setComposerFocusToken] = useState(0);
   const [sideChatResumeRequest, setSideChatResumeRequest] = useState<{ annotation: MaterialAnnotation; token: number } | null>(null);
   const [pendingAnnotationDeletion, setPendingAnnotationDeletion] = useState<MaterialAnnotation | null>(null);
   const tutorSurfaceRef = useRef<HTMLElement | null>(null);
   const continueButtonRef = useRef<HTMLButtonElement | null>(null);
-  const lastFocusedReadyPrefetchKeyRef = useRef<string | null>(null);
   const answerReadyNotificationPendingRef = useRef(false);
   const latestNotifiedAssistantIdRef = useRef<string | null>(null);
   const latestAlignedAssistantKeyRef = useRef<string | null>(null);
+  const sessionStartTokenRef = useRef(0);
   const pendingAnnotationDeletionRef = useRef<MaterialAnnotation | null>(null);
   const pendingAnnotationDeletionTimerRef = useRef<number | null>(null);
 
@@ -815,7 +802,6 @@ export function App({ request }: { request: RpcRequest }) {
       setSession(null);
       setContext(null);
       setPrefetchStatus(null);
-      setBatchStatus(null);
       setSelectedModuleId(null);
       setState((current) => ({ ...current, projects, sources: [], materials: [], sessions: [] }));
       setStatus(READY_STATUS);
@@ -823,6 +809,8 @@ export function App({ request }: { request: RpcRequest }) {
   }
 
   async function openProject(project: ProjectSummary) {
+    sessionStartTokenRef.current += 1;
+    setSessionStartBusy(false);
     const opened = (await request("projects.open", { projectId: project.id })) as ProjectSummary;
     const [sources, materials] = await Promise.all([
       request("sources.list", { projectId: project.id }) as Promise<SourceSummary[]>,
@@ -835,9 +823,9 @@ export function App({ request }: { request: RpcRequest }) {
     setSession(null);
     setContext(null);
     setPrefetchStatus(null);
-    setBatchStatus(null);
     setSelectedModuleId(null);
     setStatus(READY_STATUS);
+    void Promise.all(materials.map((material) => refreshMessageSets(material.id)));
   }
 
   async function refreshSources(projectId = activeProject?.id) {
@@ -904,7 +892,6 @@ export function App({ request }: { request: RpcRequest }) {
           setSession(null);
           setContext(null);
           setPrefetchStatus(null);
-          setBatchStatus(null);
           setSelectedModuleId(null);
           setState((current) => ({ ...current, projects, sources: [], materials: [], sessions: [] }));
         }
@@ -927,12 +914,14 @@ export function App({ request }: { request: RpcRequest }) {
     }
   }, [request]);
 
-  const refreshBatchStatus = useCallback(async (materialId: string, sessionId?: string | null) => {
+  const refreshMessageSets = useCallback(async (materialId: string) => {
     try {
-      const next = (await request("sessions.batchMessagesStatus", { materialId, sessionId: sessionId || undefined })) as LearningMessageBatchStatus;
-      setBatchStatus(next);
+      const sets = (await request("materials.messageSetStatus", { materialId })) as LearningMessageSetSummary[];
+      setMessageSetsByMaterial((current) => ({ ...current, [materialId]: sets }));
+      return sets;
     } catch {
-      setBatchStatus(null);
+      setMessageSetsByMaterial((current) => ({ ...current, [materialId]: [] }));
+      return [];
     }
   }, [request]);
 
@@ -976,11 +965,14 @@ export function App({ request }: { request: RpcRequest }) {
       const detail = (event as CustomEvent<TutorPrefetchStatus>).detail;
       setPrefetchStatus((current) => nextPrefetchStatusForSession(current, detail, session?.id));
     };
-    const onBatchStatus = (event: Event) => {
-      const detail = (event as CustomEvent<LearningMessageBatchStatus>).detail;
-      setBatchStatus((current) => {
-        if (session?.id) return detail.sessionId === session.id ? detail : current;
-        return detail.materialId === activeMaterial?.id ? detail : current;
+    const onMessageSetProgress = (event: Event) => {
+      const detail = (event as CustomEvent<LearningMessageSetSummary>).detail;
+      setMessageSetsByMaterial((current) => {
+        const existing = current[detail.materialId] || [];
+        return {
+          ...current,
+          [detail.materialId]: [detail, ...existing.filter((item) => item.id !== detail.id)].sort((a, b) => b.updatedAt - a.updatedAt),
+        };
       });
     };
     const onOpenAbout = () => setAboutOpen(true);
@@ -990,7 +982,7 @@ export function App({ request }: { request: RpcRequest }) {
     window.addEventListener("tutor-completed", onTutorDone);
     window.addEventListener("tutor-error", onTutorError);
     window.addEventListener("tutor-prefetch-status", onPrefetchStatus);
-    window.addEventListener("session-batch-status", onBatchStatus);
+    window.addEventListener("message-set-progress", onMessageSetProgress);
     window.addEventListener("app-open-about", onOpenAbout);
     return () => {
       window.removeEventListener("generation-progress", onGeneration);
@@ -999,7 +991,7 @@ export function App({ request }: { request: RpcRequest }) {
       window.removeEventListener("tutor-completed", onTutorDone);
       window.removeEventListener("tutor-error", onTutorError);
       window.removeEventListener("tutor-prefetch-status", onPrefetchStatus);
-      window.removeEventListener("session-batch-status", onBatchStatus);
+      window.removeEventListener("message-set-progress", onMessageSetProgress);
       window.removeEventListener("app-open-about", onOpenAbout);
     };
   }, [activeMaterial?.id, session?.id]);
@@ -1011,14 +1003,6 @@ export function App({ request }: { request: RpcRequest }) {
     }
     void refreshPrefetchStatus(session.id);
   }, [refreshPrefetchStatus, session?.id, session?.updatedAt]);
-
-  useEffect(() => {
-    if (!activeMaterial?.id) {
-      setBatchStatus(null);
-      return;
-    }
-    void refreshBatchStatus(activeMaterial.id, session?.id || null);
-  }, [activeMaterial?.id, refreshBatchStatus, session?.id, session?.updatedAt]);
 
   async function chooseAndImportSources() {
     if (!activeProject) return;
@@ -1079,6 +1063,30 @@ export function App({ request }: { request: RpcRequest }) {
     }
   }
 
+  async function prepareSourceInBackground(source: SourceSummary) {
+    if (!activeProject || batchActionBusy) return;
+    setBatchActionBusy(true);
+    setStatus(`${displayableSourceName(source)} 메시지 준비 시작`);
+    try {
+      let material = state.materials.find((item) => item.sourceIds.length === 1 && item.sourceIds[0] === source.id) || null;
+      if (!material) {
+        material = (await request("materials.generate", { projectId: activeProject.id, sourceIds: [source.id] })) as MaterialSummary;
+        const materials = (await request("materials.list", { projectId: activeProject.id })) as MaterialSummary[];
+        setState((current) => ({ ...current, materials }));
+      }
+      const next = (await request("materials.prepareMessages", { materialId: material.id })) as LearningMessageSetSummary;
+      setMessageSetsByMaterial((current) => ({
+        ...current,
+        [material!.id]: [next, ...(current[material!.id] || []).filter((item) => item.id !== next.id)],
+      }));
+      setStatus(READY_STATUS);
+    } catch (error) {
+      setStatus(`메시지 준비 실패: ${(error as Error).message}`);
+    } finally {
+      setBatchActionBusy(false);
+    }
+  }
+
   function deleteSource(source: SourceSummary) {
     if (!activeProject) return;
     const sourceName = displayableSourceName(source);
@@ -1110,7 +1118,6 @@ export function App({ request }: { request: RpcRequest }) {
         setSession(null);
         setContext(null);
         setPrefetchStatus(null);
-        setBatchStatus(null);
         setSelectedModuleId(null);
       }
       setSourceNotice(`Deleted ${sourceName}`);
@@ -1136,16 +1143,18 @@ export function App({ request }: { request: RpcRequest }) {
   }
 
   async function selectMaterial(material: MaterialSummary) {
+    sessionStartTokenRef.current += 1;
+    setSessionStartBusy(false);
     setActiveMaterial(material);
     const [nextArtifacts, sessions] = await Promise.all([
       request("materials.getArtifacts", { materialId: material.id }) as Promise<MaterialArtifacts>,
       request("sessions.list", { materialId: material.id }) as Promise<SessionSummary[]>,
+      refreshMessageSets(material.id),
     ]);
     setArtifacts(nextArtifacts);
     setState((current) => ({ ...current, sessions }));
     setSession(null);
     setContext(null);
-    setBatchStatus(null);
     setSelectedModuleId(null);
     setInspectorTab("sessions");
     setExpandedSourceMessages(new Set());
@@ -1154,86 +1163,86 @@ export function App({ request }: { request: RpcRequest }) {
 
   // Core session starter, independent of activeMaterial state so it can be called right after
   // selectMaterial without waiting for a state tick. Both startSession and learnFromSource use it.
-  async function beginSession(materialId: string, mode: "new" | "continue") {
+  async function beginSession(materialId: string, mode: "new" | "continue", sessionId?: string) {
+    const requestToken = ++sessionStartTokenRef.current;
     if (mode === "new") queueAnswerReadySound();
     setTutorThinking(true);
     setStatus(TUTOR_THINKING_STATUS);
     try {
-      const result = (await request("sessions.start", { materialId, mode })) as { session: SessionSnapshot; context: TutorContext };
+      const result = (await request("sessions.start", { materialId, mode, sessionId })) as { session: SessionSnapshot; context: TutorContext; messageSet: LearningMessageSetSummary };
+      if (requestToken !== sessionStartTokenRef.current) return null;
       await refreshMaterialArtifacts(result.session.materialId);
       setSession(result.session);
       setContext(result.context);
+      setMessageSetsByMaterial((current) => ({
+        ...current,
+        [materialId]: [result.messageSet, ...(current[materialId] || []).filter((item) => item.id !== result.messageSet.id)],
+      }));
       setSelectedModuleId(result.session.currentModuleId);
+      setResumeScrollAnchorId(mode === "continue" ? result.session.lastRevealedMessageId : null);
       setInspectorTab("modules");
       setExpandedSourceMessages(new Set());
       await Promise.all([refreshSessions(materialId), refreshSources(result.session.projectId)]);
-      void refreshPrefetchStatus(result.session.id);
+      void refreshMessageSets(materialId);
       setStatus(READY_STATUS);
       return result;
     } catch (error) {
+      if (requestToken !== sessionStartTokenRef.current) return null;
       cancelAnswerReadySound();
       setStatus((error as Error).message);
       return null;
     } finally {
-      setTutorThinking(false);
+      if (requestToken === sessionStartTokenRef.current) {
+        setTutorThinking(false);
+        setSessionStartBusy(false);
+      }
     }
   }
 
   async function startSession(mode: "new" | "continue") {
-    if (!activeMaterial) return;
-    setBusy(true);
+    if (!activeMaterial || sessionStartBusy) return;
+    setSessionStartBusy(true);
     await beginSession(activeMaterial.id, mode);
-    setBusy(false);
+  }
+
+  async function startOrContinueSession() {
+    if (!activeMaterial || sessionStartBusy) return;
+    const existing = state.sessions.find((item) => item.status === "active");
+    setSessionStartBusy(true);
+    await beginSession(activeMaterial.id, existing ? "continue" : "new", existing?.id);
   }
 
   async function startBatchMessages(force = false) {
     if (!activeMaterial || batchActionBusy) return;
-    let shouldForce = force;
-    if ((batchStatus?.status === "ready" || batchStatus?.status === "partial") && batchStatus.preparedCount > 0 && !force) {
-      const confirmed = window.confirm("이미 준비된 메시지가 있습니다. 현재 준비분을 버리고 다시 만들까요?");
-      if (!confirmed) return;
-      shouldForce = true;
-    }
-
-    const startsNewSession = !session?.id;
-    if (startsNewSession) {
-      queueAnswerReadySound();
-      setTutorThinking(true);
-      setStatus(TUTOR_THINKING_STATUS);
-    } else {
-      setStatus("전체 메시지 생성 시작");
-    }
     setBatchActionBusy(true);
+    setStatus("학습 메시지를 background에서 준비합니다");
     try {
-      const result = (await request("sessions.batchMessagesStart", {
+      const next = (await request("materials.prepareMessages", {
         materialId: activeMaterial.id,
-        sessionId: session?.id,
-        force: shouldForce,
-      })) as { session: SessionSnapshot; context: TutorContext; batch: LearningMessageBatchStatus };
-      await refreshMaterialArtifacts(result.session.materialId);
-      setSession(result.session);
-      setContext(result.context);
-      setBatchStatus(result.batch);
-      setSelectedModuleId(result.session.currentModuleId);
-      setInspectorTab("modules");
-      await Promise.all([refreshSessions(result.session.materialId), refreshSources(result.session.projectId), refreshBatchStatus(result.session.materialId, result.session.id)]);
-      void refreshPrefetchStatus(result.session.id);
+        forceNewVersion: force,
+      })) as LearningMessageSetSummary;
+      setMessageSetsByMaterial((current) => ({
+        ...current,
+        [activeMaterial.id]: [next, ...(current[activeMaterial.id] || []).filter((item) => item.id !== next.id)],
+      }));
       setStatus(READY_STATUS);
     } catch (error) {
-      cancelAnswerReadySound();
       setStatus(`전체 메시지 생성 실패: ${(error as Error).message}`);
     } finally {
       setBatchActionBusy(false);
-      if (startsNewSession) setTutorThinking(false);
     }
   }
 
   async function cancelBatchMessages() {
-    if (!session?.id || batchActionBusy) return;
+    const currentSet = activeMessageSet;
+    if (!currentSet || batchActionBusy) return;
     setBatchActionBusy(true);
     try {
-      const next = (await request("sessions.batchMessagesCancel", { sessionId: session.id })) as LearningMessageBatchStatus;
-      setBatchStatus(next);
+      const next = (await request("materials.pauseMessageSetGeneration", { messageSetId: currentSet.id })) as LearningMessageSetSummary;
+      setMessageSetsByMaterial((current) => ({
+        ...current,
+        [next.materialId]: [next, ...(current[next.materialId] || []).filter((item) => item.id !== next.id)],
+      }));
       setStatus(READY_STATUS);
     } catch (error) {
       setStatus(`생성 중지 실패: ${(error as Error).message}`);
@@ -1250,10 +1259,12 @@ export function App({ request }: { request: RpcRequest }) {
       setActiveMaterial((current) => current?.id === result.session.materialId ? current : state.materials.find((material) => material.id === result.session.materialId) || current);
       setSession(result.session);
       setContext(result.context);
+      setResumeScrollAnchorId(result.session.lastRevealedMessageId);
       setSelectedModuleId(result.session.currentModuleId);
       setInspectorTab("modules");
       setExpandedSourceMessages(new Set());
       void refreshPrefetchStatus(result.session.id);
+      void refreshMessageSets(result.session.materialId);
       setStatus(READY_STATUS);
     } catch (error) {
       setStatus((error as Error).message);
@@ -1285,7 +1296,6 @@ export function App({ request }: { request: RpcRequest }) {
         setSelectedModuleId(null);
         setExpandedSourceMessages(new Set());
         setPrefetchStatus(null);
-        setBatchStatus(null);
       }
       setStatus(READY_STATUS);
     } catch (error) {
@@ -1313,8 +1323,9 @@ export function App({ request }: { request: RpcRequest }) {
       const result = (await request("tutor.sendTurn", { sessionId: session.id, userText: text.trim() })) as { session: SessionSnapshot; context: TutorContext };
       setSession(result.session);
       setContext(result.context);
+      setResumeScrollAnchorId(null);
       setSelectedModuleId(result.session.currentModuleId);
-      await Promise.all([refreshSessions(result.session.materialId), refreshSources(result.session.projectId), refreshBatchStatus(result.session.materialId, result.session.id)]);
+      await Promise.all([refreshSessions(result.session.materialId), refreshSources(result.session.projectId), refreshMessageSets(result.session.materialId)]);
       void refreshPrefetchStatus(result.session.id);
       setStatus(READY_STATUS);
       return true;
@@ -1352,11 +1363,14 @@ export function App({ request }: { request: RpcRequest }) {
       setTutorThinking(true);
     }
     try {
-      const result = (await request("sessions.advance", { sessionId: session.id, mode })) as { session: SessionSnapshot; context: TutorContext };
+      const result = (await (mode === "paragraph"
+        ? request("sessions.continue", { sessionId: session.id })
+        : request("sessions.advance", { sessionId: session.id, mode }))) as { session: SessionSnapshot; context: TutorContext };
       setSession(result.session);
       setContext(result.context);
+      setResumeScrollAnchorId(null);
       setSelectedModuleId(result.session.currentModuleId);
-      await Promise.all([refreshSessions(result.session.materialId), refreshSources(result.session.projectId), refreshBatchStatus(result.session.materialId, result.session.id)]);
+      await Promise.all([refreshSessions(result.session.materialId), refreshSources(result.session.projectId), refreshMessageSets(result.session.materialId)]);
       void refreshPrefetchStatus(result.session.id);
       setStatus(READY_STATUS);
     } catch (error) {
@@ -1384,8 +1398,9 @@ export function App({ request }: { request: RpcRequest }) {
       const result = (await request("sessions.returnToProgress", { sessionId: session.id })) as { session: SessionSnapshot; context: TutorContext };
       setSession(result.session);
       setContext(result.context);
+      setResumeScrollAnchorId(null);
       setSelectedModuleId(result.session.currentModuleId);
-      await Promise.all([refreshSessions(result.session.materialId), refreshSources(result.session.projectId), refreshBatchStatus(result.session.materialId, result.session.id)]);
+      await Promise.all([refreshSessions(result.session.materialId), refreshSources(result.session.projectId), refreshMessageSets(result.session.materialId)]);
       void refreshPrefetchStatus(result.session.id);
       setStatus(READY_STATUS);
     } catch (error) {
@@ -1408,9 +1423,10 @@ export function App({ request }: { request: RpcRequest }) {
     if (status === "completed" || status === "needs_review" || sessionReadOnly) return;
     setBusy(true);
     try {
-      const result = (await request("sessions.selectModule", { sessionId: session.id, moduleId })) as { session: SessionSnapshot; context: TutorContext };
+      const result = (await request("sessions.resumeModule", { sessionId: session.id, moduleId })) as { session: SessionSnapshot; context: TutorContext };
       setSession(result.session);
       setContext(result.context);
+      setResumeScrollAnchorId(null);
       setSelectedModuleId(result.session.currentModuleId || moduleId);
       await Promise.all([refreshSessions(result.session.materialId), refreshSources(result.session.projectId)]);
       void refreshPrefetchStatus(result.session.id);
@@ -1475,8 +1491,9 @@ export function App({ request }: { request: RpcRequest }) {
     [allSessionMessages, selectedModuleId]
   );
   const latestAssistantForScrollId = useMemo(() => {
+    if (resumeScrollAnchorId && currentMessages.some((message) => message.id === resumeScrollAnchorId)) return resumeScrollAnchorId;
     return [...currentMessages].reverse().find((message) => message.role === "assistant")?.id || null;
-  }, [currentMessages]);
+  }, [currentMessages, resumeScrollAnchorId]);
   const sessionReadOnly = session?.status === "completed" || session?.status === "archived";
   const selectedModule = selectedModuleId
     ? context?.moduleOutline.find((item) => item.id === selectedModuleId) || artifacts?.coursePlan.modules.find((module) => module.id === selectedModuleId)
@@ -1504,7 +1521,7 @@ export function App({ request }: { request: RpcRequest }) {
     return titles;
   }, [artifacts, sourceTitleById]);
   const displayModuleTitle = useCallback((module: { id: string; title: string }) => {
-    return displayableOutlineTitle(module.title, sourceTitlesForModule(module.id)) || module.title;
+    return displayableModuleTitle(module.title, sourceTitlesForModule(module.id)) || module.title;
   }, [sourceTitlesForModule]);
   const selectedModuleTitle = selectedModule ? displayModuleTitle(selectedModule) : "";
 
@@ -1550,7 +1567,18 @@ export function App({ request }: { request: RpcRequest }) {
   const currentChunkId = context?.session.currentChunkId || null;
   const reachedChunks = coveredChunks + (currentChunkId && !context?.session.coveredChunkIds.includes(currentChunkId) ? 1 : 0);
   const progressText = artifacts ? `${reachedChunks}/${totalChunks}` : "0/0";
-  const preparedMessagesText = batchPreparedLabel(batchStatus);
+  const materialMessageSets = activeMaterial ? messageSetsByMaterial[activeMaterial.id] || [] : [];
+  const resumableSession = state.sessions.find((item) => item.status === "active") || null;
+  const activeMessageSet = (session?.messageSetId ? materialMessageSets.find((item) => item.id === session.messageSetId) : null)
+    || materialMessageSets.find((item) => item.status !== "cancelled" && item.status !== "superseded")
+    || null;
+  const consumedPreparedMessages = session?.messages.filter((message) => Boolean(message.originPreparedMessageId)).length || 0;
+  const unreadPreparedMessages = Math.max(0, (activeMessageSet?.completedMessages || 0) - consumedPreparedMessages);
+  const preparedMessagesText = activeMessageSet
+    ? activeMessageSet.status === "ready"
+      ? `${activeMessageSet.completedMessages}개 메시지 준비됨`
+      : `${activeMessageSet.completedMessages}/${activeMessageSet.totalMessages || "?"} 준비됨`
+    : "";
   const activeModule = context?.moduleOutline.find((item) => item.status === "in_progress");
   const activeModuleTitle = activeModule ? displayModuleTitle(activeModule) : "";
   const buddyModuleTitle = activeModuleTitle || selectedModuleTitle;
@@ -1558,9 +1586,14 @@ export function App({ request }: { request: RpcRequest }) {
   const latestAssistant = [...currentMessages].reverse().find((message) => message.role === "assistant");
   const latestAssistantId = latestAssistant?.id || null;
   const canReturnToProgress = !selectedModuleWaiting && (latestAssistant?.stateUpdate?.conversationMode === "detour" || latestAssistant?.stateUpdate?.turnMode === "digress");
-  const batchPreparedReady = hasPreparedBatchMessage(batchStatus, session?.id);
-  const continuePrefetchState = continuePrefetchStateForSession(prefetchStatus, batchStatus, session?.id);
-  const readyContinueFocusKey = continueReadyFocusKey(prefetchStatus, batchStatus, session?.id);
+  const batchPreparedReady = unreadPreparedMessages > 0;
+  const continuePrefetchState = batchPreparedReady
+    ? "ready"
+    : activeMessageSet?.status === "generating" || activeMessageSet?.status === "queued" || activeMessageSet?.status === "interrupted"
+      ? "generating"
+      : activeMessageSet?.status === "failed" || activeMessageSet?.status === "waiting_for_provider"
+        ? "failed"
+        : "idle";
   const continueButtonClass = `continue-button prefetch-${continuePrefetchState}`;
   const useReadyReturnButton = canReturnToProgress && continuePrefetchState === "ready";
   const continueButtonAria = continuePrefetchState === "generating"
@@ -1596,15 +1629,6 @@ export function App({ request }: { request: RpcRequest }) {
   const allModulesCovered = totalChunks > 0 && coveredChunks >= totalChunks;
   const showCompletionActions = Boolean(!sessionReadOnly && !selectedModuleWaiting && allModulesCovered);
   const showProgressActions = Boolean(!sessionReadOnly && !selectedModuleReadOnly && !allModulesCovered);
-  useEffect(() => {
-    if (viewMode !== "chat" || !showProgressActions || busy || selectedModuleWaiting) return;
-    if (continuePrefetchState !== "ready" || !readyContinueFocusKey) return;
-
-    if (lastFocusedReadyPrefetchKeyRef.current === readyContinueFocusKey) return;
-    lastFocusedReadyPrefetchKeyRef.current = readyContinueFocusKey;
-    continueButtonRef.current?.focus({ preventScroll: true });
-  }, [busy, continuePrefetchState, readyContinueFocusKey, selectedModuleWaiting, showProgressActions, viewMode]);
-
   const canContinueFromCompletedModule = Boolean(
     !sessionReadOnly
       && selectedModuleReadOnly
@@ -1623,15 +1647,6 @@ export function App({ request }: { request: RpcRequest }) {
   const visibleVisual = isTeachingGuideVisual(context?.visual) ? null : context?.visual;
   const activeSourceId = activeMaterial && activeMaterial.sourceIds.length === 1 ? activeMaterial.sourceIds[0] : null;
   const activeSource = activeSourceId ? state.sources.find((source) => source.id === activeSourceId) || null : null;
-  const courseTitle = artifacts ? displayableCourseTitle(artifacts.coursePlan.title) : "";
-  const overviewModules = useMemo(() => {
-    if (!artifacts) return [];
-    return artifacts.coursePlan.modules.filter((module) => {
-      const learningGoal = displayableLearningGoal(module);
-      const moduleTitle = displayableCourseTitle(module.title);
-      return moduleTitle !== courseTitle || Boolean(learningGoal);
-    });
-  }, [artifacts, courseTitle]);
   const sourceRefById = useMemo(() => {
     const refs = new Map<string, SourceRef>();
     for (const ref of context?.sourceRefs || []) refs.set(ref.chunkId, ref);
@@ -1778,21 +1793,27 @@ export function App({ request }: { request: RpcRequest }) {
     return { total, reached, coveredCount, percent: total ? Math.round((reached / total) * 100) : 0, statusFor, firstCurrentIndex };
   }, [artifacts, session?.coveredChunkIds, session?.currentChunkId]);
   const defaultLookupChunkId = latestAssistant?.sourceRefs[0] || currentChunkId || artifacts?.sourceChunks[0]?.id || null;
-  const batchGenerating = batchStatus?.status === "generating" || batchStatus?.status === "queued";
+  const batchGenerating = activeMessageSet?.status === "generating" || activeMessageSet?.status === "queued" || activeMessageSet?.status === "interrupted";
   const learningModelReady = Boolean(providerStatus?.hasApiKey && providerStatus.selectedModel);
-  const batchButtonLabel = batchGenerating ? "중지" : batchStatusLabel(batchStatus);
+  const batchButtonLabel = batchGenerating
+    ? `준비 중 ${activeMessageSet?.completedMessages || 0}/${activeMessageSet?.totalMessages || "?"}`
+    : activeMessageSet?.status === "ready"
+      ? `${activeMessageSet.completedMessages}개 준비됨`
+      : activeMessageSet?.status === "paused" || activeMessageSet?.status === "partial"
+        ? "이어서 만들기"
+        : "전체 메시지 일괄 제작";
   const batchButtonDisabled = Boolean(
     !activeMaterial ||
       activeMaterial.status !== "ready" ||
       batchActionBusy ||
       (!batchGenerating && !learningModelReady) ||
-      (batchGenerating && !session?.id)
+      activeMessageSet?.status === "ready"
   );
   const batchButtonTitle = batchGenerating
-    ? "현재 생성 중인 나머지 메시지 생성을 중지합니다."
+    ? "현재 준비 작업을 일시 중지합니다. 다음 실행에서도 자동 재개하지 않습니다."
     : !learningModelReady
     ? "Settings에서 learning model과 API key를 먼저 설정하세요."
-    : "현재 session 진행 위치부터 남은 tutor 메시지를 미리 만듭니다.";
+    : "학습 session을 만들거나 workspace를 전환하지 않고 이 material의 메시지를 준비합니다.";
 
   const importedSourceLabel = `${state.sources.length} source${state.sources.length === 1 ? "" : "s"} imported`;
   const shellClassName = [
@@ -1864,6 +1885,16 @@ export function App({ request }: { request: RpcRequest }) {
                 const sourceName = displayableSourceName(source);
                 const learningStatusLabel = sourceLearningStatusLabel(source.learningStatus);
                 const sourceTitle = `${sourceName} - ${learningStatusLabel}`;
+                const sourceMaterial = state.materials.find((item) => item.sourceIds.length === 1 && item.sourceIds[0] === source.id) || null;
+                const sourceMessageSet = sourceMaterial
+                  ? (messageSetsByMaterial[sourceMaterial.id] || []).find((item) => item.status !== "cancelled" && item.status !== "superseded") || null
+                  : null;
+                const sourcePreparing = sourceMessageSet?.status === "generating" || sourceMessageSet?.status === "queued" || sourceMessageSet?.status === "interrupted";
+                const sourcePreparationTitle = sourceMessageSet?.status === "ready"
+                  ? `${sourceName}: ${sourceMessageSet.completedMessages}개 메시지 준비됨`
+                  : sourcePreparing
+                    ? `${sourceName}: 준비 중 ${sourceMessageSet?.completedMessages || 0}/${sourceMessageSet?.totalMessages || "?"}`
+                    : `${sourceName} 학습 메시지를 background에서 준비`;
                 return (
                   <div
                     key={source.id}
@@ -1881,6 +1912,16 @@ export function App({ request }: { request: RpcRequest }) {
                       <span className="source-row-index">{sourceIndex + 1}</span>
                       <span className={`source-status-dot ${source.learningStatus}`} aria-hidden="true" />
                       <span className="source-row-title">{sourceName}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className={`source-prepare-button ${sourceMessageSet?.status || "idle"}`}
+                      onClick={() => void prepareSourceInBackground(source)}
+                      disabled={!activeProject || batchActionBusy || !learningModelReady}
+                      title={sourcePreparationTitle}
+                      aria-label={sourcePreparationTitle}
+                    >
+                      {sourcePreparing ? <Loader2 size={13} className="spin" /> : sourceMessageSet?.status === "ready" ? <Check size={13} /> : <Sparkles size={13} />}
                     </button>
                     <button
                       type="button"
@@ -1928,7 +1969,7 @@ export function App({ request }: { request: RpcRequest }) {
               {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
             </button>
             <div className="status-pill" title={status} aria-live="polite">
-              {busy ? <Loader2 size={16} className="spin" /> : <Check size={16} />}
+              {busy || tutorThinking || sessionStartBusy ? <Loader2 size={16} className="spin" /> : <Check size={16} />}
               <span className="status-text">{status}</span>
             </div>
           </div>
@@ -1952,14 +1993,14 @@ export function App({ request }: { request: RpcRequest }) {
             <div className="course-strip-actions">
               <div className="segmented-control" aria-label="View mode">
                 <button type="button" className={viewMode === "source" ? "active" : ""} onClick={() => setViewMode("source")}>
-                  Source
+                  원문보기
                 </button>
                 <button type="button" className={viewMode === "chat" ? "active" : ""} onClick={() => setViewMode("chat")}>
-                  Chat
+                  학습공간
                 </button>
               </div>
               <button
-                className={`wide-button topbar-button batch-button ${batchGenerating ? "generating" : batchStatus?.status || "idle"}`}
+                className={`wide-button topbar-button batch-button ${batchGenerating ? "generating" : activeMessageSet?.status || "idle"}`}
                 onClick={() => void (batchGenerating ? cancelBatchMessages() : startBatchMessages())}
                 disabled={batchButtonDisabled}
                 title={batchButtonTitle}
@@ -1967,9 +2008,11 @@ export function App({ request }: { request: RpcRequest }) {
                 {batchActionBusy || batchGenerating ? <Loader2 size={16} className="spin" /> : <MessageSquare size={16} />}
                 {batchButtonLabel}
               </button>
-              <button className="wide-button topbar-button primary" onClick={() => startSession("new")} disabled={busy}>
-                <MessageSquare size={16} /> Start
-              </button>
+              {!session ? (
+                <button className="wide-button topbar-button primary" onClick={() => void startOrContinueSession()} disabled={busy || sessionStartBusy}>
+                  <MessageSquare size={16} /> {resumableSession ? "학습 이어가기" : "학습시작"}
+                </button>
+              ) : null}
             </div>
           </section>
         ) : null}
@@ -2060,9 +2103,6 @@ export function App({ request }: { request: RpcRequest }) {
                         {continuePrefetchState === "ready" ? <Check size={14} aria-hidden="true" /> : null}
                         {useReadyReturnButton ? "진도로 돌아가기" : "계속해줘"}
                       </button>
-                      <button type="button" onClick={() => advanceLearning("chunk")} disabled={busy || selectedModuleWaiting}>
-                        다음 대목으로
-                      </button>
                       <button type="button" onClick={() => advanceLearning("module")} disabled={busy || selectedModuleWaiting}>
                         다음 모듈로
                       </button>
@@ -2099,26 +2139,7 @@ export function App({ request }: { request: RpcRequest }) {
               ) : null}
             </>
           ) : artifacts ? (
-            <div className="empty-state">
-              <h3>{courseTitle}</h3>
-              <p>{artifacts.coursePlan.subtitle}</p>
-              {overviewModules.length ? (
-                <div className="module-grid">
-                  {overviewModules.map((module) => {
-                    const learningGoal = displayableLearningGoal(module);
-                    const moduleTitle = displayModuleTitle(module) || displayableCourseTitle(module.title);
-                    return (
-                      <div key={module.id} className="module-tile">
-                        <div className="module-tile-head">
-                          <strong title={moduleTitle}>{moduleTitle}</strong>
-                        </div>
-                        {learningGoal ? <span>{learningGoal}</span> : null}
-                      </div>
-                    );
-                  })}
-                </div>
-              ) : null}
-            </div>
+            <SourceLearningPreview artifacts={artifacts} />
           ) : (
             <div className="empty-state">
               <h3>Learning Workspace</h3>
@@ -2248,6 +2269,7 @@ export function App({ request }: { request: RpcRequest }) {
                               <small>
                                 {item.completedModuleCount}/{item.totalModuleCount || "?"} modules · {item.messageCount} messages
                               </small>
+                              <small>{item.model || "Model unavailable"} · {item.consumedCount}/{item.preparedCount || "?"} prepared read</small>
                             </span>
                           </button>
                           <button

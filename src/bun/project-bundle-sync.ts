@@ -4,12 +4,12 @@ import { basename, dirname, join } from "node:path";
 import { getDb } from "./project-db";
 import { dataPath } from "./paths";
 import { listMaterialAnnotations, replaceMaterialAnnotations } from "./annotation-store";
-import type { MaterialAnnotation, MaterialManifest, QualityStatus, SourceManifest, SourceType } from "../shared/artifact-types";
+import type { MaterialAnnotation, MaterialManifest, MaterialOverview, QualityStatus, SourceManifest, SourceType } from "../shared/artifact-types";
 import type { ProjectSummary } from "../shared/rpc-types";
 import type { SessionSnapshot, TutorMessage } from "../shared/tutor-types";
 import { normalizeLearningLevel, type LearningLevel } from "../shared/learning-levels";
 
-const PROJECT_BUNDLE_SCHEMA_VERSION = 2;
+const PROJECT_BUNDLE_SCHEMA_VERSION = 3;
 
 type ProjectBundleManifest = {
   schemaVersion: number;
@@ -431,20 +431,22 @@ async function importMaterials(projectDir: string, projectId: string) {
     const paths = {
       concepts: join(dir, "concept_map.json"),
       course: join(dir, "course_plan.json"),
+      overview: join(dir, "material_overview.json"),
       lecture: join(dir, "lecture_plan.json"),
       presentation: join(dir, "presentation_plan.json"),
       critic: join(dir, "critic_report.json"),
       visuals: join(dir, "visual_specs.json"),
       index: join(dir, "source_index.json"),
     };
+    const overview = existsSync(paths.overview) ? await readJson<MaterialOverview>(paths.overview) : null;
 
     getDb()
       .query(
         `INSERT INTO learning_materials
-         (id, project_id, title, material_type, status, manifest_path, concept_map_path, course_plan_path,
+         (id, project_id, title, material_type, status, manifest_path, concept_map_path, course_plan_path, overview_path, overview_json,
           lecture_plan_path, presentation_plan_path, critic_report_path, visual_specs_path, source_index_path,
           generation_error, created_at, updated_at)
-         VALUES (?, ?, ?, 'source_course', ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
+         VALUES (?, ?, ?, 'source_course', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            project_id = excluded.project_id,
            title = excluded.title,
@@ -452,6 +454,8 @@ async function importMaterials(projectDir: string, projectId: string) {
            manifest_path = excluded.manifest_path,
            concept_map_path = excluded.concept_map_path,
            course_plan_path = excluded.course_plan_path,
+           overview_path = excluded.overview_path,
+           overview_json = excluded.overview_json,
            lecture_plan_path = excluded.lecture_plan_path,
            presentation_plan_path = excluded.presentation_plan_path,
            critic_report_path = excluded.critic_report_path,
@@ -468,6 +472,8 @@ async function importMaterials(projectDir: string, projectId: string) {
         manifestPath,
         existsSync(paths.concepts) ? paths.concepts : null,
         existsSync(paths.course) ? paths.course : null,
+        existsSync(paths.overview) ? paths.overview : null,
+        overview ? JSON.stringify(overview) : null,
         existsSync(paths.lecture) ? paths.lecture : null,
         existsSync(paths.presentation) ? paths.presentation : null,
         existsSync(paths.critic) ? paths.critic : null,
@@ -514,14 +520,18 @@ async function importSessions(projectDir: string, projectId: string) {
     if (!material) continue;
     const existing = getDb().query<{ updated_at: number }, [string]>("SELECT updated_at FROM learning_sessions WHERE id = ?").get(snapshot.id);
     if (!shouldImportSessionSnapshot(existing?.updated_at, snapshot.updatedAt)) continue;
+    const messageSetId = snapshot.messageSetId && getDb().query<{ id: string }, [string]>("SELECT id FROM learning_message_sets WHERE id = ?").get(snapshot.messageSetId)
+      ? snapshot.messageSetId
+      : null;
 
     const importSnapshot = getDb().transaction(() => {
       getDb()
         .query(
           `INSERT INTO learning_sessions
            (id, project_id, material_id, title, status, current_module_id, completed_module_ids_json,
-            current_chunk_id, covered_chunk_ids_json, model, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            current_chunk_id, covered_chunk_ids_json, model, message_set_id, last_revealed_route_index,
+            last_revealed_message_id, started_at, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
            ON CONFLICT(id) DO UPDATE SET
              project_id = excluded.project_id,
              material_id = excluded.material_id,
@@ -532,6 +542,10 @@ async function importSessions(projectDir: string, projectId: string) {
              current_chunk_id = excluded.current_chunk_id,
              covered_chunk_ids_json = excluded.covered_chunk_ids_json,
              model = excluded.model,
+             message_set_id = COALESCE(excluded.message_set_id, learning_sessions.message_set_id),
+             last_revealed_route_index = excluded.last_revealed_route_index,
+             last_revealed_message_id = excluded.last_revealed_message_id,
+             started_at = excluded.started_at,
              updated_at = excluded.updated_at`
         )
         .run(
@@ -545,6 +559,10 @@ async function importSessions(projectDir: string, projectId: string) {
           snapshot.currentChunkId,
           JSON.stringify(snapshot.coveredChunkIds || []),
           snapshot.model || null,
+          messageSetId,
+          snapshot.lastRevealedRouteIndex ?? -1,
+          snapshot.lastRevealedMessageId || null,
+          snapshot.messages?.length ? snapshot.messages[0]?.createdAt || snapshot.createdAt : null,
           snapshot.createdAt,
           snapshot.updatedAt
         );
@@ -567,8 +585,8 @@ function importMessage(sessionId: string, message: TutorMessage) {
     .query(
       `INSERT INTO learning_messages
        (id, session_id, role, content, blocks_json, module_id, source_refs_json, choices_json,
-        visual_id, state_update_json, created_at, ordinal)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        visual_id, state_update_json, origin_prepared_message_id, conversation_kind, created_at, ordinal)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       message.id,
@@ -581,6 +599,10 @@ function importMessage(sessionId: string, message: TutorMessage) {
       JSON.stringify(message.choices || []),
       message.visualId || null,
       message.stateUpdate ? JSON.stringify(message.stateUpdate) : null,
+      message.originPreparedMessageId && getDb().query<{ id: string }, [string]>("SELECT id FROM prepared_learning_messages WHERE id = ?").get(message.originPreparedMessageId)
+        ? message.originPreparedMessageId
+        : null,
+      message.conversationKind || "main",
       message.createdAt,
       message.ordinal
     );

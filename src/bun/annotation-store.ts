@@ -22,6 +22,8 @@ type MaterialAnnotationRow = {
   source_id: string | null;
   chunk_id: string;
   surface: MaterialAnnotationSurface;
+  scope: "material" | "session";
+  session_id: string | null;
   anchor_message_id: string | null;
   anchor_block_id: string | null;
   anchor_json: string | null;
@@ -39,6 +41,8 @@ export type SaveMaterialAnnotationInput = {
   chunkId: string;
   sourceId?: string | null;
   surface?: MaterialAnnotationSurface;
+  scope?: "material" | "session";
+  sessionId?: string | null;
   anchorMessageId?: string | null;
   anchorBlockId?: string | null;
   textAnchor?: TextSelectionAnchor | null;
@@ -83,6 +87,8 @@ function rowToAnnotation(row: MaterialAnnotationRow): MaterialAnnotation {
       anchorBlockId: row.anchor_block_id,
       kind: row.kind,
     }),
+    scope: row.scope || "material",
+    sessionId: row.session_id,
     anchorMessageId: row.anchor_message_id,
     anchorBlockId: row.anchor_block_id,
     textAnchor: row.anchor_json ? parseJson<TextSelectionAnchor | null>(row.anchor_json, null) : null,
@@ -122,13 +128,17 @@ export function saveMaterialAnnotation(input: SaveMaterialAnnotationInput) {
   const now = Date.now();
   const selectedText = input.selectedText.replace(/\s+/g, " ").trim().slice(0, SELECTED_TEXT_MAX_CHARS);
   if (!selectedText) throw new Error("Selected text is empty");
+  const anchoredSessionId = input.sessionId || (input.anchorMessageId
+    ? getDb().query<{ session_id: string }, [string]>("SELECT session_id FROM learning_messages WHERE id = ?").get(input.anchorMessageId)?.session_id
+    : null);
+  const scope = input.scope || (anchoredSessionId ? "session" : "material");
 
   getDb()
     .query(
       `INSERT INTO material_annotations
-       (id, project_id, material_id, source_id, chunk_id, surface, anchor_message_id, anchor_block_id, anchor_json, kind, selected_text, normalized_text,
+       (id, project_id, material_id, source_id, chunk_id, surface, scope, session_id, anchor_message_id, anchor_block_id, anchor_json, kind, selected_text, normalized_text,
         result_json, source_meta_json, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       id,
@@ -137,6 +147,8 @@ export function saveMaterialAnnotation(input: SaveMaterialAnnotationInput) {
       input.sourceId || null,
       input.chunkId,
       annotationSurface(input),
+      scope,
+      anchoredSessionId || null,
       input.anchorMessageId || null,
       input.anchorBlockId || null,
       input.textAnchor ? JSON.stringify(input.textAnchor) : null,
@@ -164,9 +176,9 @@ export function replaceMaterialAnnotations(materialId: string, annotations: Mate
   const db = getDb();
   const insert = db.query(
     `INSERT INTO material_annotations
-     (id, project_id, material_id, source_id, chunk_id, surface, anchor_message_id, anchor_block_id, anchor_json, kind, selected_text, normalized_text,
+     (id, project_id, material_id, source_id, chunk_id, surface, scope, session_id, anchor_message_id, anchor_block_id, anchor_json, kind, selected_text, normalized_text,
       result_json, source_meta_json, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
   );
   const replace = db.transaction((items: MaterialAnnotation[]) => {
     db.query("DELETE FROM material_annotations WHERE material_id = ?").run(materialId);
@@ -181,6 +193,8 @@ export function replaceMaterialAnnotations(materialId: string, annotations: Mate
         annotation.sourceId || null,
         annotation.chunkId,
         annotationSurface(annotation),
+        annotation.scope || (annotation.sessionId ? "session" : "material"),
+        annotation.sessionId || null,
         annotation.anchorMessageId || null,
         annotation.anchorBlockId || null,
         annotation.textAnchor ? JSON.stringify(annotation.textAnchor) : null,

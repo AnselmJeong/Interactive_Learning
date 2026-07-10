@@ -145,6 +145,8 @@ export type MaterialAnnotation = {
   sourceId: string | null;
   chunkId: string;
   surface: MaterialAnnotationSurface;
+  scope?: "material" | "session";
+  sessionId?: string | null;
   anchorMessageId?: string | null;
   anchorBlockId?: string | null;
   textAnchor?: TextSelectionAnchor | null;
@@ -309,6 +311,13 @@ export type CoursePlan = {
   modules: CourseModule[];
 };
 
+export type MaterialOverview = {
+  paragraph: string;
+  sourceChunkIds: string[];
+  generatedAt: string;
+  generatorVersion: string;
+};
+
 export type MaterialManifest = {
   id: string;
   projectId: string;
@@ -322,6 +331,7 @@ export type MaterialManifest = {
 
 export type MaterialArtifacts = {
   manifest: MaterialManifest;
+  overview: MaterialOverview;
   conceptMap: Concept[];
   coursePlan: CoursePlan;
   lecturePlan?: LecturePlan;

@@ -89,6 +89,34 @@ export type LearningMessageBatchStatus = {
   error?: string | null;
 };
 
+export type LearningMessageSetStatus =
+  | "queued"
+  | "generating"
+  | "interrupted"
+  | "waiting_for_provider"
+  | "paused"
+  | "partial"
+  | "ready"
+  | "failed"
+  | "cancelled"
+  | "superseded";
+
+export type LearningMessageSetSummary = {
+  id: string;
+  materialId: string;
+  status: LearningMessageSetStatus;
+  provider: string;
+  model: string;
+  tutorLanguage: string;
+  learningLevel: string;
+  completedMessages: number;
+  totalMessages: number;
+  nextRouteIndex: number;
+  createdAt: number;
+  updatedAt: number;
+  error: string | null;
+};
+
 export type TutorMessage = {
   id: string;
   role: "user" | "assistant" | "system";
@@ -101,6 +129,8 @@ export type TutorMessage = {
   stateUpdate?: TutorTurnOutput["stateUpdate"];
   createdAt: number;
   ordinal: number;
+  originPreparedMessageId?: string | null;
+  conversationKind?: "main" | "detour";
 };
 
 export type SessionSummary = {
@@ -114,6 +144,9 @@ export type SessionSummary = {
   completedModuleCount: number;
   totalModuleCount: number;
   messageCount: number;
+  messageSetId: string | null;
+  preparedCount: number;
+  consumedCount: number;
   model: string;
   createdAt: number;
   updatedAt: number;
@@ -132,6 +165,9 @@ export type SessionSnapshot = {
   currentChunkId: string | null;
   coveredChunkIds: string[];
   model: string;
+  messageSetId: string | null;
+  lastRevealedRouteIndex: number;
+  lastRevealedMessageId: string | null;
   messages: TutorMessage[];
   createdAt: number;
   updatedAt: number;

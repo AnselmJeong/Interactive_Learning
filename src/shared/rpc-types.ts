@@ -16,7 +16,7 @@ import type {
   TextSelectionAnchor,
 } from "./artifact-types";
 import type { AiProviderId, AiProviderStatus, AppSettings, ProviderModel, PublicAiProviderUpdate } from "./settings-types";
-import type { LearningMessageBatchStatus, SessionSnapshot, SessionSummary, TutorContext, TutorPrefetchStatus, TutorTurnOutput } from "./tutor-types";
+import type { LearningMessageSetSummary, SessionSnapshot, SessionSummary, TutorContext, TutorPrefetchStatus, TutorTurnOutput } from "./tutor-types";
 import type { LearningLevel } from "./learning-levels";
 
 export type ProjectSummary = {
@@ -139,6 +139,10 @@ export type AppRPC = {
       "materials.generate": { params: { projectId: string; sourceIds: string[] }; response: MaterialSummary };
       "materials.list": { params: { projectId: string }; response: MaterialSummary[] };
       "materials.getArtifacts": { params: { materialId: string }; response: MaterialArtifacts };
+      "materials.prepareMessages": { params: { materialId: string; forceNewVersion?: boolean }; response: LearningMessageSetSummary };
+      "materials.messageSetStatus": { params: { materialId: string }; response: LearningMessageSetSummary[] };
+      "materials.resumeMessageSetGeneration": { params: { messageSetId: string }; response: LearningMessageSetSummary };
+      "materials.pauseMessageSetGeneration": { params: { messageSetId: string }; response: LearningMessageSetSummary };
       "figures.getAsset": { params: { materialId: string; figureId: string }; response: { figureId: string; mimeType: string; dataUrl: string } };
       "figures.explain": { params: { materialId: string; figureId: string; userPrompt?: string; contextChunkIds?: string[] }; response: { figureId: string; explanation: string; model: string; visionCapable: true } };
       "annotations.define": { params: { materialId: string; chunkId: string; selectedText: string }; response: LookupResult };
@@ -174,20 +178,16 @@ export type AppRPC = {
       "annotations.updateNote": { params: { annotationId: string; note: string }; response: MaterialAnnotation };
       "annotations.delete": { params: { annotationId: string }; response: { deleted: boolean; syncWarning?: string } };
       "sessions.list": { params: { materialId: string }; response: SessionSummary[] };
-      "sessions.start": { params: { materialId: string; mode: "new" | "continue"; sessionId?: string }; response: { session: SessionSnapshot; context: TutorContext; firstTurn?: TutorTurnOutput } };
+      "sessions.start": { params: { materialId: string; mode: "new" | "continue"; sessionId?: string }; response: { session: SessionSnapshot; context: TutorContext; messageSet: LearningMessageSetSummary; firstTurn?: TutorTurnOutput } };
       "sessions.load": { params: { sessionId: string }; response: { session: SessionSnapshot; context: TutorContext } };
       "sessions.advance": { params: { sessionId: string; mode: "chunk" | "paragraph" | "module" }; response: { session: SessionSnapshot; context: TutorContext; output: TutorTurnOutput } };
+      "sessions.continue": { params: { sessionId: string }; response: { session: SessionSnapshot; context: TutorContext; output: TutorTurnOutput } };
       "sessions.returnToProgress": { params: { sessionId: string }; response: { session: SessionSnapshot; context: TutorContext; output: TutorTurnOutput } };
       "sessions.prefetchStatus": { params: { sessionId: string }; response: TutorPrefetchStatus };
-      "sessions.batchMessagesStart": {
-        params: { materialId: string; sessionId?: string; force?: boolean };
-        response: { session: SessionSnapshot; context: TutorContext; batch: LearningMessageBatchStatus };
-      };
-      "sessions.batchMessagesCancel": { params: { sessionId: string }; response: LearningMessageBatchStatus };
-      "sessions.batchMessagesStatus": { params: { materialId: string; sessionId?: string }; response: LearningMessageBatchStatus };
       "sessions.delete": { params: { sessionId: string }; response: boolean };
       "sessions.selectModule": { params: { sessionId: string; moduleId: string }; response: { session: SessionSnapshot; context: TutorContext } };
       "sessions.openModule": { params: { sessionId: string; moduleId: string }; response: { session: SessionSnapshot; context: TutorContext; output: TutorTurnOutput } };
+      "sessions.resumeModule": { params: { sessionId: string; moduleId: string }; response: { session: SessionSnapshot; context: TutorContext; output?: TutorTurnOutput } };
       "tutor.sendTurn": { params: { sessionId: string; userText: string }; response: { session: SessionSnapshot; context: TutorContext; output: TutorTurnOutput } };
       "settings.getPublic": { params: {}; response: AppSettings };
       "settings.updatePublic": { params: Partial<AppSettings>; response: AppSettings };
@@ -212,7 +212,7 @@ export type AppRPC = {
       "tutor.turnCompleted": { sessionId: string; output: TutorTurnOutput };
       "tutor.turnError": { sessionId: string; error: string };
       "tutor.prefetchStatus": TutorPrefetchStatus;
-      "sessions.batchMessagesStatus": LearningMessageBatchStatus;
+      "materials.messageSetProgress": LearningMessageSetSummary;
       "app.openAbout": {};
     };
   }>;
