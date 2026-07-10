@@ -7,15 +7,19 @@ import type {
   ImageLookupResult,
   LookupResult,
   LookupSourceMeta,
+  MaterialAnnotation,
   MaterialAnnotationKind,
   MaterialAnnotationSurface,
   MaterialArtifacts,
   NoteResult,
+  QuestionThreadMessage,
+  QuestionThreadResult,
   HighlightResult,
   SourceChunk,
   TextSelectionAnchor,
 } from "../shared/artifact-types";
 import type { AppSettings } from "../shared/settings-types";
+import { isQuestionThreadResult, questionThreadFromResult } from "../shared/question-thread";
 
 type ProviderClientContext = {
   publicSettings: AppSettings;
@@ -35,6 +39,12 @@ type SelectionQuestionInput = SelectionLookupInput & {
   question: string;
 };
 
+type SelectionQuestionTurnInput = SelectionLookupInput & {
+  userText: string;
+  draftThread?: QuestionThreadResult;
+  annotationId?: string;
+};
+
 type SaveLookupInput = {
   materialId: string;
   chunkId: string;
@@ -44,7 +54,7 @@ type SaveLookupInput = {
   textAnchor?: TextSelectionAnchor | null;
   kind: MaterialAnnotationKind;
   selectedText: string;
-  result: LookupResult | ImageLookupResult | NoteResult | HighlightResult;
+  result: LookupResult | QuestionThreadResult | ImageLookupResult | NoteResult | HighlightResult;
   sourceMeta: LookupSourceMeta[];
 };
 
@@ -127,6 +137,11 @@ const SELECTION_QUESTION_CONTEXT_CHARS = 4000;
 const SELECTION_QUESTION_CHARS = 2000;
 const SELECTION_QUESTION_ANSWER_CHARS = 8000;
 const SELECTION_QUESTION_ANSWER_TOKENS = 3200;
+const QUESTION_THREAD_MAX_MESSAGES = 120;
+const QUESTION_THREAD_MAX_MESSAGE_CHARS = 12_000;
+const QUESTION_THREAD_MAX_TOTAL_CHARS = 120_000;
+const QUESTION_THREAD_CONTEXT_MESSAGES = 16;
+const QUESTION_THREAD_SUMMARY_CHARS = 4_000;
 const TERM_RENDERING_RULE = [
   "When writing in Korean, do not replace romanized proper nouns or culturally specific technical terms with Korean-only transliterations.",
   "If the source or lookup result gives a romanized original form, preserve that form.",
@@ -139,6 +154,68 @@ function normalizeSelectedText(value: string, max = 160) {
 
 function normalizeSelectedPassage(value: string, max: number) {
   return value.replace(/\s+/g, " ").trim().slice(0, max);
+}
+
+function normalizeThreadMessage(message: QuestionThreadMessage, index: number): QuestionThreadMessage {
+  if (message.role !== "user" && message.role !== "assistant") throw new Error("Side-chat message role is invalid");
+  const content = message.content.trim();
+  if (!content) throw new Error("Side-chat messages cannot be empty");
+  if (content.length > QUESTION_THREAD_MAX_MESSAGE_CHARS) throw new Error("A side-chat message is too long");
+  const createdAt = Number.isFinite(message.createdAt) ? message.createdAt : Date.now();
+  return {
+    id: typeof message.id === "string" && message.id.trim() ? message.id.trim().slice(0, 240) : `imported-${index}-${createdAt}`,
+    role: message.role,
+    content,
+    createdAt,
+    ...(message.role === "assistant" && typeof message.model === "string" && message.model.trim()
+      ? { model: message.model.trim().slice(0, 240) }
+      : {}),
+  };
+}
+
+function validateDraftThread(value: QuestionThreadResult | undefined) {
+  if (!value) return undefined;
+  if (!isQuestionThreadResult(value) || value.provider !== "ai") throw new Error("Side-chat draft is invalid");
+  if (value.messages.length > QUESTION_THREAD_MAX_MESSAGES) throw new Error("Side-chat has too many messages");
+  const messages = value.messages.map(normalizeThreadMessage);
+  const ids = new Set<string>();
+  let totalChars = 0;
+  messages.forEach((message, index) => {
+    totalChars += message.content.length;
+    if (ids.has(message.id)) throw new Error("Side-chat message ids must be unique");
+    ids.add(message.id);
+    const expectedRole = index % 2 === 0 ? "user" : "assistant";
+    if (message.role !== expectedRole) throw new Error("Side-chat messages must alternate user and assistant roles");
+  });
+  if (messages.length % 2 !== 0) throw new Error("Side-chat draft has an unfinished turn");
+  if (totalChars > QUESTION_THREAD_MAX_TOTAL_CHARS) throw new Error("Side-chat payload is too large");
+  const title = typeof value.title === "string" ? value.title.trim().slice(0, 500) : "";
+  if (!title && messages.length) throw new Error("Side-chat title is invalid");
+  const sourceMeta = Array.isArray(value.sourceMeta) ? value.sourceMeta.slice(0, 20).map((source) => ({
+    title: typeof source?.title === "string" ? source.title.trim().slice(0, 500) : "",
+    ...(typeof source?.url === "string" ? { url: source.url.slice(0, 2_000) } : {}),
+    ...(typeof source?.provider === "string" ? { provider: source.provider.slice(0, 240) } : {}),
+    ...(typeof source?.retrievedAt === "string" ? { retrievedAt: source.retrievedAt.slice(0, 100) } : {}),
+  })).filter((source) => source.title) : [];
+  return {
+    ...value,
+    title,
+    messages,
+    provider: "ai" as const,
+    model: typeof value.model === "string" ? value.model.trim().slice(0, 240) : undefined,
+    sourceTitle: typeof value.sourceTitle === "string" ? value.sourceTitle.trim().slice(0, 500) : undefined,
+    retrievedAt: typeof value.retrievedAt === "string" ? value.retrievedAt.slice(0, 100) : new Date().toISOString(),
+    updatedAt: Number.isFinite(value.updatedAt) ? value.updatedAt : Date.now(),
+    sourceMeta,
+  };
+}
+
+function compactEarlierThread(messages: QuestionThreadMessage[]) {
+  if (!messages.length) return "";
+  const summary = messages
+    .map((message) => `${message.role === "user" ? "Learner" : "Tutor"}: ${compactText(message.content, 320)}`)
+    .join("\n");
+  return compactText(summary, QUESTION_THREAD_SUMMARY_CHARS);
 }
 
 function compactText(value: string, max: number) {
@@ -743,6 +820,64 @@ export class AnnotationService {
     return this.aiAnswerSelectionQuestion(selectedText, question, context);
   }
 
+  async askTurn(input: SelectionQuestionTurnInput): Promise<{ thread: QuestionThreadResult; annotation?: MaterialAnnotation }> {
+    if (input.draftThread && input.annotationId) throw new Error("Provide either draftThread or annotationId, not both");
+    const userText = input.userText.replace(/\s+/g, " ").trim().slice(0, SELECTION_QUESTION_CHARS);
+    if (!userText) throw new Error("Question is empty");
+
+    let selectedText = normalizeSelectedPassage(input.selectedText, SELECTION_QUESTION_CONTEXT_CHARS);
+    let previousThread = validateDraftThread(input.draftThread);
+    let existingAnnotation = null;
+
+    if (input.annotationId) {
+      existingAnnotation = getMaterialAnnotation(input.annotationId);
+      if (!existingAnnotation) throw new Error("Annotation not found");
+      if (existingAnnotation.kind !== "question") throw new Error("Only question annotations can continue as a side chat");
+      if (existingAnnotation.materialId !== input.materialId || existingAnnotation.chunkId !== input.chunkId) {
+        throw new Error("Annotation does not belong to the requested material and chunk");
+      }
+      const requestedText = normalizeSelectedPassage(input.selectedText, SELECTION_QUESTION_CONTEXT_CHARS).toLowerCase();
+      const storedText = normalizeSelectedPassage(existingAnnotation.selectedText, SELECTION_QUESTION_CONTEXT_CHARS).toLowerCase();
+      if (requestedText !== storedText) throw new Error("Selected text does not match the saved annotation");
+      if (existingAnnotation.result.kind !== "question" && existingAnnotation.result.kind !== "question_thread") {
+        throw new Error("Saved annotation does not contain a question thread");
+      }
+      selectedText = normalizeSelectedPassage(existingAnnotation.selectedText, SELECTION_QUESTION_CONTEXT_CHARS);
+      previousThread = validateDraftThread(questionThreadFromResult(existingAnnotation.result, existingAnnotation.createdAt));
+    }
+
+    if (!selectedText) throw new Error("Selected text is empty");
+    if ((previousThread?.messages.length || 0) > QUESTION_THREAD_MAX_MESSAGES - 2) throw new Error("Side-chat has reached its storage limit");
+
+    const artifacts = await this.materials.getArtifacts(input.materialId);
+    const context = moduleQuestionContext(artifacts, input.chunkId, userText);
+    const answer = await this.aiAnswerQuestionTurn(selectedText, userText, previousThread?.messages || [], context);
+    const now = Date.now();
+    const messages: QuestionThreadMessage[] = [
+      ...(previousThread?.messages || []),
+      { id: crypto.randomUUID(), role: "user", content: userText, createdAt: now },
+      { id: crypto.randomUUID(), role: "assistant", content: answer.body, createdAt: Date.now(), model: answer.model },
+    ];
+    const thread: QuestionThreadResult = {
+      kind: "question_thread",
+      version: 1,
+      title: previousThread?.title || userText,
+      messages,
+      provider: "ai",
+      model: answer.model,
+      sourceTitle: context.sourceTitle,
+      retrievedAt: previousThread?.retrievedAt || answer.retrievedAt,
+      updatedAt: Date.now(),
+      sourceMeta: answer.sourceMeta,
+    };
+
+    if (!existingAnnotation) return { thread };
+    const updated = updateMaterialAnnotationResult(existingAnnotation.id, thread, thread.sourceMeta);
+    if (!updated) throw new Error("Annotation update failed");
+    const syncWarning = await writeAnnotationsSnapshotRecoverable(updated.materialId);
+    return { thread, annotation: syncWarning ? { ...updated, syncWarning } : updated };
+  }
+
   async lookup(input: SelectionLookupInput): Promise<LookupResult> {
     const term = normalizeSelectedText(input.selectedText);
     if (!term) throw new Error("Selected text is empty");
@@ -782,6 +917,15 @@ export class AnnotationService {
   async save(input: SaveLookupInput) {
     const artifacts = await this.materials.getArtifacts(input.materialId);
     if (!artifacts.sourceChunks.some((chunk) => chunk.id === input.chunkId)) throw new Error("Source chunk not found");
+    let result = input.result;
+    let sourceMeta = input.sourceMeta;
+    if (input.result.kind === "question_thread") {
+      if (input.kind !== "question") throw new Error("Side chats must be saved as question annotations");
+      const validated = validateDraftThread(input.result);
+      if (!validated) throw new Error("Side-chat draft is invalid");
+      result = validated;
+      sourceMeta = validated.sourceMeta;
+    }
     const sourceId = artifacts.sourceIndex[input.chunkId]?.sourceId || null;
     const saved = saveMaterialAnnotation({
       materialId: input.materialId,
@@ -793,8 +937,8 @@ export class AnnotationService {
       textAnchor: input.textAnchor || null,
       kind: input.kind,
       selectedText: input.selectedText,
-      result: input.result,
-      sourceMeta: input.sourceMeta,
+      result,
+      sourceMeta,
     });
     const syncWarning = await writeAnnotationsSnapshotRecoverable(saved.materialId);
     return syncWarning ? { ...saved, syncWarning } : saved;
@@ -923,6 +1067,62 @@ export class AnnotationService {
       sourceTitle: context.sourceTitle,
       retrievedAt,
       sourceMeta: [{ title: `${providerLabel} ${model}`, provider: "AI tutor", retrievedAt }],
+    };
+  }
+
+  private async aiAnswerQuestionTurn(
+    selectedText: string,
+    question: string,
+    history: QuestionThreadMessage[],
+    context: ReturnType<typeof moduleQuestionContext>
+  ) {
+    const { publicSettings, apiKey, client } = await this.providerClient();
+    const model = publicSettings.providers[publicSettings.aiProvider].selectedModel;
+    if (!apiKey.value || !model) throw new Error("AI provider is not configured");
+
+    const recentHistory = history.slice(-QUESTION_THREAD_CONTEXT_MESSAGES);
+    const earlierSummary = compactEarlierThread(history.slice(0, -QUESTION_THREAD_CONTEXT_MESSAGES));
+    const referenceContext = [
+      `Selected text: ${selectedText}`,
+      `Source title: ${context.sourceTitle}`,
+      context.module ? `Current module: ${context.module.title}` : "",
+      context.module?.learningGoal ? `Module learning goal: ${context.module.learningGoal}` : "",
+      context.locator ? `Locator: ${context.locator}` : "",
+      `Module-bounded source context:\n${context.context}`,
+    ].filter(Boolean).join("\n\n");
+
+    const body = await client.chatText({
+      model,
+      temperature: 0.35,
+      maxTokens: SELECTION_QUESTION_ANSWER_TOKENS,
+      timeoutMs: 90000,
+      messages: [
+        {
+          role: "system",
+          content: [
+            "You are Learnie's focused side-chat tutor.",
+            "Answer only within this selected-text conversation; never change learning progress, mastery, or the main tutor session.",
+            "Use the provided source and module context as the primary basis, and label broader knowledge clearly as background.",
+            "Answer the learner's exact question first and connect it back to the selected text.",
+            "Write in Korean unless the learner clearly uses another language.",
+            TERM_RENDERING_RULE,
+            "Use short paragraphs or a compact list when clearer. Do not expose internal app terminology.",
+            "Keep the answer complete and substantive; do not stop mid-sentence.",
+          ].join(" "),
+        },
+        { role: "system", content: referenceContext },
+        ...(earlierSummary ? [{ role: "system" as const, content: `Summary of earlier side-chat turns:\n${earlierSummary}` }] : []),
+        ...recentHistory.map((message) => ({ role: message.role, content: message.content })),
+        { role: "user", content: question },
+      ],
+    });
+
+    const retrievedAt = new Date().toISOString();
+    return {
+      body: compactMarkdownText(body, SELECTION_QUESTION_ANSWER_CHARS),
+      model,
+      retrievedAt,
+      sourceMeta: [{ title: `${publicSettings.aiProvider} ${model}`, provider: "AI tutor", retrievedAt }],
     };
   }
 

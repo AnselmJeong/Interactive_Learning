@@ -340,6 +340,7 @@ const rpc = BrowserView.defineRPC<AppRPC>({
       "figures.explain": ({ materialId, figureId, userPrompt, contextChunkIds }) => explainFigure(materialId, figureId, userPrompt, contextChunkIds),
       "annotations.define": (params) => annotations.define(params),
       "annotations.ask": (params) => annotations.ask(params),
+      "annotations.askTurn": (params) => annotations.askTurn(params),
       "annotations.lookup": (params) => annotations.lookup(params),
       "annotations.findImages": (params) => annotations.findImages(params),
       "annotations.save": (params) => annotations.save(params),

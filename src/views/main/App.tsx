@@ -18,6 +18,7 @@ import { AboutModal } from "./components/AboutModal";
 import { SourceFigureCard } from "./components/SourceFigureCard";
 import { LearningBuddy } from "./components/LearningBuddy";
 import { AnnotationInlineScope } from "./components/AnnotationInlineScope";
+import { QuestionThreadAnnotationCard } from "./components/QuestionThreadAnnotationCard";
 import { figureIdForExplanationAnnotation } from "./figure-annotations";
 import { stripFigureMarkdown } from "./figure-text";
 import { placeAnnotationsForMessages, shouldRenderInlineAnnotation } from "./annotation-placement";
@@ -313,16 +314,35 @@ function AnnotationSourceLinks({ sourceMeta }: { sourceMeta: MaterialAnnotation[
 function ChatSavedAnnotationCard({
   annotation,
   active,
+  expanded,
+  onToggle,
+  onContinue,
   onLocate,
   onDelete,
 }: {
   annotation: MaterialAnnotation;
   active: boolean;
-  onLocate: (annotation: MaterialAnnotation) => void;
+  expanded: boolean;
+  onToggle: () => void;
+  onContinue: (annotation: MaterialAnnotation) => void;
+  onLocate: (annotation: MaterialAnnotation) => boolean;
   onDelete: (annotationId: string) => void;
 }) {
   const result = annotation.result;
-  const isQuestion = annotation.kind === "question" && result.kind === "question";
+  const isQuestion = annotation.kind === "question" && (result.kind === "question" || result.kind === "question_thread");
+  if (isQuestion) {
+    return (
+      <QuestionThreadAnnotationCard
+        annotation={annotation}
+        active={active}
+        expanded={expanded}
+        onToggle={onToggle}
+        onContinue={onContinue}
+        onLocate={onLocate}
+        onDelete={onDelete}
+      />
+    );
+  }
   return (
     <article id={annotationCardId(annotation.id)} className={`chat-annotation-card ${annotation.kind} ${active ? "annotation-card-active" : ""}`}>
       <header>
@@ -371,13 +391,21 @@ function ChatSavedAnnotationCard({
 
 function ChatSavedAnnotations({
   annotations,
+  groupKey,
+  expandedQuestionId,
   activeAnnotationId,
+  onExpandedChange,
+  onContinue,
   onLocate,
   onDelete,
 }: {
   annotations: MaterialAnnotation[];
+  groupKey: string;
+  expandedQuestionId?: string | null;
   activeAnnotationId?: string | null;
-  onLocate: (annotation: MaterialAnnotation) => void;
+  onExpandedChange: (groupKey: string, annotationId: string | null) => void;
+  onContinue: (annotation: MaterialAnnotation) => void;
+  onLocate: (annotation: MaterialAnnotation) => boolean;
   onDelete: (annotationId: string) => void;
 }) {
   if (!annotations.length) return null;
@@ -388,6 +416,9 @@ function ChatSavedAnnotations({
           key={annotation.id}
           annotation={annotation}
           active={activeAnnotationId === annotation.id}
+          expanded={expandedQuestionId === annotation.id}
+          onToggle={() => onExpandedChange(groupKey, expandedQuestionId === annotation.id ? null : annotation.id)}
+          onContinue={onContinue}
           onLocate={onLocate}
           onDelete={onDelete}
         />
@@ -407,6 +438,7 @@ const ChatLog = memo(function ChatLog({
   onToggleSource,
   onAnnotationSaved,
   onDeleteAnnotation,
+  onContinueQuestionThread,
 }: {
   messages: TutorMessage[];
   tutorThinking: boolean;
@@ -418,10 +450,12 @@ const ChatLog = memo(function ChatLog({
   onToggleSource: (messageId: string) => void;
   onAnnotationSaved?: (annotation: MaterialAnnotation) => void;
   onDeleteAnnotation: (annotationId: string) => void;
+  onContinueQuestionThread: (annotation: MaterialAnnotation) => void;
 }) {
   const annotationPlacement = useMemo(() => placeAnnotationsForMessages(annotations, messages), [annotations, messages]);
   const figureAnnotationsById = useMemo(() => groupFigureExplanationAnnotations(annotations), [annotations]);
   const [activeAnnotationId, setActiveAnnotationId] = useState<string | null>(null);
+  const [expandedQuestionByGroup, setExpandedQuestionByGroup] = useState<Map<string, string>>(new Map());
   const activeAnnotationTimerRef = useRef<number | null>(null);
   const chatLogRef = useRef<HTMLDivElement | null>(null);
   const inlineAnnotations = useMemo(() => {
@@ -444,6 +478,10 @@ const ChatLog = memo(function ChatLog({
   }, [annotations]);
 
   useEffect(() => {
+    setExpandedQuestionByGroup(new Map());
+  }, [materialId]);
+
+  useEffect(() => {
     return () => {
       if (activeAnnotationTimerRef.current != null) {
         window.clearTimeout(activeAnnotationTimerRef.current);
@@ -462,7 +500,23 @@ const ChatLog = memo(function ChatLog({
     }, 1600);
   }
 
+  function annotationGroupKey(annotation: MaterialAnnotation) {
+    if (annotation.anchorBlockId) return `block:${annotation.anchorBlockId}`;
+    if (annotation.anchorMessageId) return `message:${annotation.anchorMessageId}`;
+    return "unplaced";
+  }
+
+  function setExpandedQuestion(groupKey: string, annotationId: string | null) {
+    setExpandedQuestionByGroup((current) => {
+      const next = new Map(current);
+      if (annotationId) next.set(groupKey, annotationId);
+      else next.delete(groupKey);
+      return next;
+    });
+  }
+
   function scrollToAnnotationCard(annotation: MaterialAnnotation) {
+    if (annotation.kind === "question") setExpandedQuestion(annotationGroupKey(annotation), annotation.id);
     pulseAnnotation(annotation.id);
     const card = chatLogRef.current?.querySelector<HTMLElement>(`#${annotationCardId(annotation.id)}`);
     if (card) {
@@ -474,7 +528,7 @@ const ChatLog = memo(function ChatLog({
 
   function scrollToAnnotationInline(annotation: MaterialAnnotation) {
     pulseAnnotation(annotation.id);
-    if (chatLogRef.current) focusAnnotationInline(chatLogRef.current, annotation.id);
+    return chatLogRef.current ? focusAnnotationInline(chatLogRef.current, annotation.id) : false;
   }
 
   return (
@@ -511,7 +565,11 @@ const ChatLog = memo(function ChatLog({
                   return blockAnnotations.length ? (
                     <ChatSavedAnnotations
                       annotations={blockAnnotations}
+                      groupKey={`block:${blockId}`}
+                      expandedQuestionId={expandedQuestionByGroup.get(`block:${blockId}`)}
                       activeAnnotationId={activeAnnotationId}
+                      onExpandedChange={setExpandedQuestion}
+                      onContinue={onContinueQuestionThread}
                       onLocate={scrollToAnnotationInline}
                       onDelete={onDeleteAnnotation}
                     />
@@ -536,7 +594,11 @@ const ChatLog = memo(function ChatLog({
             {message.role === "assistant" && savedAnnotations.length ? (
               <ChatSavedAnnotations
                 annotations={savedAnnotations}
+                groupKey={`message:${message.id}`}
+                expandedQuestionId={expandedQuestionByGroup.get(`message:${message.id}`)}
                 activeAnnotationId={activeAnnotationId}
+                onExpandedChange={setExpandedQuestion}
+                onContinue={onContinueQuestionThread}
                 onLocate={scrollToAnnotationInline}
                 onDelete={onDeleteAnnotation}
               />
@@ -566,7 +628,11 @@ const ChatLog = memo(function ChatLog({
         <div className="bubble assistant annotation-fallback">
           <ChatSavedAnnotations
             annotations={annotationPlacement.unplaced}
+            groupKey="unplaced"
+            expandedQuestionId={expandedQuestionByGroup.get("unplaced")}
             activeAnnotationId={activeAnnotationId}
+            onExpandedChange={setExpandedQuestion}
+            onContinue={onContinueQuestionThread}
             onLocate={scrollToAnnotationInline}
             onDelete={onDeleteAnnotation}
           />
@@ -690,12 +756,16 @@ export function App({ request }: { request: RpcRequest }) {
   const [systemThemeDark, setSystemThemeDark] = useState(false);
   const [selectedModuleId, setSelectedModuleId] = useState<string | null>(null);
   const [composerFocusToken, setComposerFocusToken] = useState(0);
+  const [sideChatResumeRequest, setSideChatResumeRequest] = useState<{ annotation: MaterialAnnotation; token: number } | null>(null);
+  const [pendingAnnotationDeletion, setPendingAnnotationDeletion] = useState<MaterialAnnotation | null>(null);
   const tutorSurfaceRef = useRef<HTMLElement | null>(null);
   const continueButtonRef = useRef<HTMLButtonElement | null>(null);
   const lastFocusedReadyPrefetchKeyRef = useRef<string | null>(null);
   const answerReadyNotificationPendingRef = useRef(false);
   const latestNotifiedAssistantIdRef = useRef<string | null>(null);
   const latestAlignedAssistantKeyRef = useRef<string | null>(null);
+  const pendingAnnotationDeletionRef = useRef<MaterialAnnotation | null>(null);
+  const pendingAnnotationDeletionTimerRef = useRef<number | null>(null);
 
   function queueAnswerReadySound() {
     answerReadyNotificationPendingRef.current = true;
@@ -1644,17 +1714,50 @@ export function App({ request }: { request: RpcRequest }) {
       annotations: (current.annotations || []).filter((annotation) => annotation.id !== annotationId),
     } : current);
   }, []);
-  const deleteSavedAnnotation = useCallback(async (annotationId: string) => {
-    const previous = artifacts;
-    handleAnnotationDeleted(annotationId);
+  const continueQuestionThread = useCallback((annotation: MaterialAnnotation) => {
+    setSideChatResumeRequest({ annotation, token: Date.now() });
+  }, []);
+  const handleSideChatResumeHandled = useCallback(() => setSideChatResumeRequest(null), []);
+  const finalizeAnnotationDeletion = useCallback(async (annotation: MaterialAnnotation) => {
     try {
-      const result = (await request("annotations.delete", { annotationId })) as { deleted: boolean; syncWarning?: string };
+      const result = (await request("annotations.delete", { annotationId: annotation.id })) as { deleted: boolean; syncWarning?: string };
       if (result.syncWarning) setStatus(result.syncWarning);
     } catch (error) {
-      setArtifacts(previous);
+      handleAnnotationSaved(annotation);
       setStatus(`Annotation 삭제 실패: ${(error as Error).message}`);
     }
-  }, [artifacts, handleAnnotationDeleted, request]);
+  }, [handleAnnotationSaved, request]);
+  const deleteSavedAnnotation = useCallback((annotationId: string) => {
+    const annotation = artifacts?.annotations.find((item) => item.id === annotationId);
+    if (!annotation) return;
+    const previousPending = pendingAnnotationDeletionRef.current;
+    if (previousPending) {
+      if (pendingAnnotationDeletionTimerRef.current != null) window.clearTimeout(pendingAnnotationDeletionTimerRef.current);
+      void finalizeAnnotationDeletion(previousPending);
+    }
+    handleAnnotationDeleted(annotationId);
+    pendingAnnotationDeletionRef.current = annotation;
+    setPendingAnnotationDeletion(annotation);
+    pendingAnnotationDeletionTimerRef.current = window.setTimeout(() => {
+      pendingAnnotationDeletionRef.current = null;
+      pendingAnnotationDeletionTimerRef.current = null;
+      setPendingAnnotationDeletion(null);
+      void finalizeAnnotationDeletion(annotation);
+    }, 6000);
+  }, [artifacts?.annotations, finalizeAnnotationDeletion, handleAnnotationDeleted]);
+  const undoAnnotationDeletion = useCallback(() => {
+    const annotation = pendingAnnotationDeletionRef.current;
+    if (!annotation) return;
+    if (pendingAnnotationDeletionTimerRef.current != null) window.clearTimeout(pendingAnnotationDeletionTimerRef.current);
+    pendingAnnotationDeletionRef.current = null;
+    pendingAnnotationDeletionTimerRef.current = null;
+    setPendingAnnotationDeletion(null);
+    handleAnnotationSaved(annotation);
+  }, [handleAnnotationSaved]);
+
+  useEffect(() => () => {
+    if (pendingAnnotationDeletionTimerRef.current != null) window.clearTimeout(pendingAnnotationDeletionTimerRef.current);
+  }, []);
 
   // Source-coverage model, driven by the source-chunk cursor. Each semantic source chunk is
   // "covered" (already taught and stepped past), "current" (the chunk being taught right now),
@@ -1914,6 +2017,7 @@ export function App({ request }: { request: RpcRequest }) {
                 onToggleSource={toggleSourceMessage}
                 onAnnotationSaved={handleAnnotationSaved}
                 onDeleteAnnotation={(annotationId) => void deleteSavedAnnotation(annotationId)}
+                onContinueQuestionThread={continueQuestionThread}
               />
               {visibleVisual ? <VisualRenderer visual={visibleVisual} /> : null}
               {latestChoices.length || showProgressActions || showCompletionActions ? (
@@ -2029,6 +2133,8 @@ export function App({ request }: { request: RpcRequest }) {
               submitShortcut={settings?.chatSubmitShortcut || "cmd-enter"}
               onAnnotationSaved={handleAnnotationSaved}
               onDeleteAnnotation={(annotationId) => void deleteSavedAnnotation(annotationId)}
+              resumeRequest={sideChatResumeRequest}
+              onResumeHandled={handleSideChatResumeHandled}
             />
           ) : null}
           </section>
@@ -2210,6 +2316,12 @@ export function App({ request }: { request: RpcRequest }) {
       ) : null}
       {preparedImport ? (
         <SourceImportModal request={request} prepared={preparedImport} onCancel={cancelPreparedImport} onImported={finishPreparedImport} />
+      ) : null}
+      {pendingAnnotationDeletion ? (
+        <div className="annotation-delete-undo-toast" role="status">
+          <span>저장된 주석을 삭제했습니다.</span>
+          <button type="button" onClick={undoAnnotationDeletion}>실행 취소</button>
+        </div>
       ) : null}
     </div>
   );

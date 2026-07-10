@@ -8,10 +8,11 @@ import type {
   MaterialAnnotationKind,
   MaterialAnnotationSurface,
   NoteResult,
+  QuestionThreadResult,
   TextSelectionAnchor,
 } from "../shared/artifact-types";
 
-type AnnotationResult = LookupResult | ImageLookupResult | NoteResult | HighlightResult;
+type AnnotationResult = LookupResult | QuestionThreadResult | ImageLookupResult | NoteResult | HighlightResult;
 const SELECTED_TEXT_MAX_CHARS = 4000;
 
 type MaterialAnnotationRow = {
@@ -196,11 +197,17 @@ export function replaceMaterialAnnotations(materialId: string, annotations: Mate
   replace(annotations);
 }
 
-export function updateMaterialAnnotationResult(annotationId: string, result: AnnotationResult) {
+export function updateMaterialAnnotationResult(annotationId: string, result: AnnotationResult, sourceMeta?: LookupSourceMeta[]) {
   const now = Date.now();
-  getDb()
-    .query("UPDATE material_annotations SET result_json = ?, updated_at = ? WHERE id = ?")
-    .run(JSON.stringify(result), now, annotationId);
+  if (sourceMeta) {
+    getDb()
+      .query("UPDATE material_annotations SET result_json = ?, source_meta_json = ?, updated_at = ? WHERE id = ?")
+      .run(JSON.stringify(result), JSON.stringify(sourceMeta), now, annotationId);
+  } else {
+    getDb()
+      .query("UPDATE material_annotations SET result_json = ?, updated_at = ? WHERE id = ?")
+      .run(JSON.stringify(result), now, annotationId);
+  }
   const row = getDb().query<MaterialAnnotationRow, [string]>("SELECT * FROM material_annotations WHERE id = ?").get(annotationId);
   return row ? rowToAnnotation(row) : null;
 }

@@ -10,6 +10,7 @@ import type {
   MaterialArtifacts,
   MaterialStatus,
   NoteResult,
+  QuestionThreadResult,
   QualityStatus,
   SourceType,
   TextSelectionAnchor,
@@ -142,6 +143,17 @@ export type AppRPC = {
       "figures.explain": { params: { materialId: string; figureId: string; userPrompt?: string; contextChunkIds?: string[] }; response: { figureId: string; explanation: string; model: string; visionCapable: true } };
       "annotations.define": { params: { materialId: string; chunkId: string; selectedText: string }; response: LookupResult };
       "annotations.ask": { params: { materialId: string; chunkId: string; selectedText: string; question: string }; response: LookupResult };
+      "annotations.askTurn": {
+        params: {
+          materialId: string;
+          chunkId: string;
+          selectedText: string;
+          userText: string;
+          draftThread?: QuestionThreadResult;
+          annotationId?: string;
+        };
+        response: { thread: QuestionThreadResult; annotation?: MaterialAnnotation };
+      };
       "annotations.lookup": { params: { materialId: string; chunkId: string; selectedText: string }; response: LookupResult };
       "annotations.findImages": { params: { materialId: string; chunkId: string; selectedText: string }; response: ImageLookupResult };
       "annotations.save": {
@@ -154,7 +166,7 @@ export type AppRPC = {
           textAnchor?: TextSelectionAnchor | null;
           kind: MaterialAnnotationKind;
           selectedText: string;
-          result: LookupResult | ImageLookupResult | NoteResult | HighlightResult;
+          result: LookupResult | QuestionThreadResult | ImageLookupResult | NoteResult | HighlightResult;
           sourceMeta: LookupSourceMeta[];
         };
         response: MaterialAnnotation;

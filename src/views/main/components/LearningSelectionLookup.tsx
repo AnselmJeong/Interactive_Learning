@@ -1,14 +1,16 @@
 import { useEffect, useRef, useState, type PointerEvent, type RefObject } from "react";
 import { Highlighter, Image as ImageIcon, Loader2, MessageSquare, Save, Search, Trash2, X } from "lucide-react";
-import type { ImageLookupResult, LookupResult, MaterialAnnotation, TextSelectionAnchor } from "../../../shared/artifact-types";
+import type { ImageLookupResult, LookupResult, MaterialAnnotation, QuestionThreadResult, TextSelectionAnchor } from "../../../shared/artifact-types";
 import type { ChatSubmitShortcut } from "../../../shared/settings-types";
 import { MarkdownContent } from "./MarkdownContent";
 import { highlightAnnotationIdsForRange } from "../annotation-inline-links";
 import { buildTextSelectionAnchor, isIgnoredSelectionElement } from "../selection-anchor";
-import { shouldSubmitTextArea } from "../submit-shortcut";
+import { questionThreadFromResult } from "../../../shared/question-thread";
+import { SelectionSideChat, clampSideChatPoint, type SelectionSideChatState } from "./SelectionSideChat";
 
 type RpcRequest = (method: string, params: unknown) => Promise<unknown>;
-type LookupAction = "question" | "lookup" | "image";
+type LookupAction = "lookup" | "image";
+type SelectionAction = "question" | LookupAction;
 
 type SelectionState = {
   chunkId: string;
@@ -40,7 +42,11 @@ type LearningSelectionLookupProps = {
   submitShortcut: ChatSubmitShortcut;
   onAnnotationSaved?: (annotation: MaterialAnnotation) => void;
   onDeleteAnnotation?: (annotationId: string) => void | Promise<void>;
+  resumeRequest?: { annotation: MaterialAnnotation; token: number } | null;
+  onResumeHandled?: () => void;
 };
+
+type SideChatSession = SelectionSideChatState & { selection: SelectionState };
 
 const LOOKUP_PANEL_WIDTH = 420;
 const LOOKUP_PANEL_HEIGHT = 560;
@@ -68,7 +74,6 @@ function toolbarPointForRange(rect: DOMRect, container: HTMLElement | null) {
 }
 
 function actionLabel(action: LookupAction) {
-  if (action === "question") return "추가 질문";
   if (action === "lookup") return "위키 요약";
   return "이미지 후보";
 }
@@ -90,7 +95,15 @@ function annotationMethod(action: LookupAction) {
 }
 
 function initialQueryText(panel: LookupPanelState) {
-  return panel.action === "question" ? panel.queryText : panel.queryText || panel.selection.text;
+  return panel.queryText || panel.selection.text;
+}
+
+function sideChatKey(selection: SelectionState) {
+  const anchor = selection.textAnchor;
+  if (anchor) {
+    return [anchor.scope, anchor.chunkId, anchor.messageId || "", anchor.blockId || "", anchor.startOffset, anchor.endOffset, anchor.normalizedText].join(":");
+  }
+  return [selection.chunkId, selection.anchorMessageId || "", selection.anchorBlockId || "", selection.text.toLowerCase()].join(":");
 }
 
 export function LearningSelectionLookup({
@@ -101,15 +114,30 @@ export function LearningSelectionLookup({
   submitShortcut,
   onAnnotationSaved,
   onDeleteAnnotation,
+  resumeRequest,
+  onResumeHandled,
 }: LearningSelectionLookupProps) {
   const [selection, setSelection] = useState<SelectionState | null>(null);
   const [lookupPanel, setLookupPanel] = useState<LookupPanelState | null>(null);
+  const [sideChat, setSideChat] = useState<SideChatSession | null>(null);
+  const [closedDraft, setClosedDraft] = useState<SideChatSession | null>(null);
   const selectionTimerRef = useRef<number | null>(null);
   const lookupRequestSeqRef = useRef(0);
+  const sideChatRef = useRef<SideChatSession | null>(null);
+  const sideChatDraftsRef = useRef(new Map<string, SideChatSession>());
+  const closedDraftTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    sideChatRef.current = sideChat;
+  }, [sideChat]);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       if (event.key !== "Escape") return;
+      if (sideChatRef.current) {
+        closeSideChat(sideChatRef.current);
+        return;
+      }
       lookupRequestSeqRef.current += 1;
       setSelection(null);
       setLookupPanel(null);
@@ -130,8 +158,45 @@ export function LearningSelectionLookup({
       if (selectionTimerRef.current != null) {
         window.clearTimeout(selectionTimerRef.current);
       }
+      if (closedDraftTimerRef.current != null) window.clearTimeout(closedDraftTimerRef.current);
     };
   }, [materialId, defaultChunkId, rootRef]);
+
+  useEffect(() => {
+    sideChatDraftsRef.current.clear();
+    setSideChat(null);
+    setClosedDraft(null);
+  }, [materialId]);
+
+  useEffect(() => {
+    const annotation = resumeRequest?.annotation;
+    if (!annotation || annotation.kind !== "question") return;
+    if (annotation.result.kind !== "question" && annotation.result.kind !== "question_thread") return;
+    const point = clampSideChatPoint(window.innerWidth - 492, 100);
+    const selection: SelectionState = {
+      chunkId: annotation.chunkId,
+      anchorMessageId: annotation.anchorMessageId || null,
+      anchorBlockId: annotation.anchorBlockId || null,
+      textAnchor: annotation.textAnchor || null,
+      highlightAnnotationIds: [],
+      text: annotation.selectedText,
+      x: point.x,
+      y: point.y,
+    };
+    setSideChat({
+      key: `annotation:${annotation.id}`,
+      selection,
+      selectedText: annotation.selectedText,
+      annotationId: annotation.id,
+      thread: questionThreadFromResult(annotation.result, annotation.createdAt),
+      status: "ready",
+      x: point.x,
+      y: point.y,
+    });
+    setLookupPanel(null);
+    setSelection(null);
+    onResumeHandled?.();
+  }, [onResumeHandled, resumeRequest]);
 
   function readSelection(): SelectionState | null {
     const root = rootRef.current;
@@ -201,16 +266,30 @@ export function LearningSelectionLookup({
     }, 40);
   }
 
-  async function runLookup(action: LookupAction, sourceSelection = selection) {
+  async function runLookup(action: SelectionAction, sourceSelection = selection) {
     if (!materialId || !sourceSelection?.chunkId || !sourceSelection.text) return;
-    const panelPoint = clampPoint(sourceSelection.x - 448, sourceSelection.y);
     const nextSelection = { ...sourceSelection };
-    const queryText = sourceSelection.text;
     if (action === "question") {
+      const key = sideChatKey(nextSelection);
+      const existing = sideChatDraftsRef.current.get(key);
+      const panelPoint = clampSideChatPoint(sourceSelection.x - 488, sourceSelection.y);
+      if (sideChatRef.current && !sideChatRef.current.annotationId && (sideChatRef.current.thread || sideChatRef.current.pendingUserText)) {
+        sideChatDraftsRef.current.set(sideChatRef.current.key, sideChatRef.current);
+      }
       setSelection(nextSelection);
-      setLookupPanel({ action, selection: nextSelection, status: "ready", x: panelPoint.x, y: panelPoint.y, queryText: "", result: undefined });
+      setLookupPanel(null);
+      setSideChat(existing ? { ...existing, x: panelPoint.x, y: panelPoint.y } : {
+        key,
+        selection: nextSelection,
+        selectedText: nextSelection.text,
+        status: "ready",
+        x: panelPoint.x,
+        y: panelPoint.y,
+      });
       return;
     }
+    const panelPoint = clampPoint(sourceSelection.x - 448, sourceSelection.y);
+    const queryText = sourceSelection.text;
     const requestSeq = lookupRequestSeqRef.current + 1;
     lookupRequestSeqRef.current = requestSeq;
     setSelection(nextSelection);
@@ -246,21 +325,11 @@ export function LearningSelectionLookup({
     lookupRequestSeqRef.current = requestSeq;
     setLookupPanel({ ...panel, status: "loading", queryText: normalized, result: undefined, error: undefined });
     try {
-      const result = (await request(
-        panel.action === "question" ? "annotations.ask" : annotationMethod(panel.action),
-        panel.action === "question"
-          ? {
-              materialId,
-              chunkId: panel.selection.chunkId,
-              selectedText: panel.selection.text,
-              question: normalized,
-            }
-          : {
-              materialId,
-              chunkId: panel.selection.chunkId,
-              selectedText: normalized,
-            }
-      )) as LookupResult | ImageLookupResult;
+      const result = (await request(annotationMethod(panel.action), {
+        materialId,
+        chunkId: panel.selection.chunkId,
+        selectedText: normalized,
+      })) as LookupResult | ImageLookupResult;
       if (lookupRequestSeqRef.current !== requestSeq) return;
       setLookupPanel({ ...panel, status: "ready", queryText: normalized, result, error: undefined });
     } catch (error) {
@@ -303,6 +372,94 @@ export function LearningSelectionLookup({
         error: `Save failed: ${(error as Error).message || String(error)}`,
       });
     }
+  }
+
+  async function sendSideChatTurn(panel: SideChatSession, userText: string) {
+    if (!materialId || panel.status === "asking" || panel.status === "saving") return;
+    const normalized = userText.replace(/\s+/g, " ").trim();
+    if (!normalized) return;
+    const askingPanel = { ...panel, status: "asking" as const, pendingUserText: normalized, error: undefined };
+    setSideChat((current) => current?.key === panel.key ? askingPanel : current);
+    if (!panel.annotationId) sideChatDraftsRef.current.set(panel.key, askingPanel);
+    try {
+      const response = (await request("annotations.askTurn", {
+        materialId,
+        chunkId: panel.selection.chunkId,
+        selectedText: panel.selection.text,
+        userText: normalized,
+        ...(panel.annotationId ? { annotationId: panel.annotationId } : panel.thread ? { draftThread: panel.thread } : {}),
+      })) as { thread: QuestionThreadResult; annotation?: MaterialAnnotation };
+      const readyPanel: SideChatSession = {
+        ...panel,
+        thread: response.thread,
+        annotationId: response.annotation?.id || panel.annotationId,
+        status: "ready",
+        pendingUserText: undefined,
+        error: response.annotation?.syncWarning,
+      };
+      if (response.annotation) onAnnotationSaved?.(response.annotation);
+      if (!readyPanel.annotationId) sideChatDraftsRef.current.set(panel.key, readyPanel);
+      else sideChatDraftsRef.current.delete(panel.key);
+      setSideChat((current) => current?.key === panel.key ? readyPanel : current);
+    } catch (error) {
+      const failedPanel: SideChatSession = {
+        ...panel,
+        status: "error",
+        pendingUserText: normalized,
+        error: (error as Error).message || String(error),
+      };
+      if (!panel.annotationId) sideChatDraftsRef.current.set(panel.key, failedPanel);
+      setSideChat((current) => current?.key === panel.key ? failedPanel : current);
+    }
+  }
+
+  async function saveSideChat(panel: SideChatSession) {
+    if (!materialId || !panel.thread || panel.annotationId || panel.status === "asking" || panel.status === "saving") return;
+    setSideChat((current) => current?.key === panel.key ? { ...current, status: "saving", error: undefined } : current);
+    try {
+      const saved = (await request("annotations.save", {
+        materialId,
+        chunkId: panel.selection.chunkId,
+        surface: "chat",
+        anchorMessageId: panel.selection.anchorMessageId || null,
+        anchorBlockId: panel.selection.anchorBlockId || null,
+        textAnchor: panel.selection.textAnchor || null,
+        kind: "question",
+        selectedText: panel.selection.text,
+        result: panel.thread,
+        sourceMeta: panel.thread.sourceMeta,
+      })) as MaterialAnnotation;
+      onAnnotationSaved?.(saved);
+      sideChatDraftsRef.current.delete(panel.key);
+      setSideChat((current) => current?.key === panel.key ? {
+        ...current,
+        annotationId: saved.id,
+        thread: saved.result.kind === "question_thread" ? saved.result : current.thread,
+        status: "ready",
+        error: saved.syncWarning,
+      } : current);
+    } catch (error) {
+      setSideChat((current) => current?.key === panel.key ? {
+        ...current,
+        status: "error",
+        pendingUserText: undefined,
+        error: `저장 실패: ${(error as Error).message || String(error)}`,
+      } : current);
+    }
+  }
+
+  function closeSideChat(panel = sideChatRef.current) {
+    if (!panel) return;
+    if (!panel.annotationId && (panel.thread || panel.pendingUserText)) {
+      const stashed = panel.status === "asking" ? { ...panel, status: "ready" as const, pendingUserText: undefined } : panel;
+      sideChatDraftsRef.current.set(panel.key, stashed);
+      setClosedDraft(stashed);
+      if (closedDraftTimerRef.current != null) window.clearTimeout(closedDraftTimerRef.current);
+      closedDraftTimerRef.current = window.setTimeout(() => setClosedDraft(null), 7000);
+    }
+    setSideChat(null);
+    window.getSelection()?.removeAllRanges();
+    setSelection(null);
   }
 
   async function saveHighlight(sourceSelection = selection) {
@@ -437,8 +594,33 @@ export function LearningSelectionLookup({
           onSearch={(queryText) => void searchLookupResult(lookupPanel, queryText)}
           onClose={closePanel}
           onMove={(x, y) => setLookupPanel((current) => (current ? { ...current, x, y } : current))}
-          submitShortcut={submitShortcut}
         />
+      ) : null}
+      {sideChat ? (
+        <SelectionSideChat
+          panel={sideChat}
+          submitShortcut={submitShortcut}
+          onSend={(text) => void sendSideChatTurn(sideChat, text)}
+          onRetry={() => sideChat.pendingUserText && void sendSideChatTurn({ ...sideChat, status: "ready" }, sideChat.pendingUserText)}
+          onSave={() => void saveSideChat(sideChat)}
+          onClose={() => closeSideChat(sideChat)}
+          onMove={(x, y) => setSideChat((current) => current ? { ...current, x, y } : current)}
+        />
+      ) : null}
+      {closedDraft ? (
+        <div className="side-chat-undo-toast" role="status">
+          <span>저장하지 않은 사이드 대화를 닫았습니다.</span>
+          <button
+            type="button"
+            onClick={() => {
+              if (closedDraftTimerRef.current != null) window.clearTimeout(closedDraftTimerRef.current);
+              setSideChat(sideChatDraftsRef.current.get(closedDraft.key) || closedDraft);
+              setClosedDraft(null);
+            }}
+          >
+            실행 취소
+          </button>
+        </div>
       ) : null}
     </>
   );
@@ -450,14 +632,12 @@ function LookupPopover({
   onSearch,
   onClose,
   onMove,
-  submitShortcut,
 }: {
   panel: LookupPanelState;
   onSave: (result: LookupResult | ImageLookupResult) => void;
   onSearch: (queryText: string) => void;
   onClose: () => void;
   onMove: (x: number, y: number) => void;
-  submitShortcut: ChatSubmitShortcut;
 }) {
   const dragRef = useRef<{ offsetX: number; offsetY: number } | null>(null);
   const [dragging, setDragging] = useState(false);
@@ -523,55 +703,26 @@ function LookupPopover({
         </button>
       </header>
 
-      {panel.action === "question" ? (
-        <form
-          className="lookup-query-form question-query-form"
-          onSubmit={(event) => {
-            event.preventDefault();
-            onSearch(queryText);
-          }}
-        >
-          <label>
-            <span>Question</span>
-            <textarea
-              value={queryText}
-              onChange={(event) => setQueryText(event.target.value)}
-              onKeyDown={(event) => {
-                if (shouldSubmitTextArea(event, submitShortcut) && queryText.trim()) {
-                  event.preventDefault();
-                  onSearch(queryText);
-                }
-              }}
-              placeholder="이 부분에 대해 더 묻고 싶은 점"
-              rows={3}
-            />
-          </label>
-          <button type="submit" title="Ask" disabled={panel.status === "saving" || panel.status === "loading" || !queryText.trim()}>
-            <MessageSquare size={15} />
-          </button>
-        </form>
-      ) : (
-        <form
-          className="lookup-query-form"
-          onSubmit={(event) => {
-            event.preventDefault();
-            onSearch(queryText);
-          }}
-        >
-          <label>
-            <span>Search keyword</span>
-            <input value={queryText} onChange={(event) => setQueryText(event.target.value)} />
-          </label>
-          <button type="submit" title="Search" disabled={panel.status === "saving" || !queryText.trim()}>
-            <Search size={15} />
-          </button>
-        </form>
-      )}
+      <form
+        className="lookup-query-form"
+        onSubmit={(event) => {
+          event.preventDefault();
+          onSearch(queryText);
+        }}
+      >
+        <label>
+          <span>Search keyword</span>
+          <input value={queryText} onChange={(event) => setQueryText(event.target.value)} />
+        </label>
+        <button type="submit" title="Search" disabled={panel.status === "saving" || !queryText.trim()}>
+          <Search size={15} />
+        </button>
+      </form>
 
       {panel.status === "loading" || panel.status === "saving" ? (
         <div className="lookup-state">
           <Loader2 size={18} className="spin" />
-          <span>{panel.status === "saving" ? "저장 중" : panel.action === "question" ? "답변 중" : "찾는 중"}</span>
+          <span>{panel.status === "saving" ? "저장 중" : "찾는 중"}</span>
         </div>
       ) : null}
 

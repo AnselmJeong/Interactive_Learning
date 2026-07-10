@@ -64,6 +64,27 @@ export type LookupResult = {
   sourceMeta: LookupSourceMeta[];
 };
 
+export type QuestionThreadMessage = {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  createdAt: number;
+  model?: string;
+};
+
+export type QuestionThreadResult = {
+  kind: "question_thread";
+  version: 1;
+  title: string;
+  messages: QuestionThreadMessage[];
+  provider: "ai";
+  model?: string;
+  sourceTitle?: string;
+  retrievedAt: string;
+  updatedAt: number;
+  sourceMeta: LookupSourceMeta[];
+};
+
 export type ImageLookupItem = {
   title: string;
   thumbnailUrl: string;
@@ -130,7 +151,7 @@ export type MaterialAnnotation = {
   kind: MaterialAnnotationKind;
   selectedText: string;
   normalizedText: string;
-  result: LookupResult | ImageLookupResult | NoteResult | HighlightResult;
+  result: LookupResult | QuestionThreadResult | ImageLookupResult | NoteResult | HighlightResult;
   sourceMeta: LookupSourceMeta[];
   createdAt: number;
   updatedAt: number;
