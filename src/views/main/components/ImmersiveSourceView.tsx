@@ -6,6 +6,7 @@ import { shouldRenderInlineAnnotation, shouldRenderSourceAnnotationCard } from "
 import { annotationCardId, focusAnnotationInline, highlightAnnotationIdsForRange } from "../annotation-inline-links";
 import { figureIdForExplanationAnnotation } from "../figure-annotations";
 import { stripFigureMarkdown } from "../figure-text";
+import { shouldHighlightSelection } from "../highlight-shortcut";
 import { buildTextSelectionAnchor, isIgnoredSelectionElement } from "../selection-anchor";
 import { shouldSubmitTextArea } from "../submit-shortcut";
 import { AnnotationInlineScope } from "./AnnotationInlineScope";
@@ -409,9 +410,9 @@ export function ImmersiveSourceView({
     setSelection(next);
   }
 
-  async function addMark(kind: SourceMark["kind"]) {
-    if (!selection?.chunkId || !selection.text) return;
-    const selected = selection;
+  async function addMark(kind: SourceMark["kind"], sourceSelection = selection) {
+    if (!sourceSelection?.chunkId || !sourceSelection.text) return;
+    const selected = sourceSelection;
     const saved = (await request("annotations.save", {
       materialId: artifacts.manifest.id,
       chunkId: selected.chunkId,
@@ -428,6 +429,19 @@ export function ImmersiveSourceView({
     window.getSelection()?.removeAllRanges();
     if (kind === "note") setEditingMarkId(saved.id);
   }
+
+  useEffect(() => {
+    function onHighlightShortcut(event: KeyboardEvent) {
+      if (!shouldHighlightSelection(event)) return;
+      const sourceSelection = selection || readSelection();
+      if (!sourceSelection || sourceSelection.highlightAnnotationIds.length) return;
+      event.preventDefault();
+      void addMark("highlight", sourceSelection);
+    }
+
+    window.addEventListener("keydown", onHighlightShortcut);
+    return () => window.removeEventListener("keydown", onHighlightShortcut);
+  }, [artifacts.manifest.id, onAnnotationSaved, request, selection]);
 
   function updateNote(markId: string, note: string) {
     setAnnotations((current) =>
@@ -673,7 +687,7 @@ export function ImmersiveSourceView({
                   onMouseDown={(event) => event.preventDefault()}
                   onClick={() => void addMark("highlight")}
                   aria-label="표시"
-                  title="표시"
+                  title="표시 (U)"
                 >
                   <Highlighter size={20} />
                 </button>

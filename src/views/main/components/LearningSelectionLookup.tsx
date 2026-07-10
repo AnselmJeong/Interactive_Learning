@@ -4,6 +4,7 @@ import type { ImageLookupResult, LookupResult, MaterialAnnotation, QuestionThrea
 import type { ChatSubmitShortcut } from "../../../shared/settings-types";
 import { MarkdownContent } from "./MarkdownContent";
 import { highlightAnnotationIdsForRange } from "../annotation-inline-links";
+import { shouldHighlightSelection } from "../highlight-shortcut";
 import { buildTextSelectionAnchor, isIgnoredSelectionElement } from "../selection-anchor";
 import { questionThreadFromResult } from "../../../shared/question-thread";
 import { SelectionSideChat, clampSideChatPoint, type SelectionSideChatState } from "./SelectionSideChat";
@@ -511,6 +512,19 @@ export function LearningSelectionLookup({
     }
   }
 
+  useEffect(() => {
+    function onHighlightShortcut(event: KeyboardEvent) {
+      if (!shouldHighlightSelection(event)) return;
+      const sourceSelection = selection || readSelection();
+      if (!sourceSelection || sourceSelection.highlightAnnotationIds.length) return;
+      event.preventDefault();
+      void saveHighlight(sourceSelection);
+    }
+
+    window.addEventListener("keydown", onHighlightShortcut);
+    return () => window.removeEventListener("keydown", onHighlightShortcut);
+  }, [defaultChunkId, materialId, onAnnotationSaved, request, rootRef, selection]);
+
   async function deleteAnnotation(annotationId: string) {
     if (onDeleteAnnotation) {
       await onDeleteAnnotation(annotationId);
@@ -567,7 +581,7 @@ export function LearningSelectionLookup({
               onMouseDown={(event) => event.preventDefault()}
               onClick={() => void saveHighlight()}
               aria-label="표시"
-              title="표시"
+              title="표시 (U)"
             >
               <Highlighter size={20} />
             </button>
