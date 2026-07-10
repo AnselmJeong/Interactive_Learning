@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { capitalizedSourceTitle, displayableCourseTitle, displayableHeadingPath, displayableModuleTitle, displayableOutlineTitle, displayableSourceTitle, plainDisplayText } from "./display-title";
+import { displayableCourseTitle, displayableHeadingPath, displayableModuleTitle, displayableOutlineTitle, displayableSourceTitle, plainDisplayText, titleCasedSourceTitle } from "./display-title";
 
 describe("display title text", () => {
   test("strips markdown bold wrappers from Korean module titles", () => {
@@ -33,13 +33,20 @@ describe("display title text", () => {
     expect(displayableSourceTitle("Version 1.0", "version.md")).toBe("Version 1.0");
   });
 
-  test("softens extracted all-uppercase titles while preserving roman numerals", () => {
-    expect(capitalizedSourceTitle("FROM MYTH TO SCIENCE")).toBe("From Myth To Science");
-    expect(capitalizedSourceTitle("XII BEFORE THE FALL")).toBe("XII Before The Fall");
-    expect(capitalizedSourceTitle("IV")).toBe("IV");
+  test("applies title case to extracted all-uppercase titles", () => {
+    expect(titleCasedSourceTitle("FROM MYTH TO SCIENCE")).toBe("From Myth to Science");
+    expect(titleCasedSourceTitle("INDIVIDUALISM AND SUBJECTIVITY")).toBe("Individualism and Subjectivity");
+    expect(titleCasedSourceTitle("PEOPLE OF THE BOOK")).toBe("People of the Book");
+    expect(titleCasedSourceTitle("XII BEFORE THE FALL")).toBe("XII before the Fall");
+  });
+
+  test("capitalizes edge words and words following subtitle separators", () => {
+    expect(titleCasedSourceTitle("SCIENCE: FROM MYTH TO MIND")).toBe("Science: From Myth to Mind");
+    expect(titleCasedSourceTitle("A JOURNEY TO")).toBe("A Journey To");
+    expect(titleCasedSourceTitle("IV")).toBe("IV");
   });
 
   test("preserves manually authored mixed case", () => {
-    expect(capitalizedSourceTitle("From myth to Science")).toBe("From myth to Science");
+    expect(titleCasedSourceTitle("From myth to Science")).toBe("From myth to Science");
   });
 });

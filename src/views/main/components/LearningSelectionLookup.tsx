@@ -445,14 +445,14 @@ export function LearningSelectionLookup({
       )) as MaterialAnnotation;
       onAnnotationSaved?.(saved);
       sideChatDraftsRef.current.delete(panel.key);
-      setSideChat((current) => current?.key === panel.key ? {
-        ...current,
+      closeSideChat({
+        ...panel,
         annotationId: saved.id,
         hasUnsavedChanges: false,
-        thread: saved.result.kind === "question_thread" ? saved.result : current.thread,
+        thread: saved.result.kind === "question_thread" ? saved.result : panel.thread,
         status: "ready",
         error: saved.syncWarning,
-      } : current);
+      });
     } catch (error) {
       setSideChat((current) => current?.key === panel.key ? {
         ...current,

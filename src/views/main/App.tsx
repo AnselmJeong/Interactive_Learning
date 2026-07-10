@@ -4,7 +4,7 @@ import type { MaterialSummary, PreparedSourceImport, ProjectArchiveExport, Proje
 import type { AppSettings, AiProviderStatus, ChatSubmitShortcut, ProviderModel } from "../../shared/settings-types";
 import type { MaterialAnnotation, MaterialArtifacts } from "../../shared/artifact-types";
 import type { LearningMessageSetSummary, SessionSnapshot, SessionSummary, SourceRef, TutorContext, TutorMessage, TutorPrefetchStatus } from "../../shared/tutor-types";
-import { capitalizedSourceTitle, displayableCourseTitle, displayableHeadingPath, displayableModuleTitle, displayableOutlineTitle } from "../../shared/display-title";
+import { displayableCourseTitle, displayableHeadingPath, displayableModuleTitle, displayableOutlineTitle, titleCasedSourceTitle } from "../../shared/display-title";
 import { SettingsModal } from "./components/SettingsModal";
 import { VisualRenderer } from "./components/VisualRenderer";
 import { MarkdownContent } from "./components/MarkdownContent";
@@ -122,7 +122,7 @@ function displayableLearningGoal(module: CoursePlanModule) {
 }
 
 function displayableSourceName(source: SourceSummary) {
-  return capitalizedSourceTitle(source.title, source.originalFileName);
+  return titleCasedSourceTitle(source.title, source.originalFileName);
 }
 
 function sourceLearningStatusLabel(status: SourceSummary["learningStatus"]) {

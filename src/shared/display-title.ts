@@ -37,18 +37,44 @@ export function displayableSourceTitle(title: string, fallbackFileName = "") {
 }
 
 const ROMAN_NUMERAL = /^[IVXLCDM]+$/u;
+const ENGLISH_TITLE_SMALL_WORDS = new Set([
+  "a", "an", "the",
+  "and", "but", "for", "nor", "or", "so", "yet",
+  "about", "above", "across", "after", "against", "along", "among", "around", "as", "at",
+  "before", "behind", "below", "beneath", "beside", "between", "beyond", "by",
+  "despite", "down", "during", "except", "from", "in", "inside", "into", "like", "near",
+  "of", "off", "on", "onto", "out", "outside", "over", "past", "per", "since", "through",
+  "throughout", "to", "toward", "under", "underneath", "until", "up", "upon", "via", "with",
+  "within", "without",
+]);
+const ENGLISH_TITLE_WORD = /[A-Z]+(?:[’'][A-Z]+)*/gu;
 
 /**
  * Extracted chapter titles are often emitted in full uppercase. Keep authored
- * mixed-case titles verbatim, but soften all-uppercase Latin titles for the UI.
+ * mixed-case titles verbatim, but apply English title case to all-uppercase
+ * Latin titles. Articles, conjunctions, and prepositions stay lowercase unless
+ * they begin/end the title or follow a subtitle separator.
  */
-export function capitalizedSourceTitle(title: string, fallbackFileName = "") {
+export function titleCasedSourceTitle(title: string, fallbackFileName = "") {
   const displayTitle = displayableSourceTitle(title, fallbackFileName);
   if (!/[A-Z]/u.test(displayTitle) || /[a-z]/u.test(displayTitle)) return displayTitle;
 
-  return displayTitle.replace(/[A-Z]+(?:[’'][A-Z]+)*/gu, (word) => {
+  const words = [...displayTitle.matchAll(ENGLISH_TITLE_WORD)];
+  let wordIndex = 0;
+  return displayTitle.replace(ENGLISH_TITLE_WORD, (word, offset: number) => {
+    const index = wordIndex;
+    wordIndex += 1;
     if (ROMAN_NUMERAL.test(word)) return word;
     const lower = word.toLocaleLowerCase("en");
+    const followsSubtitleSeparator = /[:–—]\s*$/u.test(displayTitle.slice(0, offset));
+    if (
+      index > 0
+      && index < words.length - 1
+      && !followsSubtitleSeparator
+      && ENGLISH_TITLE_SMALL_WORDS.has(lower)
+    ) {
+      return lower;
+    }
     return `${lower[0]?.toLocaleUpperCase("en") || ""}${lower.slice(1)}`;
   });
 }
