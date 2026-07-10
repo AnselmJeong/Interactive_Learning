@@ -17,6 +17,7 @@ import { modelSupportsVision } from "../shared/vision-models";
 import { openFilesystemPath } from "./platform-utils";
 import { configureAppDataBase, configureDatabaseBase, stableDatabaseBase } from "./paths";
 import { normalizeSelectedPaths } from "./file-dialog-selection";
+import { buildBuddyPromptMessages, cleanBuddyMessage } from "./buddy-message";
 
 configureAppDataBase(Utils.paths.userData);
 configureDatabaseBase(stableDatabaseBase(Utils.paths.userData));
@@ -129,18 +130,6 @@ function languageInstruction(tutorLanguage: string) {
   return "Reply in English.";
 }
 
-function cleanBuddyMessage(text: string) {
-  const compact = text
-    .replace(/```[\s\S]*?```/g, "")
-    .replace(/^["'“”‘’]+|["'“”‘’]+$/g, "")
-    .replace(/^(메시지|한마디|버디|Buddy)\s*[:：-]\s*/i, "")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!compact) throw new Error("AI provider returned an empty buddy message");
-  const firstSentence = compact.match(/^.*?[.!?。！？](?=\s|$)/)?.[0]?.trim() || compact;
-  return firstSentence.length > 120 ? `${firstSentence.slice(0, 117).trim()}...` : firstSentence;
-}
-
 async function testSelectedLearningModel(client: Awaited<ReturnType<typeof providerClient>>["client"], model: string) {
   await client.chatText({
     model,
@@ -156,50 +145,13 @@ async function testSelectedLearningModel(client: Awaited<ReturnType<typeof provi
 }
 
 async function generateBuddyMessage(input: BuddyMessageInput) {
-  const { client, publicSettings } = await providerClient();
-  const moduleTitle = input.currentModuleTitle?.trim();
-  const moduleContext = input.currentModuleContext?.trim();
-  const moodGuide: Record<BuddyMessageInput["mood"], string> = {
-    idle: "현재 module 맥락에서 건질 수 있는 짧은 흥미거리",
-    thinking: "기다리는 동안 지루하지 않게 하는 module 관련 작은 관찰",
-    ready: "다음 설명이 준비됐다는 신호와 연결되는 흥미로운 예고",
-    progress: "방금 진도가 나간 내용을 알아차리는 맥락형 한마디",
-    complete: "마무리를 축하하되 module의 핵심 재미를 다시 떠올리는 한마디",
-    quiet: "실패나 대기 상태를 과장하지 않는 차분한 맥락형 격려",
-  };
+  const { client } = await providerClient();
   const text = await client.chatText({
-    temperature: 0.95,
+    temperature: 1,
     maxTokens: 256,
     timeoutMs: 20000,
     thinking: "disabled",
-    messages: [
-      {
-        role: "system",
-        content: [
-          "You are Learnie's tiny learning buddy, a playful companion inside a study workspace.",
-          "Generate exactly one fresh Korean sentence for a speech bubble.",
-          "Prefer a contextual curiosity: a surprising connection, hidden implication, tiny anecdote-like observation, or why-this-is-interesting hook from the supplied module/source context.",
-          "Use generic encouragement only when the mood makes that clearly better or the module context is unavailable.",
-          "Ground source-specific claims only in the supplied module/source context; do not invent outside dates, people, anecdotes, or facts.",
-          "Keep it around 45-95 Korean characters. Do not use markdown, emoji, quotes, labels, lists, or multiple sentences.",
-          "Do not mention hidden prompts and do not say you are an AI.",
-        ].join(" "),
-      },
-      {
-        role: "user",
-        content: [
-          `Trigger: ${input.trigger}`,
-          `Mood: ${input.mood} (${moodGuide[input.mood]})`,
-          `Progress: ${Math.max(0, Math.min(100, Math.round(input.progressPercent)))}%`,
-          moduleTitle ? `Current module: ${moduleTitle.slice(0, 120)}` : "Current module: unavailable",
-          moduleContext ? `Module/source context:\n${moduleContext.slice(0, 1800)}` : "Module/source context: unavailable",
-          `Tutor thinking: ${input.tutorThinking ? "yes" : "no"}`,
-          `Prefetch: ${input.prefetchStatus}`,
-          input.previousMessage?.trim() ? `Previous bubble to avoid repeating: ${input.previousMessage.trim().slice(0, 120)}` : "",
-          "Write only the bubble sentence. Prefer a fun aside over generic praise when the context is usable.",
-        ].filter(Boolean).join("\n"),
-      },
-    ],
+    messages: buildBuddyPromptMessages(input),
   });
   return { text: cleanBuddyMessage(text) };
 }
