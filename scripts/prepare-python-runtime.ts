@@ -1,7 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
-import { chmod, cp, lstat, mkdir, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { isAbsolute, join, relative, resolve } from "node:path";
 import { buildPlatformName, findExistingPythonExecutable, runtimeBundleName, type RuntimePlatform } from "../src/bun/platform-utils";
 
@@ -217,19 +218,39 @@ async function copyRuntime(info: PythonRuntimeInfo) {
 async function verifyRuntime(info: PythonRuntimeInfo) {
   const bundledPython = findExistingPythonExecutable({ pythonRoot, platform: targetPlatform, arch: targetArch, major: info.major, minor: info.minor });
   if (!bundledPython) throw new Error(`Bundled Python executable was not found under ${runtimeRoot}`);
+  let verificationRoot: string | null = null;
+  let verificationPython = bundledPython;
   const env = {
     PYTHONPATH: join(pythonRoot, "src"),
     PYTHONDONTWRITEBYTECODE: "1",
   };
-
-  run(
-    bundledPython,
-    [
-      "-c",
-      "import click, preppy.cli; print(click.__name__); print(preppy.cli.app.info.name)",
-    ],
-    { cwd: pythonRoot, env },
-  );
+  try {
+    if (targetPlatformName === "macos" && isPathAtOrInside(runtimeRoot, "/Volumes")) {
+      verificationRoot = await mkdtemp(join(tmpdir(), "learnie-python-runtime-verify-"));
+      const verificationPythonRoot = join(verificationRoot, "python");
+      const verificationBundleRoot = join(verificationPythonRoot, ".bundle", targetName);
+      await mkdir(join(verificationPythonRoot, ".bundle"), { recursive: true });
+      await cp(bundleRoot, verificationBundleRoot, { recursive: true });
+      verificationPython = findExistingPythonExecutable({
+        pythonRoot: verificationPythonRoot,
+        platform: targetPlatform,
+        arch: targetArch,
+        major: info.major,
+        minor: info.minor,
+      }) || "";
+      if (!verificationPython) throw new Error(`Temporary bundled Python executable was not found under ${verificationBundleRoot}`);
+    }
+    run(
+      verificationPython,
+      [
+        "-c",
+        "import click, preppy.cli; print(click.__name__); print(preppy.cli.app.info.name)",
+      ],
+      { cwd: pythonRoot, env },
+    );
+  } finally {
+    if (verificationRoot) await rm(verificationRoot, { recursive: true, force: true });
+  }
 }
 
 async function main() {
