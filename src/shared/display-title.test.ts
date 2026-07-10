@@ -24,8 +24,20 @@ describe("display title text", () => {
   test("removes redundant serial numbers only from module titles", () => {
     expect(displayableModuleTitle("1. Turning Aristotle into Arithmetic")).toBe("Turning Aristotle into Arithmetic");
     expect(displayableModuleTitle("02) Making Choices")).toBe("Making Choices");
+    expect(displayableModuleTitle("[ 12 ] the rise and fall of scholasticism")).toBe("The Rise and Fall of Scholasticism");
+    expect(displayableModuleTitle("【28】 -- materialistic atomism")).toBe("Materialistic Atomism");
+    expect(displayableModuleTitle("### [7] FROM MYTH TO SCIENCE")).toBe("From Myth to Science");
+    expect(displayableModuleTitle("resurrected self [ 71 ]")).toBe("Resurrected Self");
+    expect(displayableModuleTitle("Chapter 9: modern philosophy")).toBe("Modern Philosophy");
+    expect(displayableModuleTitle("제9장 데카르트")).toBe("데카르트");
     expect(displayableModuleTitle("Version 1.0")).toBe("Version 1.0");
     expect(displayableModuleTitle("1984 and Political Language")).toBe("1984 and Political Language");
+  });
+
+  test("applies English title case to module titles while preserving acronyms", () => {
+    expect(displayableModuleTitle("From myth to Science")).toBe("From Myth to Science");
+    expect(displayableModuleTitle("AI and the rise of DNA research")).toBe("AI and the Rise of DNA Research");
+    expect(displayableModuleTitle("science: from myth to mind")).toBe("Science: From Myth to Mind");
   });
 
   test("removes only known file extensions from source fallbacks", () => {

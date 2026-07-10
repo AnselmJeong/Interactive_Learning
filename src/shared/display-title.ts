@@ -47,7 +47,32 @@ const ENGLISH_TITLE_SMALL_WORDS = new Set([
   "throughout", "to", "toward", "under", "underneath", "until", "up", "upon", "via", "with",
   "within", "without",
 ]);
-const ENGLISH_TITLE_WORD = /[A-Z]+(?:[’'][A-Z]+)*/gu;
+const ENGLISH_TITLE_WORD = /[A-Za-z]+(?:[’'][A-Za-z]+)*/gu;
+
+function applyEnglishTitleCase(displayTitle: string, preserveAuthoredMixedCase: boolean) {
+  if (!/[A-Za-z]/u.test(displayTitle)) return displayTitle;
+  if (preserveAuthoredMixedCase && /[A-Z]/u.test(displayTitle) && /[a-z]/u.test(displayTitle)) return displayTitle;
+
+  return displayTitle.replace(ENGLISH_TITLE_WORD, (word, offset: number) => {
+    if (ROMAN_NUMERAL.test(word)) return word;
+    const lower = word.toLocaleLowerCase("en");
+    const isSmallWord = ENGLISH_TITLE_SMALL_WORDS.has(lower);
+    const followsSubtitleSeparator = /[:–—]\s*$/u.test(displayTitle.slice(0, offset));
+    const hasTokenBefore = /[A-Za-z0-9]/u.test(displayTitle.slice(0, offset));
+    const hasTokenAfter = /[A-Za-z0-9]/u.test(displayTitle.slice(offset + word.length));
+    if (
+      hasTokenBefore
+      && hasTokenAfter
+      && !followsSubtitleSeparator
+      && isSmallWord
+    ) {
+      return lower;
+    }
+    if (!isSmallWord && /^[A-Z]{2,3}$/u.test(word)) return word;
+    if (/[a-z][A-Z]/u.test(word)) return word;
+    return `${lower[0]?.toLocaleUpperCase("en") || ""}${lower.slice(1)}`;
+  });
+}
 
 /**
  * Extracted chapter titles are often emitted in full uppercase. Keep authored
@@ -58,25 +83,7 @@ const ENGLISH_TITLE_WORD = /[A-Z]+(?:[’'][A-Z]+)*/gu;
 export function titleCasedSourceTitle(title: string, fallbackFileName = "") {
   const displayTitle = displayableSourceTitle(title, fallbackFileName);
   if (!/[A-Z]/u.test(displayTitle) || /[a-z]/u.test(displayTitle)) return displayTitle;
-
-  const words = [...displayTitle.matchAll(ENGLISH_TITLE_WORD)];
-  let wordIndex = 0;
-  return displayTitle.replace(ENGLISH_TITLE_WORD, (word, offset: number) => {
-    const index = wordIndex;
-    wordIndex += 1;
-    if (ROMAN_NUMERAL.test(word)) return word;
-    const lower = word.toLocaleLowerCase("en");
-    const followsSubtitleSeparator = /[:–—]\s*$/u.test(displayTitle.slice(0, offset));
-    if (
-      index > 0
-      && index < words.length - 1
-      && !followsSubtitleSeparator
-      && ENGLISH_TITLE_SMALL_WORDS.has(lower)
-    ) {
-      return lower;
-    }
-    return `${lower[0]?.toLocaleUpperCase("en") || ""}${lower.slice(1)}`;
-  });
+  return applyEnglishTitleCase(displayTitle, true);
 }
 
 export function comparableHeadingTitle(title: string) {
@@ -120,5 +127,14 @@ export function displayableOutlineTitle(title: string, leadingTitles: string[] =
 
 export function displayableModuleTitle(title: string, leadingTitles: string[] = []) {
   const outlineTitle = displayableOutlineTitle(title, leadingTitles);
-  return outlineTitle.replace(/^\d{1,3}\s*[.)]\s+/u, "").trim();
+  const withoutDecoration = outlineTitle
+    .replace(/^\s*(?:#{1,6}|[-–—•·▪▫►▶◆◇■□]+)\s*/u, "")
+    .replace(/^\s*(?:(?:chapter|module|section)\s+\d{1,3}|제\s*\d{1,3}\s*장)\s*(?:[.:)\]–—-]+\s*)?/iu, "")
+    .replace(/^\s*(?:\[\s*\d{1,3}\s*\]|\(\s*\d{1,3}\s*\)|\{\s*\d{1,3}\s*\}|【\s*\d{1,3}\s*】|#\s*\d{1,3})\s*(?:[.:)\]–—-]+\s*)?/u, "")
+    .replace(/^\d{1,3}\s*[.)]\s+/u, "")
+    .replace(/^\s*[-–—:|]+\s*/u, "")
+    .replace(/\s*(?:\[\s*\d{1,3}\s*\]|\(\s*\d{1,3}\s*\)|\{\s*\d{1,3}\s*\}|【\s*\d{1,3}\s*】)\s*$/u, "")
+    .replace(/\s*[-–—:|]+\s*$/u, "")
+    .trim();
+  return applyEnglishTitleCase(withoutDecoration, false);
 }

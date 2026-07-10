@@ -3,6 +3,7 @@ import { useState } from "react";
 import type { MaterialAnnotation } from "../../../shared/artifact-types";
 import { questionMessages } from "../../../shared/question-thread";
 import { MarkdownContent } from "./MarkdownContent";
+import { QuestionWebSources } from "./QuestionWebSources";
 
 type QuestionThreadAnnotationCardProps = {
   annotation: MaterialAnnotation;
@@ -28,6 +29,7 @@ export function QuestionThreadAnnotationCard({
   const messages = questionMessages(result, annotation.createdAt);
   const contentId = `question-thread-content-${annotation.id}`;
   const sources = result.sourceMeta.length ? result.sourceMeta : annotation.sourceMeta;
+  const hasMessageSources = messages.some((message) => message.sources?.some((source) => source.url));
   const [locateFailed, setLocateFailed] = useState(false);
 
   return (
@@ -78,12 +80,17 @@ export function QuestionThreadAnnotationCard({
             {messages.map((message) => (
               <article key={message.id} className={`question-thread-message ${message.role}`}>
                 <span>{message.role === "user" ? "나" : "Learnie"}</span>
-                {message.role === "assistant" ? <MarkdownContent content={message.content} compact /> : <p>{message.content}</p>}
+                {message.role === "assistant" ? (
+                  <>
+                    <MarkdownContent content={message.content} compact />
+                    <QuestionWebSources sources={message.sources} />
+                  </>
+                ) : <p>{message.content}</p>}
               </article>
             ))}
           </div>
 
-          {sources.length ? (
+          {!hasMessageSources && sources.length ? (
             <div className="question-thread-meta">
               {sources.map((source, index) => source.url ? (
                 <a key={`${source.title}-${index}`} href={source.url} target="_blank" rel="noreferrer">

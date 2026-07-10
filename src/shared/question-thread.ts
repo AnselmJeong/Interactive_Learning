@@ -19,7 +19,14 @@ export function questionMessages(result: QuestionResult, fallbackCreatedAt = Dat
   const answer = result.body.trim();
   return [
     ...(question ? [{ id: `legacy-user-${fallbackCreatedAt}`, role: "user" as const, content: question, createdAt: fallbackCreatedAt }] : []),
-    ...(answer ? [{ id: `legacy-assistant-${fallbackCreatedAt}`, role: "assistant" as const, content: answer, createdAt: fallbackCreatedAt, model: result.model }] : []),
+    ...(answer ? [{
+      id: `legacy-assistant-${fallbackCreatedAt}`,
+      role: "assistant" as const,
+      content: answer,
+      createdAt: fallbackCreatedAt,
+      model: result.model,
+      sources: result.sourceMeta.filter((source) => Boolean(source.url)),
+    }] : []),
   ];
 }
 

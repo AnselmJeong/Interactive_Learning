@@ -1,9 +1,10 @@
 import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent } from "react";
-import { ChevronDown, ChevronUp, Loader2, RotateCcw, Save, Send, X } from "lucide-react";
+import { ChevronDown, ChevronUp, Globe2, Loader2, RotateCcw, Save, Send, X } from "lucide-react";
 import type { QuestionThreadResult } from "../../../shared/artifact-types";
 import type { ChatSubmitShortcut } from "../../../shared/settings-types";
 import { MarkdownContent } from "./MarkdownContent";
 import { shouldSubmitTextArea } from "../submit-shortcut";
+import { QuestionWebSources } from "./QuestionWebSources";
 
 export type SelectionSideChatState = {
   key: string;
@@ -13,6 +14,8 @@ export type SelectionSideChatState = {
   hasUnsavedChanges?: boolean;
   status: "ready" | "asking" | "saving" | "error";
   pendingUserText?: string;
+  pendingWebSearchEnabled?: boolean;
+  webSearchEnabled?: boolean;
   error?: string;
   x: number;
   y: number;
@@ -21,7 +24,8 @@ export type SelectionSideChatState = {
 type SelectionSideChatProps = {
   panel: SelectionSideChatState;
   submitShortcut: ChatSubmitShortcut;
-  onSend: (text: string) => void;
+  onSend: (text: string, useWebSearch: boolean) => void;
+  onWebSearchEnabledChange: (enabled: boolean) => void;
   onRetry: () => void;
   onSave: () => void;
   onClose: () => void;
@@ -44,6 +48,7 @@ export function SelectionSideChat({
   panel,
   submitShortcut,
   onSend,
+  onWebSearchEnabledChange,
   onRetry,
   onSave,
   onClose,
@@ -100,7 +105,7 @@ export function SelectionSideChat({
   function submit() {
     const text = draft.trim();
     if (!text || busy) return;
-    onSend(text);
+    onSend(text, Boolean(panel.webSearchEnabled));
     setDraft("");
   }
 
@@ -149,7 +154,12 @@ export function SelectionSideChat({
         {messages.length ? messages.map((message) => (
           <article key={message.id} className={`side-chat-message ${message.role}`}>
             <span>{message.role === "user" ? "나" : "Learnie"}</span>
-            {message.role === "assistant" ? <MarkdownContent content={message.content} compact /> : <p>{message.content}</p>}
+            {message.role === "assistant" ? (
+              <>
+                <MarkdownContent content={message.content} compact />
+                <QuestionWebSources sources={message.sources} />
+              </>
+            ) : <p>{message.content}</p>}
           </article>
         )) : (
           <p className="side-chat-empty">선택한 문장에 관해 궁금한 점을 물어보세요. 이 대화는 메인 학습 진도와 분리됩니다.</p>
@@ -184,21 +194,33 @@ export function SelectionSideChat({
           submit();
         }}
       >
-        <textarea
-          ref={composerRef}
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
-          onKeyDown={(event) => {
-            if (shouldSubmitTextArea(event, submitShortcut)) {
-              event.preventDefault();
-              submit();
-            }
-          }}
-          placeholder="후속 질문을 입력하세요"
-          rows={2}
-          disabled={busy}
-          aria-label="사이드 대화 질문"
-        />
+        <div className="side-chat-composer-main">
+          <textarea
+            ref={composerRef}
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            onKeyDown={(event) => {
+              if (shouldSubmitTextArea(event, submitShortcut)) {
+                event.preventDefault();
+                submit();
+              }
+            }}
+            placeholder="후속 질문을 입력하세요"
+            rows={2}
+            disabled={busy}
+            aria-label="사이드 대화 질문"
+          />
+          <label className="question-search-option" title="Ollama Web Search로 외부 자료를 찾아 답변에 출처를 붙입니다">
+            <input
+              type="checkbox"
+              checked={Boolean(panel.webSearchEnabled)}
+              onChange={(event) => onWebSearchEnabledChange(event.target.checked)}
+              disabled={busy}
+            />
+            <Globe2 size={13} aria-hidden="true" />
+            <span>웹 검색</span>
+          </label>
+        </div>
         <button type="submit" disabled={busy || !draft.trim()} aria-label="질문 보내기" title="보내기">
           <Send size={17} />
         </button>

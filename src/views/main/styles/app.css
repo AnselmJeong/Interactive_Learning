@@ -1489,6 +1489,33 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
 }
 .question-thread-message.user p { color: var(--ink); font-size: 13.5px; }
 .question-thread-message.assistant .markdown-content { font-size: 14px; }
+.question-web-sources {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+.question-web-sources a {
+  min-width: 0;
+  max-width: 100%;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 4px 8px;
+  color: var(--muted);
+  background: var(--surface-soft);
+  font-size: 11px;
+  line-height: 1.2;
+  text-decoration: none;
+}
+.question-web-sources a strong { color: var(--question-accent); }
+.question-web-sources a span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.question-web-sources a:hover { border-color: var(--question-accent-line); color: var(--ink); }
 .question-thread-meta {
   display: flex;
   flex-wrap: wrap;
@@ -3849,6 +3876,43 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   grid-template-columns: minmax(0, 1fr) 36px;
   align-items: center;
 }
+.question-query-fields { min-width: 0; display: grid; gap: 7px; }
+.question-search-option {
+  width: fit-content;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  font-size: 11.5px;
+  font-weight: 700;
+  cursor: pointer;
+  user-select: none;
+}
+.question-search-option input {
+  width: 14px;
+  min-width: 14px;
+  height: 14px;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  background: transparent;
+  accent-color: var(--question-accent);
+}
+.question-search-option:has(input:checked) { color: var(--question-accent); }
+.question-search-option:has(input:disabled) { cursor: not-allowed; opacity: 0.58; }
+.lookup-query-form .question-search-option {
+  display: inline-flex;
+  grid-template-columns: none;
+  gap: 5px;
+}
+.lookup-query-form .question-search-option span {
+  color: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  letter-spacing: 0;
+  text-transform: none;
+}
 .lookup-query-form button {
   width: 36px;
   min-height: 34px;
@@ -4002,7 +4066,7 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   display: grid;
   grid-template-columns: minmax(0, 1fr) 38px;
   gap: 8px;
-  align-items: end;
+  align-items: start;
   border-top: 1px solid var(--line);
   padding: 11px 12px;
   background: var(--surface-soft);
@@ -4021,6 +4085,7 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   font-size: 13.5px;
   line-height: 1.45;
 }
+.side-chat-composer-main { min-width: 0; display: grid; gap: 7px; }
 .side-chat-composer button {
   width: 38px;
   min-height: 38px;

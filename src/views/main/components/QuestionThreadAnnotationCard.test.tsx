@@ -22,7 +22,13 @@ describe("QuestionThreadAnnotationCard", () => {
         title: "이 두 접근법을 서로 비교해줘",
         messages: [
           { id: "user-1", role: "user", content: "이 두 접근법을 서로 비교해줘", createdAt: 1 },
-          { id: "assistant-1", role: "assistant", content: "두 접근법의 핵심 차이는 다음과 같습니다.", createdAt: 2 },
+          {
+            id: "assistant-1",
+            role: "assistant",
+            content: "두 접근법의 핵심 차이는 다음과 같습니다. [S1]",
+            createdAt: 2,
+            sources: [{ id: "S1", title: "Embodied cognition", url: "https://example.com/paper", snippet: "Research excerpt" }],
+          },
         ],
         provider: "ai",
         retrievedAt: "2026-07-10T00:00:00.000Z",
@@ -51,5 +57,7 @@ describe("QuestionThreadAnnotationCard", () => {
     expect(html.split("이 두 접근법을 서로 비교해줘")).toHaveLength(2);
     expect(header).toContain('aria-label="원문 위치"');
     expect(header).toContain('aria-label="삭제"');
+    expect(html).toContain("example.com");
+    expect(html).toContain("S1");
   });
 });

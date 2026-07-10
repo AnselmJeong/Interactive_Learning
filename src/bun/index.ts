@@ -18,6 +18,7 @@ import { openFilesystemPath } from "./platform-utils";
 import { configureAppDataBase, configureDatabaseBase, stableDatabaseBase } from "./paths";
 import { normalizeSelectedPaths } from "./file-dialog-selection";
 import { buildBuddyPromptMessages, cleanBuddyMessage } from "./buddy-message";
+import { searchOllamaWeb } from "./ollama-web-search-service";
 
 configureAppDataBase(Utils.paths.userData);
 configureDatabaseBase(stableDatabaseBase(Utils.paths.userData));
@@ -27,7 +28,10 @@ const settings = new SettingsService();
 const secrets = new AiProviderSettingsService();
 const sources = new SourceService();
 const materials = new CourseArtifactService(materialOverviewRuntime);
-const annotations = new AnnotationService(materials, providerClient);
+const annotations = new AnnotationService(materials, providerClient, async (query) => {
+  const ollamaKey = await secrets.getApiKey("ollama");
+  return searchOllamaWeb(query, ollamaKey.value);
+});
 const tutor = new TutorService(
   (status) => sendToView("tutor.prefetchStatus", status),
   undefined,

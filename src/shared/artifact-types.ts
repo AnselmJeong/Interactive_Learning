@@ -45,10 +45,12 @@ export type SourceFigure = {
 };
 
 export type LookupSourceMeta = {
+  id?: string;
   title: string;
   url?: string;
   provider?: string;
   retrievedAt?: string;
+  snippet?: string;
 };
 
 export type LookupResult = {
@@ -71,6 +73,7 @@ export type QuestionThreadMessage = {
   content: string;
   createdAt: number;
   model?: string;
+  sources?: LookupSourceMeta[];
 };
 
 export type QuestionThreadResult = {

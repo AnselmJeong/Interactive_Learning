@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
-import { Bookmark, Highlighter, Image as ImageIcon, Loader2, LocateFixed, MessageSquare, Save, Search, Sparkles, StickyNote, Trash2, X } from "lucide-react";
+import { Bookmark, Globe2, Highlighter, Image as ImageIcon, Loader2, LocateFixed, MessageSquare, Save, Search, Sparkles, StickyNote, Trash2, X } from "lucide-react";
 import type { ImageLookupResult, LookupResult, MaterialAnnotation, MaterialArtifacts, TextSelectionAnchor } from "../../../shared/artifact-types";
 import type { ChatSubmitShortcut } from "../../../shared/settings-types";
 import { shouldRenderInlineAnnotation, shouldRenderSourceAnnotationCard } from "../annotation-placement";
@@ -12,6 +12,7 @@ import { shouldSubmitTextArea } from "../submit-shortcut";
 import { AnnotationInlineScope } from "./AnnotationInlineScope";
 import { MarkdownContent } from "./MarkdownContent";
 import { SourceFigureCard } from "./SourceFigureCard";
+import { QuestionWebSources } from "./QuestionWebSources";
 
 type RpcRequest = (method: string, params: unknown) => Promise<unknown>;
 
@@ -511,7 +512,7 @@ export function ImmersiveSourceView({
     }
   }
 
-  async function searchLookupResult(panel: LookupPanelState, queryText: string) {
+  async function searchLookupResult(panel: LookupPanelState, queryText: string, useWebSearch = false) {
     const normalized = queryText.replace(/\s+/g, " ").trim();
     if (!normalized) return;
     const requestSeq = lookupRequestSeqRef.current + 1;
@@ -526,6 +527,7 @@ export function ImmersiveSourceView({
               chunkId: panel.selection.chunkId,
               selectedText: panel.selection.text,
               question: normalized,
+              useWebSearch,
             }
           : {
               materialId: artifacts.manifest.id,
@@ -738,7 +740,7 @@ export function ImmersiveSourceView({
             <LookupPopover
               panel={lookupPanel}
               onSave={(result) => void saveLookupResult(lookupPanel, result)}
-              onSearch={(queryText) => void searchLookupResult(lookupPanel, queryText)}
+              onSearch={(queryText, useWebSearch) => void searchLookupResult(lookupPanel, queryText, useWebSearch)}
               onClose={() => setLookupPanel(null)}
               onMove={(x, y) => setLookupPanel((current) => (current ? { ...current, x, y } : current))}
               submitShortcut={submitShortcut}
@@ -861,7 +863,7 @@ function LookupPopover({
 }: {
   panel: LookupPanelState;
   onSave: (result: LookupResult | ImageLookupResult) => void;
-  onSearch: (queryText: string) => void;
+  onSearch: (queryText: string, useWebSearch: boolean) => void;
   onClose: () => void;
   onMove: (x: number, y: number) => void;
   submitShortcut: ChatSubmitShortcut;
@@ -870,6 +872,7 @@ function LookupPopover({
   const [dragging, setDragging] = useState(false);
   const [selectedImageKeys, setSelectedImageKeys] = useState<Set<string>>(new Set());
   const [queryText, setQueryText] = useState(() => initialQueryText(panel));
+  const [webSearchEnabled, setWebSearchEnabled] = useState(false);
   const selectedResult = panel.result?.kind === "image"
     ? {
         ...panel.result,
@@ -935,24 +938,36 @@ function LookupPopover({
           className="lookup-query-form question-query-form"
           onSubmit={(event) => {
             event.preventDefault();
-            onSearch(queryText);
+            onSearch(queryText, webSearchEnabled);
           }}
         >
-          <label>
-            <span>Question</span>
-            <textarea
-              value={queryText}
-              onChange={(event) => setQueryText(event.target.value)}
-              onKeyDown={(event) => {
-                if (shouldSubmitTextArea(event, submitShortcut) && queryText.trim()) {
-                  event.preventDefault();
-                  onSearch(queryText);
-                }
-              }}
-              placeholder="이 부분에 대해 더 묻고 싶은 점"
-              rows={3}
-            />
-          </label>
+          <div className="question-query-fields">
+            <label>
+              <span>Question</span>
+              <textarea
+                value={queryText}
+                onChange={(event) => setQueryText(event.target.value)}
+                onKeyDown={(event) => {
+                  if (shouldSubmitTextArea(event, submitShortcut) && queryText.trim()) {
+                    event.preventDefault();
+                    onSearch(queryText, webSearchEnabled);
+                  }
+                }}
+                placeholder="이 부분에 대해 더 묻고 싶은 점"
+                rows={3}
+              />
+            </label>
+            <label className="question-search-option" title="Ollama Web Search로 외부 자료를 찾아 답변에 출처를 붙입니다">
+              <input
+                type="checkbox"
+                checked={webSearchEnabled}
+                onChange={(event) => setWebSearchEnabled(event.target.checked)}
+                disabled={panel.status === "loading" || panel.status === "saving"}
+              />
+              <Globe2 size={13} aria-hidden="true" />
+              <span>웹 검색</span>
+            </label>
+          </div>
           <button type="submit" title="Ask" disabled={panel.status === "saving" || panel.status === "loading" || !queryText.trim()}>
             <MessageSquare size={15} />
           </button>
@@ -962,7 +977,7 @@ function LookupPopover({
           className="lookup-query-form"
           onSubmit={(event) => {
             event.preventDefault();
-            onSearch(queryText);
+            onSearch(queryText, false);
           }}
         >
           <label>
@@ -1075,7 +1090,14 @@ function LookupResultBody({
         <h4>{result.title}</h4>
       )}
       <MarkdownContent content={result.body} compact />
-      <SourceMetaLinks sourceMeta={result.sourceMeta} />
+      {result.kind === "question"
+        ? (
+          <>
+            <QuestionWebSources sources={result.sourceMeta} />
+            <SourceMetaLinks sourceMeta={result.sourceMeta.filter((source) => !source.url)} />
+          </>
+        )
+        : <SourceMetaLinks sourceMeta={result.sourceMeta} />}
     </div>
   );
 }

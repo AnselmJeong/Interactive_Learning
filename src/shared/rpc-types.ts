@@ -147,13 +147,14 @@ export type AppRPC = {
       "figures.getAsset": { params: { materialId: string; figureId: string }; response: { figureId: string; mimeType: string; dataUrl: string } };
       "figures.explain": { params: { materialId: string; figureId: string; userPrompt?: string; contextChunkIds?: string[] }; response: { figureId: string; explanation: string; model: string; visionCapable: true } };
       "annotations.define": { params: { materialId: string; chunkId: string; selectedText: string }; response: LookupResult };
-      "annotations.ask": { params: { materialId: string; chunkId: string; selectedText: string; question: string }; response: LookupResult };
+      "annotations.ask": { params: { materialId: string; chunkId: string; selectedText: string; question: string; useWebSearch?: boolean }; response: LookupResult };
       "annotations.askTurn": {
         params: {
           materialId: string;
           chunkId: string;
           selectedText: string;
           userText: string;
+          useWebSearch?: boolean;
           draftThread?: QuestionThreadResult;
         };
         response: { thread: QuestionThreadResult };

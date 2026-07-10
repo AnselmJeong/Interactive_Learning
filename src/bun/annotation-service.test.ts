@@ -127,6 +127,85 @@ describe("annotation side-chat service", () => {
     ]);
   });
 
+  test("grounds an opted-in side-chat turn with Ollama web sources and preserves them on the answer", async () => {
+    let searchQuery = "";
+    const webCalls: ChatParams[] = [];
+    const client = {
+      listModels: async () => [],
+      chatJson: async () => ({}),
+      chatText: async (params: ChatParams) => {
+        webCalls.push(params);
+        if (params.maxTokens === 64) return "premise conclusion current evidence";
+        if (params.messages.some((message) => message.content.includes("citation repair"))) {
+          return "검색 근거에서 확인한 새로운 설명입니다. [S1]";
+        }
+        return "본문만 반복하고 검색 근거를 쓰지 않은 초안입니다.";
+      },
+    };
+    service = new AnnotationService(
+      { getArtifacts: async () => artifacts() } as never,
+      async () => ({
+        publicSettings: { aiProvider: "openai", providers: { openai: { selectedModel: "test-model" } } },
+        apiKey: { value: "test-key", source: "test" },
+        client,
+      }) as never,
+      async (query) => {
+        searchQuery = query;
+        return [{
+          id: "S1",
+          title: "Research source",
+          url: "https://example.com/research",
+          provider: "Web search",
+          retrievedAt: "2026-07-10T00:00:00.000Z",
+          snippet: "Evidence connecting a premise to a conclusion.",
+        }];
+      }
+    );
+
+    const response = await service.askTurn({
+      materialId: "material-1",
+      chunkId: "chunk-1",
+      selectedText: "selected claim",
+      userText: "최신 연구 근거도 알려줘",
+      useWebSearch: true,
+    });
+
+    expect(searchQuery).toBe("premise conclusion current evidence");
+    expect(webCalls[1]?.messages.some((message) => message.content.includes("[S1] Research source"))).toBe(true);
+    expect(webCalls[1]?.messages[0]?.content).toContain("primary factual basis");
+    expect(webCalls[1]?.messages[0]?.content).not.toContain("The selected claim connects the premise to the conclusion.");
+    expect(webCalls).toHaveLength(3);
+    expect(response.thread.messages[1]?.content).toContain("[S1]");
+    expect(response.thread.messages[1]?.content).not.toContain("본문만 반복");
+    expect(response.thread.messages[1]?.sources?.[0]).toMatchObject({ id: "S1", url: "https://example.com/research" });
+    expect(response.thread.sourceMeta.some((source) => source.url === "https://example.com/research")).toBe(true);
+  });
+
+  test("fails closed when a searched answer still omits every valid source citation after repair", async () => {
+    const client = {
+      listModels: async () => [],
+      chatJson: async () => ({}),
+      chatText: async (params: ChatParams) => params.maxTokens === 64 ? "relevant evidence" : "인용 없는 답변",
+    };
+    service = new AnnotationService(
+      { getArtifacts: async () => artifacts() } as never,
+      async () => ({
+        publicSettings: { aiProvider: "openai", providers: { openai: { selectedModel: "test-model" } } },
+        apiKey: { value: "test-key", source: "test" },
+        client,
+      }) as never,
+      async () => [{ id: "S1", title: "Source", url: "https://example.com", snippet: "Relevant evidence" }]
+    );
+
+    await expect(service.askTurn({
+      materialId: "material-1",
+      chunkId: "chunk-1",
+      selectedText: "selected claim",
+      userText: "외부 근거도 알려줘",
+      useWebSearch: true,
+    })).rejects.toThrow("답변에 인용하지 못했습니다");
+  });
+
   test("keeps a continued legacy thread as a draft until explicitly saved", async () => {
     const legacy = saveMaterialAnnotation({
       materialId: "material-1",

@@ -378,7 +378,7 @@ export function LearningSelectionLookup({
     }
   }
 
-  async function sendSideChatTurn(panel: SideChatSession, userText: string) {
+  async function sendSideChatTurn(panel: SideChatSession, userText: string, useWebSearch: boolean) {
     if (!materialId || panel.status === "asking" || panel.status === "saving") return;
     const normalized = userText.replace(/\s+/g, " ").trim();
     if (!normalized) return;
@@ -386,6 +386,7 @@ export function LearningSelectionLookup({
       ...panel,
       status: "asking" as const,
       pendingUserText: normalized,
+      pendingWebSearchEnabled: useWebSearch,
       hasUnsavedChanges: true,
       error: undefined,
     };
@@ -397,6 +398,7 @@ export function LearningSelectionLookup({
         chunkId: panel.selection.chunkId,
         selectedText: panel.selection.text,
         userText: normalized,
+        useWebSearch,
         ...(panel.thread ? { draftThread: panel.thread } : {}),
       })) as { thread: QuestionThreadResult };
       const readyPanel: SideChatSession = {
@@ -405,6 +407,7 @@ export function LearningSelectionLookup({
         hasUnsavedChanges: true,
         status: "ready",
         pendingUserText: undefined,
+        pendingWebSearchEnabled: undefined,
         error: undefined,
       };
       sideChatDraftsRef.current.set(panel.key, readyPanel);
@@ -414,6 +417,7 @@ export function LearningSelectionLookup({
         ...panel,
         status: "error",
         pendingUserText: normalized,
+        pendingWebSearchEnabled: useWebSearch,
         error: (error as Error).message || String(error),
       };
       sideChatDraftsRef.current.set(panel.key, failedPanel);
@@ -631,8 +635,13 @@ export function LearningSelectionLookup({
         <SelectionSideChat
           panel={sideChat}
           submitShortcut={submitShortcut}
-          onSend={(text) => void sendSideChatTurn(sideChat, text)}
-          onRetry={() => sideChat.pendingUserText && void sendSideChatTurn({ ...sideChat, status: "ready" }, sideChat.pendingUserText)}
+          onSend={(text, useWebSearch) => void sendSideChatTurn(sideChat, text, useWebSearch)}
+          onWebSearchEnabledChange={(enabled) => setSideChat((current) => current ? { ...current, webSearchEnabled: enabled } : current)}
+          onRetry={() => sideChat.pendingUserText && void sendSideChatTurn(
+            { ...sideChat, status: "ready" },
+            sideChat.pendingUserText,
+            Boolean(sideChat.pendingWebSearchEnabled)
+          )}
           onSave={() => void saveSideChat(sideChat)}
           onClose={() => closeSideChat(sideChat)}
           onMove={(x, y) => setSideChat((current) => current ? { ...current, x, y } : current)}
