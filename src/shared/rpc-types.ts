@@ -135,6 +135,7 @@ export type AppRPC = {
       "sources.openDialog": { params: { projectId: string }; response: string[] };
       "sources.chooseAndImport": { params: { projectId: string }; response: SourceSummary[] };
       "sources.list": { params: { projectId: string }; response: SourceSummary[] };
+      "sources.rename": { params: { projectId: string; sourceId: string; title: string }; response: SourceSummary };
       "sources.delete": { params: { projectId: string; sourceId: string }; response: boolean };
       "materials.generate": { params: { projectId: string; sourceIds: string[] }; response: MaterialSummary };
       "materials.list": { params: { projectId: string }; response: MaterialSummary[] };

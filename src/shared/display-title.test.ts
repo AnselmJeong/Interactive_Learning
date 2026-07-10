@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { displayableCourseTitle, displayableHeadingPath, displayableModuleTitle, displayableOutlineTitle, displayableSourceTitle, plainDisplayText } from "./display-title";
+import { capitalizedSourceTitle, displayableCourseTitle, displayableHeadingPath, displayableModuleTitle, displayableOutlineTitle, displayableSourceTitle, plainDisplayText } from "./display-title";
 
 describe("display title text", () => {
   test("strips markdown bold wrappers from Korean module titles", () => {
@@ -31,5 +31,15 @@ describe("display title text", () => {
   test("removes only known file extensions from source fallbacks", () => {
     expect(displayableSourceTitle("", "/tmp/The Laws of Thought.md")).toBe("The Laws of Thought");
     expect(displayableSourceTitle("Version 1.0", "version.md")).toBe("Version 1.0");
+  });
+
+  test("softens extracted all-uppercase titles while preserving roman numerals", () => {
+    expect(capitalizedSourceTitle("FROM MYTH TO SCIENCE")).toBe("From Myth To Science");
+    expect(capitalizedSourceTitle("XII BEFORE THE FALL")).toBe("XII Before The Fall");
+    expect(capitalizedSourceTitle("IV")).toBe("IV");
+  });
+
+  test("preserves manually authored mixed case", () => {
+    expect(capitalizedSourceTitle("From myth to Science")).toBe("From myth to Science");
   });
 });

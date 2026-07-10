@@ -36,6 +36,23 @@ export function displayableSourceTitle(title: string, fallbackFileName = "") {
   return fileName.replace(DISPLAY_FILE_EXTENSION, "").trim() || rawFallback;
 }
 
+const ROMAN_NUMERAL = /^[IVXLCDM]+$/u;
+
+/**
+ * Extracted chapter titles are often emitted in full uppercase. Keep authored
+ * mixed-case titles verbatim, but soften all-uppercase Latin titles for the UI.
+ */
+export function capitalizedSourceTitle(title: string, fallbackFileName = "") {
+  const displayTitle = displayableSourceTitle(title, fallbackFileName);
+  if (!/[A-Z]/u.test(displayTitle) || /[a-z]/u.test(displayTitle)) return displayTitle;
+
+  return displayTitle.replace(/[A-Z]+(?:[’'][A-Z]+)*/gu, (word) => {
+    if (ROMAN_NUMERAL.test(word)) return word;
+    const lower = word.toLocaleLowerCase("en");
+    return `${lower[0]?.toLocaleUpperCase("en") || ""}${lower.slice(1)}`;
+  });
+}
+
 export function comparableHeadingTitle(title: string) {
   return displayableCourseTitle(title)
     .replace(/\.[A-Za-z0-9]+$/u, "")

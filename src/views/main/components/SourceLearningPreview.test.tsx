@@ -47,4 +47,17 @@ describe("SourceLearningPreview", () => {
     expect(html).not.toContain("source-preview-actions");
     expect(html).not.toContain("<button");
   });
+
+  test("uses the current source title instead of the generated artifact title", () => {
+    const artifacts = {
+      overview: { paragraph: "Overview" },
+      coursePlan: { title: "STALE TITLE", estimatedTimeMinutes: 10, modules: [] },
+      sourceChunks: [],
+    } as unknown as MaterialArtifacts;
+
+    const html = renderToStaticMarkup(createElement(SourceLearningPreview, { artifacts, title: "Renamed source" }));
+
+    expect(html).toContain(">Renamed source</h2>");
+    expect(html).not.toContain(">STALE TITLE</h2>");
+  });
 });

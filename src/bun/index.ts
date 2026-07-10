@@ -293,6 +293,7 @@ const rpc = BrowserView.defineRPC<AppRPC>({
         return result;
       },
       "sources.list": ({ projectId }) => sources.list(projectId),
+      "sources.rename": ({ projectId, sourceId, title }) => sources.rename(projectId, sourceId, title),
       "sources.delete": ({ projectId, sourceId }) => sources.delete(projectId, sourceId),
       "materials.generate": async ({ projectId, sourceIds }) => {
         sendToView("materials.generationProgress", { projectId, stage: "concepts", message: "Building source-grounded material", progress: 20 });

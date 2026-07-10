@@ -4,10 +4,12 @@ import { displayableCourseTitle, displayableModuleTitle } from "../../../shared/
 
 export function SourceLearningPreview({
   artifacts,
+  title: sourceTitle,
 }: {
   artifacts: MaterialArtifacts;
+  title?: string;
 }) {
-  const title = displayableCourseTitle(artifacts.coursePlan.title) || artifacts.coursePlan.title;
+  const title = sourceTitle || displayableCourseTitle(artifacts.coursePlan.title) || artifacts.coursePlan.title;
 
   return (
     <article className="source-learning-preview" aria-labelledby="source-preview-title">

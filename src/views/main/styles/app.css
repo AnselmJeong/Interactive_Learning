@@ -77,15 +77,50 @@ button, input, textarea, select { font: inherit; }
 button { color: inherit; }
 
 .app-shell {
+  --left-pane-width: 318px;
+  position: relative;
   height: 100vh;
   display: grid;
-  grid-template-columns: 318px minmax(640px, 1fr) 304px;
+  grid-template-columns: var(--left-pane-width) minmax(640px, 1fr) 304px;
   overflow: hidden;
 }
 .app-shell.left-pane-collapsed { grid-template-columns: 52px minmax(640px, 1fr) 304px; }
-.app-shell.right-pane-collapsed { grid-template-columns: 318px minmax(640px, 1fr) 52px; }
+.app-shell.right-pane-collapsed { grid-template-columns: var(--left-pane-width) minmax(640px, 1fr) 52px; }
 .app-shell.left-pane-collapsed.right-pane-collapsed { grid-template-columns: 52px minmax(640px, 1fr) 52px; }
 .app-shell.left-pane-collapsed .source-spine { left: 74px; }
+
+.left-pane-splitter {
+  position: absolute;
+  z-index: 8;
+  top: 0;
+  bottom: 0;
+  left: var(--left-pane-width);
+  width: 10px;
+  transform: translateX(-50%);
+  cursor: col-resize;
+  touch-action: none;
+  outline: none;
+}
+.left-pane-splitter::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 4px;
+  width: 2px;
+  background: transparent;
+  transition: background 140ms ease;
+}
+.left-pane-splitter:hover::after,
+.left-pane-splitter:focus-visible::after,
+.app-shell.left-pane-resizing .left-pane-splitter::after {
+  background: var(--accent-2);
+}
+.app-shell.left-pane-collapsed .left-pane-splitter { display: none; }
+body.pane-resizing {
+  cursor: col-resize;
+  user-select: none;
+}
 
 .sidebar, .inspector {
   position: relative;
@@ -1712,6 +1747,7 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   color: var(--ink);
   font-family: var(--learning-pane-font);
   font-size: clamp(32px, 4vw, 52px);
+  font-weight: 400;
   line-height: 1.08;
   letter-spacing: -0.035em;
 }
@@ -2895,7 +2931,7 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
 .sources-section .source-list-fill { flex: 1; min-height: 0; overflow: auto; padding-right: 2px; align-content: start; }
 .sources-section .list { gap: 2px; margin-top: 12px; }
 .source-learn-row {
-  grid-template-columns: minmax(0, 1fr) 30px 30px;
+  grid-template-columns: minmax(0, 1fr) 30px 30px 30px;
   align-items: center;
   min-width: 0;
   min-height: 32px;
@@ -2949,7 +2985,7 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   color: var(--source-status-complete);
   box-shadow: 0 0 0 2px color-mix(in oklch, var(--source-status-complete) 18%, transparent);
 }
-.source-row-title {
+.source-learn-row .source-row-title {
   display: block;
   min-width: 0;
   max-width: 100%;
@@ -2967,7 +3003,7 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   color: var(--ink);
 }
 .source-delete-button {
-  grid-column: 3;
+  grid-column: 4;
   grid-row: 1;
   width: 28px;
   min-height: 28px;
@@ -2996,6 +3032,27 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   cursor: pointer;
   opacity: 0;
 }
+.source-edit-button {
+  grid-column: 3;
+  grid-row: 1;
+  width: 28px;
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--quiet);
+  cursor: pointer;
+  opacity: 0;
+}
+.source-learn-row:hover .source-edit-button,
+.source-edit-button:focus-visible { opacity: 1; }
+.source-edit-button:hover:not(:disabled) {
+  background: color-mix(in oklch, var(--accent-2) 10%, transparent);
+  color: var(--ink);
+}
 .source-learn-row:hover .source-prepare-button,
 .source-prepare-button:focus-visible { opacity: 1; }
 .source-prepare-button.generating,
@@ -3019,6 +3076,46 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
 .source-learn-row:hover .source-delete-button,
 .source-delete-button:focus-visible {
   opacity: 1;
+}
+.source-learn-row.editing {
+  grid-template-columns: minmax(0, 1fr);
+  padding-left: 10px;
+}
+.source-title-edit {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px 28px;
+  align-items: center;
+  gap: 4px;
+}
+.source-title-edit input {
+  min-width: 0;
+  height: 28px;
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 14px;
+  font-weight: 400;
+}
+.source-title-save,
+.source-title-cancel {
+  width: 28px;
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--quiet);
+  cursor: pointer;
+}
+.source-title-save:hover:not(:disabled) {
+  background: color-mix(in oklch, var(--source-status-complete) 10%, transparent);
+  color: var(--source-status-complete);
+}
+.source-title-cancel:hover:not(:disabled) {
+  background: color-mix(in oklch, var(--danger) 10%, transparent);
+  color: var(--danger);
 }
 .source-learn-row.active:hover::after,
 .source-learn-row.active:focus-within::after {
@@ -3254,7 +3351,7 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
 }
 .source-spine {
   position: fixed;
-  left: calc(318px + 22px);
+  left: calc(var(--left-pane-width) + 22px);
   top: 194px;
   bottom: 34px;
   width: 28px;
@@ -4436,11 +4533,11 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
 
 @media (max-width: 1100px) {
   .app-shell,
-  .app-shell.right-pane-collapsed { grid-template-columns: 290px minmax(0, 1fr); }
+  .app-shell.right-pane-collapsed { grid-template-columns: var(--left-pane-width) minmax(0, 1fr); }
   .app-shell.left-pane-collapsed,
   .app-shell.left-pane-collapsed.right-pane-collapsed { grid-template-columns: 52px minmax(0, 1fr); }
   .inspector { display: none; }
-  .source-spine { left: calc(290px + 16px); }
+  .source-spine { left: calc(var(--left-pane-width) + 16px); }
   .app-shell.left-pane-collapsed .source-spine { left: 68px; }
   .source-reader-layout { grid-template-columns: 190px minmax(0, 1fr); gap: 22px; }
   .learning-buddy[data-side="right"] { display: none; }
@@ -4448,6 +4545,7 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
 
 @media (max-width: 760px) {
   .app-shell { display: block; }
+  .left-pane-splitter { display: none; }
   .sidebar, .inspector { height: auto; }
   .tutor-shell { min-height: 70vh; }
   .tutor-surface { padding: 32px 18px 18px; }

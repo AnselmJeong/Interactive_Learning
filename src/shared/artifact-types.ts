@@ -6,6 +6,7 @@ export type SourceManifest = {
   id: string;
   projectId: string;
   title: string;
+  updatedAt?: string;
   sourceType: SourceType;
   originalPath?: string;
   importedAt: string;

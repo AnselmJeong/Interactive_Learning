@@ -1,10 +1,10 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { Archive, BookOpen, Check, Info, Loader2, LocateFixed, MessageSquare, Moon, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Play, Send, Settings, Sparkles, Sun, Trash2, Upload } from "lucide-react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
+import { Archive, BookOpen, Check, Info, Loader2, LocateFixed, MessageSquare, Moon, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Pencil, Play, Send, Settings, Sparkles, Sun, Trash2, Upload, X } from "lucide-react";
 import type { MaterialSummary, PreparedSourceImport, ProjectArchiveExport, ProjectSummary, SourceSummary } from "../../shared/rpc-types";
 import type { AppSettings, AiProviderStatus, ChatSubmitShortcut, ProviderModel } from "../../shared/settings-types";
 import type { MaterialAnnotation, MaterialArtifacts } from "../../shared/artifact-types";
 import type { LearningMessageSetSummary, SessionSnapshot, SessionSummary, SourceRef, TutorContext, TutorMessage, TutorPrefetchStatus } from "../../shared/tutor-types";
-import { displayableCourseTitle, displayableHeadingPath, displayableModuleTitle, displayableOutlineTitle, displayableSourceTitle } from "../../shared/display-title";
+import { capitalizedSourceTitle, displayableCourseTitle, displayableHeadingPath, displayableModuleTitle, displayableOutlineTitle } from "../../shared/display-title";
 import { SettingsModal } from "./components/SettingsModal";
 import { VisualRenderer } from "./components/VisualRenderer";
 import { MarkdownContent } from "./components/MarkdownContent";
@@ -57,6 +57,20 @@ const READY_STATUS = "Ready";
 const TUTOR_THINKING_STATUS = "Tutor is thinking";
 const BUDDY_CONTEXT_EXCERPT_CHARS = 520;
 const BUDDY_CONTEXT_MAX_CHARS = 1800;
+const LEFT_PANE_DEFAULT_WIDTH = 318;
+const LEFT_PANE_MIN_WIDTH = 260;
+const LEFT_PANE_MAX_WIDTH = 520;
+const LEFT_PANE_WIDTH_STORAGE_KEY = "learnie.left-pane-width";
+
+function clampLeftPaneWidth(width: number) {
+  return Math.min(LEFT_PANE_MAX_WIDTH, Math.max(LEFT_PANE_MIN_WIDTH, Math.round(width)));
+}
+
+function initialLeftPaneWidth() {
+  if (typeof window === "undefined") return LEFT_PANE_DEFAULT_WIDTH;
+  const stored = Number.parseFloat(window.localStorage.getItem(LEFT_PANE_WIDTH_STORAGE_KEY) || "");
+  return Number.isFinite(stored) ? clampLeftPaneWidth(stored) : LEFT_PANE_DEFAULT_WIDTH;
+}
 
 function resolveTheme(mode: AppSettings["theme"] | undefined, systemDark: boolean): AppTheme {
   if (mode === "dark" || mode === "light") return mode;
@@ -107,7 +121,7 @@ function displayableLearningGoal(module: CoursePlanModule) {
 }
 
 function displayableSourceName(source: SourceSummary) {
-  return displayableSourceTitle(source.title, source.originalFileName);
+  return capitalizedSourceTitle(source.title, source.originalFileName);
 }
 
 function sourceLearningStatusLabel(status: SourceSummary["learningStatus"]) {
@@ -750,7 +764,12 @@ export function App({ request }: { request: RpcRequest }) {
   const [viewMode, setViewMode] = useState<"chat" | "source">("chat");
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>("sessions");
   const [leftPaneOpen, setLeftPaneOpen] = useState(true);
+  const [leftPaneWidth, setLeftPaneWidth] = useState(initialLeftPaneWidth);
+  const [leftPaneResizing, setLeftPaneResizing] = useState(false);
   const [rightPaneOpen, setRightPaneOpen] = useState(true);
+  const [editingSourceId, setEditingSourceId] = useState<string | null>(null);
+  const [sourceTitleDraft, setSourceTitleDraft] = useState("");
+  const [sourceRenameBusy, setSourceRenameBusy] = useState(false);
   const [systemThemeDark, setSystemThemeDark] = useState(false);
   const [selectedModuleId, setSelectedModuleId] = useState<string | null>(null);
   const [resumeScrollAnchorId, setResumeScrollAnchorId] = useState<string | null>(null);
@@ -766,6 +785,7 @@ export function App({ request }: { request: RpcRequest }) {
   const sessionStartTokenRef = useRef(0);
   const pendingAnnotationDeletionRef = useRef<MaterialAnnotation | null>(null);
   const pendingAnnotationDeletionTimerRef = useRef<number | null>(null);
+  const leftPaneResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
 
   function queueAnswerReadySound() {
     answerReadyNotificationPendingRef.current = true;
@@ -789,6 +809,33 @@ export function App({ request }: { request: RpcRequest }) {
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
   }, [theme]);
+
+  useEffect(() => {
+    window.localStorage.setItem(LEFT_PANE_WIDTH_STORAGE_KEY, String(leftPaneWidth));
+  }, [leftPaneWidth]);
+
+  useEffect(() => {
+    if (!leftPaneResizing) return;
+    document.body.classList.add("pane-resizing");
+    function onPointerMove(event: globalThis.PointerEvent) {
+      const drag = leftPaneResizeRef.current;
+      if (!drag) return;
+      setLeftPaneWidth(clampLeftPaneWidth(drag.startWidth + event.clientX - drag.startX));
+    }
+    function finishResize() {
+      leftPaneResizeRef.current = null;
+      setLeftPaneResizing(false);
+    }
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", finishResize);
+    window.addEventListener("pointercancel", finishResize);
+    return () => {
+      document.body.classList.remove("pane-resizing");
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", finishResize);
+      window.removeEventListener("pointercancel", finishResize);
+    };
+  }, [leftPaneResizing]);
 
   async function toggleTheme() {
     const nextTheme: AppSettings["theme"] = theme === "dark" ? "light" : "dark";
@@ -1098,6 +1145,59 @@ export function App({ request }: { request: RpcRequest }) {
     } finally {
       setBatchActionBusy(false);
     }
+  }
+
+  function beginSourceRename(source: SourceSummary) {
+    if (sourceRenameBusy) return;
+    setEditingSourceId(source.id);
+    setSourceTitleDraft(source.title);
+  }
+
+  function cancelSourceRename() {
+    if (sourceRenameBusy) return;
+    setEditingSourceId(null);
+    setSourceTitleDraft("");
+  }
+
+  async function saveSourceTitle(source: SourceSummary) {
+    if (!activeProject || sourceRenameBusy) return;
+    const title = sourceTitleDraft.replace(/\s+/gu, " ").trim();
+    if (!title) {
+      setSourceNotice("소스 제목을 입력하세요.");
+      return;
+    }
+    if (title === source.title) {
+      cancelSourceRename();
+      return;
+    }
+
+    setSourceRenameBusy(true);
+    setSourceNotice("");
+    try {
+      const renamed = (await request("sources.rename", {
+        projectId: activeProject.id,
+        sourceId: source.id,
+        title,
+      })) as SourceSummary;
+      setState((current) => ({
+        ...current,
+        sources: current.sources.map((item) => item.id === renamed.id ? renamed : item),
+      }));
+      setEditingSourceId(null);
+      setSourceTitleDraft("");
+      setSourceNotice(`제목을 “${displayableSourceName(renamed)}”(으)로 변경했습니다.`);
+    } catch (error) {
+      setSourceNotice(`제목 변경 실패: ${(error as Error).message}`);
+    } finally {
+      setSourceRenameBusy(false);
+    }
+  }
+
+  function startLeftPaneResize(event: ReactPointerEvent<HTMLDivElement>) {
+    if (!leftPaneOpen || event.button !== 0) return;
+    event.preventDefault();
+    leftPaneResizeRef.current = { startX: event.clientX, startWidth: leftPaneWidth };
+    setLeftPaneResizing(true);
   }
 
   function deleteSource(source: SourceSummary) {
@@ -1851,8 +1951,10 @@ export function App({ request }: { request: RpcRequest }) {
   const shellClassName = [
     "app-shell",
     leftPaneOpen ? "" : "left-pane-collapsed",
+    leftPaneResizing ? "left-pane-resizing" : "",
     rightPaneOpen ? "" : "right-pane-collapsed",
   ].filter(Boolean).join(" ");
+  const shellStyle = { "--left-pane-width": `${leftPaneWidth}px` } as CSSProperties;
   const inspectorModules = useMemo(() => {
     if (context?.moduleOutline.length) {
       return context.moduleOutline.map((item) => ({
@@ -1868,7 +1970,7 @@ export function App({ request }: { request: RpcRequest }) {
   }, [artifacts?.coursePlan.modules, context?.moduleOutline, displayModuleTitle]);
 
   return (
-    <div className={shellClassName}>
+    <div className={shellClassName} style={shellStyle}>
       <aside className="sidebar">
         <button
           type="button"
@@ -1930,41 +2032,78 @@ export function App({ request }: { request: RpcRequest }) {
                 return (
                   <div
                     key={source.id}
-                    className={`list-item source-learn-row ${isActive ? "active" : ""}`}
-                    title={sourceTitle}
+                    className={`list-item source-learn-row ${isActive ? "active" : ""} ${editingSourceId === source.id ? "editing" : ""}`}
+                    title={editingSourceId === source.id ? undefined : sourceTitle}
                   >
-                    <button
-                      type="button"
-                      className="source-learn-main"
-                      onClick={() => learnFromSource(source.id)}
-                      disabled={!activeProject || busy}
-                      title={sourceTitle}
-                      aria-label={sourceTitle}
-                    >
-                      <span className="source-row-index">{sourceIndex + 1}</span>
-                      <span className={`source-status-dot ${source.learningStatus}`} aria-hidden="true" />
-                      <span className="source-row-title">{sourceName}</span>
-                    </button>
-                    <button
-                      type="button"
-                      className={`source-prepare-button ${sourceMessageSet?.status || "idle"}`}
-                      onClick={() => void prepareSourceInBackground(source)}
-                      disabled={!activeProject || batchActionBusy || !learningModelReady}
-                      title={sourcePreparationTitle}
-                      aria-label={sourcePreparationTitle}
-                    >
-                      {sourcePreparing ? <Loader2 size={13} className="spin" /> : sourceMessageSet?.status === "ready" ? <Check size={13} /> : <Sparkles size={13} />}
-                    </button>
-                    <button
-                      type="button"
-                      className="source-delete-button"
-                      onClick={() => deleteSource(source)}
-                      disabled={!activeProject || busy}
-                      title={`${sourceName} 삭제`}
-                      aria-label={`${sourceName} 삭제`}
-                    >
-                      <Trash2 size={13} />
-                    </button>
+                    {editingSourceId === source.id ? (
+                      <form className="source-title-edit" onSubmit={(event) => { event.preventDefault(); void saveSourceTitle(source); }}>
+                        <input
+                          autoFocus
+                          value={sourceTitleDraft}
+                          onChange={(event) => setSourceTitleDraft(event.currentTarget.value)}
+                          onKeyDown={(event) => {
+                            if (event.key === "Escape") {
+                              event.preventDefault();
+                              cancelSourceRename();
+                            }
+                          }}
+                          maxLength={240}
+                          aria-label={`${sourceName} 새 제목`}
+                          disabled={sourceRenameBusy}
+                        />
+                        <button type="submit" className="source-title-save" disabled={sourceRenameBusy || !sourceTitleDraft.trim()} title="제목 저장" aria-label="제목 저장">
+                          {sourceRenameBusy ? <Loader2 size={13} className="spin" /> : <Check size={13} />}
+                        </button>
+                        <button type="button" className="source-title-cancel" onClick={cancelSourceRename} disabled={sourceRenameBusy} title="편집 취소" aria-label="편집 취소">
+                          <X size={13} />
+                        </button>
+                      </form>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          className="source-learn-main"
+                          onClick={() => learnFromSource(source.id)}
+                          disabled={!activeProject || busy}
+                          title={sourceTitle}
+                          aria-label={sourceTitle}
+                        >
+                          <span className="source-row-index">{sourceIndex + 1}</span>
+                          <span className={`source-status-dot ${source.learningStatus}`} aria-hidden="true" />
+                          <span className="source-row-title">{sourceName}</span>
+                        </button>
+                        <button
+                          type="button"
+                          className={`source-prepare-button ${sourceMessageSet?.status || "idle"}`}
+                          onClick={() => void prepareSourceInBackground(source)}
+                          disabled={!activeProject || batchActionBusy || !learningModelReady}
+                          title={sourcePreparationTitle}
+                          aria-label={sourcePreparationTitle}
+                        >
+                          {sourcePreparing ? <Loader2 size={13} className="spin" /> : sourceMessageSet?.status === "ready" ? <Check size={13} /> : <Sparkles size={13} />}
+                        </button>
+                        <button
+                          type="button"
+                          className="source-edit-button"
+                          onClick={() => beginSourceRename(source)}
+                          disabled={!activeProject || busy || sourceRenameBusy}
+                          title={`${sourceName} 제목 변경`}
+                          aria-label={`${sourceName} 제목 변경`}
+                        >
+                          <Pencil size={13} />
+                        </button>
+                        <button
+                          type="button"
+                          className="source-delete-button"
+                          onClick={() => deleteSource(source)}
+                          disabled={!activeProject || busy}
+                          title={`${sourceName} 삭제`}
+                          aria-label={`${sourceName} 삭제`}
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      </>
+                    )}
                   </div>
                 );
               })}
@@ -1984,6 +2123,30 @@ export function App({ request }: { request: RpcRequest }) {
           </div>
         </div>
       </aside>
+
+      <div
+        className="left-pane-splitter"
+        role="separator"
+        aria-label="Left pane width"
+        aria-orientation="vertical"
+        aria-valuemin={LEFT_PANE_MIN_WIDTH}
+        aria-valuemax={LEFT_PANE_MAX_WIDTH}
+        aria-valuenow={leftPaneWidth}
+        tabIndex={leftPaneOpen ? 0 : -1}
+        title="드래그해서 left pane 폭 조절"
+        onPointerDown={startLeftPaneResize}
+        onDoubleClick={() => setLeftPaneWidth(LEFT_PANE_DEFAULT_WIDTH)}
+        onKeyDown={(event) => {
+          let nextWidth: number | null = null;
+          if (event.key === "ArrowLeft") nextWidth = leftPaneWidth - 16;
+          if (event.key === "ArrowRight") nextWidth = leftPaneWidth + 16;
+          if (event.key === "Home") nextWidth = LEFT_PANE_MIN_WIDTH;
+          if (event.key === "End") nextWidth = LEFT_PANE_MAX_WIDTH;
+          if (nextWidth === null) return;
+          event.preventDefault();
+          setLeftPaneWidth(clampLeftPaneWidth(nextWidth));
+        }}
+      />
 
       <main className="workspace">
         <header className="topbar">
@@ -2068,7 +2231,7 @@ export function App({ request }: { request: RpcRequest }) {
               <div className="lesson-header">
                 <div>
                   <p className="eyebrow">Learning Session</p>
-                  <h3>{selectedModuleTitle || activeModuleTitle || activeMaterial?.title || session.title}</h3>
+                  <h3>{selectedModuleTitle || activeModuleTitle || (activeSource ? displayableSourceName(activeSource) : activeMaterial?.title) || session.title}</h3>
                 </div>
               </div>
               {selectedModuleWaiting ? (
@@ -2171,7 +2334,7 @@ export function App({ request }: { request: RpcRequest }) {
               ) : null}
             </>
           ) : artifacts ? (
-            <SourceLearningPreview artifacts={artifacts} />
+            <SourceLearningPreview artifacts={artifacts} title={activeSource ? displayableSourceName(activeSource) : undefined} />
           ) : (
             <div className="empty-state">
               <h3>Learning Workspace</h3>

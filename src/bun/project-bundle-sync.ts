@@ -178,7 +178,7 @@ async function projectBundleMarkers(projectDir: string) {
       projectId: manifest.projectId,
       title: manifest.title,
       createdAt: optionalTimestamp(manifest.importedAt),
-      updatedAt: optionalTimestamp(manifest.importedAt),
+      updatedAt: optionalTimestamp(manifest.updatedAt || manifest.importedAt),
     });
   }
 
@@ -381,6 +381,7 @@ async function importSources(projectDir: string, projectId: string) {
     const originalFileName = importedPath ? basename(importedPath) : basename(manifest.originalPath || `${manifest.title || sourceId}.txt`);
     const type = sourceType(manifest.sourceType);
     const createdAt = timestamp(manifest.importedAt);
+    const updatedAt = timestamp(manifest.updatedAt || manifest.importedAt);
     const contentHash = await hashProjectFile(importedPath, [manifestPath, chunksPath]);
 
     getDb()
@@ -415,7 +416,7 @@ async function importSources(projectDir: string, projectId: string) {
         existsSync(chunksPath) ? chunksPath : null,
         qualityStatus(manifest.quality?.status),
         createdAt,
-        createdAt
+        updatedAt
       );
   }
 }

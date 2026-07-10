@@ -875,6 +875,7 @@ export class SourceService {
       id: input.id,
       projectId: input.projectId,
       title: input.title,
+      updatedAt: new Date().toISOString(),
       sourceType: input.type,
       originalPath: input.originalPath,
       importedAt: new Date().toISOString(),
@@ -921,6 +922,67 @@ export class SourceService {
       .all(projectId)
       .map((row) => toSource(row, learningStatusBySourceId.get(row.id) || "not_started"))
       .sort((a, b) => naturalPathSorter.compare(a.originalFileName || a.title, b.originalFileName || b.title));
+  }
+
+  async rename(projectId: string, sourceId: string, title: string) {
+    const nextTitle = title.replace(/\s+/gu, " ").trim();
+    if (!nextTitle) throw new Error("Source title is required");
+    if (nextTitle.length > 240) throw new Error("Source title must be 240 characters or fewer");
+
+    const row = getDb()
+      .query<SourceRow, [string, string]>("SELECT * FROM project_sources WHERE id = ? AND project_id = ?")
+      .get(sourceId, projectId);
+    if (!row) throw new Error("Source not found");
+    if (row.title === nextTitle) {
+      const learningStatus = this.learningStatuses(projectId).get(sourceId) || "not_started";
+      return toSource(row, learningStatus);
+    }
+
+    const now = Date.now();
+    const previousManifestText = row.manifest_path
+      ? await readFile(row.manifest_path, "utf8").catch(() => null)
+      : null;
+    let previousManifest: Partial<SourceManifest> | null = null;
+    if (previousManifestText) {
+      try {
+        previousManifest = JSON.parse(previousManifestText) as Partial<SourceManifest>;
+      } catch {
+        previousManifest = null;
+      }
+    }
+
+    if (row.manifest_path) {
+      const nextManifest: SourceManifest = {
+        ...previousManifest,
+        id: row.id,
+        projectId: row.project_id,
+        sourceType: row.source_type,
+        originalPath: row.original_file_path || undefined,
+        importedAt: previousManifest?.importedAt || new Date(row.created_at).toISOString(),
+        extractionMethod: previousManifest?.extractionMethod || "learnie-source",
+        language: previousManifest?.language || "ko",
+        quality: previousManifest?.quality || { status: row.quality_status, warnings: [] },
+        title: nextTitle,
+        updatedAt: new Date(now).toISOString(),
+      };
+      await mkdir(dirname(row.manifest_path), { recursive: true });
+      await writeFile(row.manifest_path, `${JSON.stringify(nextManifest, null, 2)}\n`, "utf8");
+    }
+
+    try {
+      getDb()
+        .query("UPDATE project_sources SET title = ?, updated_at = ? WHERE id = ? AND project_id = ?")
+        .run(nextTitle, now, sourceId, projectId);
+    } catch (error) {
+      if (row.manifest_path) {
+        if (previousManifestText === null) await rm(row.manifest_path, { force: true }).catch(() => undefined);
+        else await writeFile(row.manifest_path, previousManifestText, "utf8").catch(() => undefined);
+      }
+      throw error;
+    }
+
+    const learningStatus = this.learningStatuses(projectId).get(sourceId) || "not_started";
+    return toSource(this.getRow(sourceId), learningStatus);
   }
 
   private learningStatuses(projectId: string) {
