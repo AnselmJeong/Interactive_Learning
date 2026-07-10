@@ -1,4 +1,5 @@
 type HighlightShortcutEvent = {
+  code: string;
   key: string;
   altKey: boolean;
   ctrlKey: boolean;
@@ -19,7 +20,7 @@ function isTextEntryTarget(target: EventTarget | null | undefined) {
 
 export function shouldHighlightSelection(event: HighlightShortcutEvent) {
   if (event.defaultPrevented || event.isComposing || event.repeat) return false;
-  if (event.key.toLowerCase() !== "u") return false;
+  if (event.code !== "KeyU") return false;
   if (event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return false;
   return !isTextEntryTarget(event.target);
 }

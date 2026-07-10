@@ -3,6 +3,7 @@ import { shouldHighlightSelection } from "./highlight-shortcut";
 
 function keyboardEvent(overrides: Partial<Parameters<typeof shouldHighlightSelection>[0]> = {}) {
   return {
+    code: "KeyU",
     key: "u",
     altKey: false,
     ctrlKey: false,
@@ -14,9 +15,13 @@ function keyboardEvent(overrides: Partial<Parameters<typeof shouldHighlightSelec
 }
 
 describe("selection highlight shortcut", () => {
-  test("accepts a plain u key press outside a text entry control", () => {
+  test("accepts the physical U key outside a text entry control", () => {
     expect(shouldHighlightSelection(keyboardEvent())).toBe(true);
     expect(shouldHighlightSelection(keyboardEvent({ key: "U" }))).toBe(true);
+  });
+
+  test("uses the physical U key when the Korean keyboard layout reports ㅕ", () => {
+    expect(shouldHighlightSelection(keyboardEvent({ code: "KeyU", key: "ㅕ" }))).toBe(true);
   });
 
   test("does not take over modified shortcuts, key repeat, or IME input", () => {
@@ -34,7 +39,7 @@ describe("selection highlight shortcut", () => {
   });
 
   test("ignores unrelated and already handled keys", () => {
-    expect(shouldHighlightSelection(keyboardEvent({ key: "h" }))).toBe(false);
+    expect(shouldHighlightSelection(keyboardEvent({ code: "KeyH", key: "h" }))).toBe(false);
     expect(shouldHighlightSelection(keyboardEvent({ defaultPrevented: true }))).toBe(false);
   });
 });
