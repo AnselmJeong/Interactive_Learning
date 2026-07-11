@@ -2983,8 +2983,26 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
 .pd-action:hover { background: var(--panel-soft); color: var(--ink); }
 .pd-create { color: var(--accent); }
 .pd-create:hover { background: rgba(167, 125, 18, 0.05); color: var(--accent); }
-.pd-import { border-top: 1px solid color-mix(in srgb, var(--line) 72%, transparent); color: var(--ink); }
-.pd-export { border-top: 1px solid color-mix(in srgb, var(--line) 72%, transparent); font-weight: 560; }
+.pd-transfer-actions {
+  display: flex; align-items: center; justify-content: center; gap: 4px;
+  padding: 6px; border-top: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+}
+.pd-transfer-action {
+  position: relative; width: 36px; height: 36px; display: inline-flex; align-items: center; justify-content: center;
+  border: 0; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer;
+}
+.pd-transfer-action:hover:not(:disabled),
+.pd-transfer-action:focus-visible { background: var(--panel-soft); color: var(--ink); }
+.pd-transfer-action:disabled { opacity: 0.42; cursor: not-allowed; }
+.pd-action-tooltip {
+  position: absolute; left: 50%; bottom: calc(100% + 6px); z-index: 2;
+  padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px;
+  background: var(--surface-raised); color: var(--ink); box-shadow: 0 5px 14px rgba(45, 38, 28, 0.12);
+  font-size: 11px; font-weight: 620; line-height: 1; white-space: nowrap; pointer-events: none;
+  opacity: 0; transform: translate(-50%, 3px); transition: opacity 0.12s ease, transform 0.12s ease;
+}
+.pd-transfer-action:hover .pd-action-tooltip,
+.pd-transfer-action:focus-visible .pd-action-tooltip { opacity: 1; transform: translate(-50%, 0); }
 
 .transfer-import-modal { width: min(620px, 94vw); }
 .transfer-import-header { align-items: flex-start; }

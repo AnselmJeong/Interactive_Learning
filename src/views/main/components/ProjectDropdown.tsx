@@ -91,14 +91,30 @@ export function ProjectDropdown({
             <button type="button" className="pd-action pd-create" disabled={busy} onClick={() => { onCreate(); setOpen(false); }}>
               <Plus size={15} /> 새 프로젝트
             </button>
-            <button type="button" className="pd-action pd-import" disabled={busy} onClick={() => { onImport(); setOpen(false); }}>
-              <FolderInput size={15} /> 프로젝트 불러오기
-            </button>
-            {activeProject ? (
-              <button type="button" className="pd-action pd-export" disabled={busy} onClick={() => { onExport(activeProject); setOpen(false); }}>
-                <Download size={15} /> 다른 컴퓨터로 내보내기
+            <div className="pd-transfer-actions" role="group" aria-label="프로젝트 가져오기 및 내보내기">
+              <button
+                type="button"
+                className="pd-transfer-action"
+                aria-label="프로젝트 불러오기"
+                disabled={busy}
+                onClick={() => { onImport(); setOpen(false); }}
+              >
+                <FolderInput size={17} aria-hidden="true" />
+                <span className="pd-action-tooltip" role="tooltip">프로젝트 불러오기</span>
               </button>
-            ) : null}
+              {activeProject ? (
+                <button
+                  type="button"
+                  className="pd-transfer-action"
+                  aria-label="다른 컴퓨터로 내보내기"
+                  disabled={busy}
+                  onClick={() => { onExport(activeProject); setOpen(false); }}
+                >
+                  <Download size={17} aria-hidden="true" />
+                  <span className="pd-action-tooltip" role="tooltip">다른 컴퓨터로 내보내기</span>
+                </button>
+              ) : null}
+            </div>
           </div>
         </div>
       ) : null}
