@@ -10,7 +10,7 @@ from __future__ import annotations
 import io
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
@@ -54,6 +54,12 @@ from preppy.split.slug import slugify
 
 HEADING_LABELS = {"title", "section_header"}
 SKIP_BODY_LABELS = {"page_header", "page_footer"}
+MAX_AUTO_CHAPTER_PAGES = 80
+
+_CONTAINER_TITLE_RE = re.compile(
+    r"^(?:(?:part|book|volume|unit)\b|[ivxlcdm]+\s*[:.\-])",
+    re.IGNORECASE,
+)
 
 
 @dataclass(slots=True)
@@ -74,6 +80,17 @@ class _PictureOutcome:
     figure_id: str | None = None
     asset: FigureAsset | None = None
     markdown: str | None = None
+
+
+@dataclass(slots=True)
+class _OutlineNode:
+    index: int
+    level: int
+    title: str
+    page: int
+    parent_index: int | None = None
+    children: list[int] = field(default_factory=list)
+    end_page: int | None = None
 
 
 def build_plan(
@@ -185,8 +202,22 @@ def convert(
 
     output_index = 1
     for pos, candidate in enumerate(selected):
-        start_idx = candidate.pdf_item_index or 0
-        end_idx = selected[pos + 1].pdf_item_index if pos + 1 < len(selected) else len(flat_items)
+        boundary_idx = candidate.pdf_item_index or 0
+        start_idx = candidate.pdf_content_start_index
+        if start_idx is None:
+            start_idx = boundary_idx
+        if pos + 1 < len(selected):
+            next_candidate = selected[pos + 1]
+            end_idx = next_candidate.pdf_content_start_index
+            if end_idx is None:
+                end_idx = next_candidate.pdf_item_index
+            if end_idx is None:
+                end_idx = len(flat_items)
+        else:
+            end_idx = len(flat_items)
+        matter_fence = _next_outline_matter_index(candidates, after_index=boundary_idx)
+        if matter_fence is not None:
+            end_idx = min(end_idx, matter_fence)
         slice_items = flat_items[start_idx:end_idx]
         if not slice_items:
             continue
@@ -194,6 +225,9 @@ def convert(
         chapter_figure_ids: list[str] = []
         lines: list[str] = []
         text_parts: list[str] = []
+
+        if candidate.parent_title and start_idx < boundary_idx:
+            lines.append(f"## {candidate.parent_title}")
 
         for fi in slice_items:
             if fi.label in SKIP_BODY_LABELS:
@@ -235,6 +269,18 @@ def convert(
                 continue
 
             if fi.label in HEADING_LABELS:
+                # Container prelude headings are rendered once from the
+                # canonical outline title above. Likewise, omit the printed
+                # chapter-title fragments because render_chapter_markdown()
+                # supplies the single canonical H1.
+                if fi.index < boundary_idx:
+                    continue
+                if (
+                    fi.page_no == candidate.source_locator.page_start
+                    and _title_key(fi.text or "")
+                    and _title_key(fi.text or "") in _title_key(candidate.title)
+                ):
+                    continue
                 level = getattr(fi.item, "level", 1) if fi.label == "section_header" else 1
                 heading_text = normalize_title(fi.text or "")
                 if heading_text:
@@ -268,6 +314,8 @@ def convert(
             figure_ids=chapter_figure_ids,
             boundary_reason=candidate.reason,
             boundary_confidence=candidate.confidence,
+            parent_title=candidate.parent_title,
+            outline_level=candidate.outline_level,
         )
         if text_len < min_chapter_chars:
             warnings.append(
@@ -303,7 +351,11 @@ def convert(
     missing_captions = sum(1 for f in figures if f.meta.caption_status == "missing")
     char_counts = [c.meta.char_count for c in chapters]
     elapsed = time.monotonic() - start_time
-    method = "docling-headers+pdf-outline" if any(c.reason == "pdf-outline" for c in candidates) else "docling-headers"
+    method = (
+        "docling-headers+pdf-outline"
+        if any(c.reason.startswith("pdf-outline-") for c in candidates)
+        else "docling-headers"
+    )
 
     document_model = DocumentModel(
         source_type="pdf",
@@ -497,7 +549,12 @@ def _detect_candidates(
                 )
             )
 
-    _enrich_with_outline(candidates, _pdf_outline(pdf_path))
+    _enrich_with_outline(
+        candidates,
+        _pdf_outline(pdf_path),
+        flat_items=flat_items,
+        num_pages=_num_pages(doc),
+    )
 
     candidates.sort(key=lambda c: c.pdf_item_index if c.pdf_item_index is not None else 0)
     for order, candidate in enumerate(candidates, start=1):
@@ -565,27 +622,224 @@ def _is_page_edge_bbox(bbox: list[float] | None, page_height: float) -> bool:
     return top_y >= page_height * 0.9 or bottom_y <= page_height * 0.1
 
 
-def _enrich_with_outline(candidates: list[SplitCandidate], outline: list[tuple[int, str, int]]) -> None:
-    if not outline:
+def _enrich_with_outline(
+    candidates: list[SplitCandidate],
+    outline: list[tuple[int, str, int]],
+    *,
+    flat_items: list[_FlatItem],
+    num_pages: int,
+) -> None:
+    """Use the PDF outline as a semantic tree, not a fixed-depth list.
+
+    Container nodes (Part / Book / Unit) are grouping metadata. Their first
+    content-bearing descendants become chapter boundaries. A content node is
+    only pushed down to its children when it exceeds the conservative page
+    budget, so ordinary Chapter -> Section outlines still split by chapter.
+    """
+    nodes = _build_outline_tree(outline, num_pages=num_pages)
+    selected_indices = _select_outline_units(nodes)
+    if not selected_indices:
         return
-    heading_candidates = [c for c in candidates if c.pdf_item_index is not None]
-    for level, title, page in outline:
-        if level != 1:
+
+    # A usable outline is stronger than visual number/title guesses. Reset
+    # them first; this also prevents numbered headings in Notes from being
+    # rediscovered as duplicate chapters.
+    for candidate in candidates:
+        candidate.selected = False
+
+    selected_set = set(selected_indices)
+    container_set = {node.index for node in nodes if _is_outline_container(node, nodes)}
+
+    for node in nodes:
+        kind = classify_kind(node.title, unmatched="chapter" if node.index in selected_set else "unknown")
+        if node.index in container_set:
+            reason = "pdf-outline-container"
+        elif kind in {"frontmatter", "backmatter", "notes", "bibliography", "index"}:
+            reason = "pdf-outline-matter"
+        elif node.index in selected_set:
+            reason = "pdf-outline-chapter"
+        else:
+            reason = "pdf-outline-nested"
+
+        boundary_idx = _outline_item_index(node, candidates, flat_items)
+        if boundary_idx is None:
             continue
-        norm_title = normalize_title(title).casefold()
-        if not norm_title:
+
+        parent = nodes[node.parent_index] if node.parent_index is not None else None
+        parent_title = parent.title if parent is not None and parent.index in container_set else None
+        content_start_idx = boundary_idx
+        if node.index in selected_set and parent is not None and parent.index in container_set:
+            first_selected_child = next(
+                (child for child in parent.children if child in selected_set),
+                None,
+            )
+            if first_selected_child == node.index:
+                parent_start = _page_item_index(flat_items, parent.page)
+                if parent_start is not None:
+                    content_start_idx = parent_start
+
+        candidates.append(
+            SplitCandidate(
+                id=0,
+                order=0,
+                title=node.title,
+                kind=kind,
+                reason=reason,
+                confidence=0.98 if node.index in selected_set else 0.9,
+                selected=node.index in selected_set,
+                heading_level=None,
+                outline_level=node.level,
+                parent_title=parent_title,
+                source_locator=SourceLocator(page_start=node.page),
+                pdf_item_index=boundary_idx,
+                pdf_content_start_index=content_start_idx,
+            )
+        )
+
+
+def _build_outline_tree(outline: list[tuple[int, str, int]], *, num_pages: int) -> list[_OutlineNode]:
+    nodes: list[_OutlineNode] = []
+    stack: list[int] = []
+    for level, raw_title, page in outline:
+        title = normalize_title(raw_title)
+        if not title or level < 1 or page < 1:
             continue
-        for candidate in heading_candidates:
-            page_start = candidate.source_locator.page_start
-            if page_start is None or abs(page_start - page) > 1:
-                continue
-            cand_norm = normalize_title(candidate.title).casefold()
-            if norm_title == cand_norm or norm_title in cand_norm or cand_norm in norm_title:
-                candidate.reason = "pdf-outline"
-                candidate.confidence = max(candidate.confidence, 0.95)
-                candidate.selected = True
-                candidate.kind = classify_kind(title, unmatched=candidate.kind)
-                break
+        while len(stack) >= level:
+            stack.pop()
+        parent_index = stack[-1] if stack else None
+        node = _OutlineNode(
+            index=len(nodes),
+            level=level,
+            title=title,
+            page=page,
+            parent_index=parent_index,
+        )
+        nodes.append(node)
+        if parent_index is not None:
+            nodes[parent_index].children.append(node.index)
+        stack.append(node.index)
+
+    for node in nodes:
+        following = next(
+            (
+                other
+                for other in nodes[node.index + 1 :]
+                if other.level <= node.level and other.page >= node.page
+            ),
+            None,
+        )
+        node.end_page = (following.page - 1) if following is not None else num_pages
+    return nodes
+
+
+def _select_outline_units(nodes: list[_OutlineNode]) -> list[int]:
+    selected: list[int] = []
+
+    def visit(node: _OutlineNode) -> None:
+        kind = classify_kind(node.title, unmatched="unknown")
+        if kind in {"frontmatter", "backmatter", "notes", "bibliography", "index"}:
+            return
+        if _is_outline_container(node, nodes):
+            for child_index in node.children:
+                visit(nodes[child_index])
+            return
+
+        page_span = max(1, (node.end_page or node.page) - node.page + 1)
+        if page_span > MAX_AUTO_CHAPTER_PAGES and node.children:
+            for child_index in node.children:
+                visit(nodes[child_index])
+            return
+        selected.append(node.index)
+
+    for node in nodes:
+        if node.parent_index is None:
+            visit(node)
+    return selected
+
+
+def _is_outline_container(node: _OutlineNode, nodes: list[_OutlineNode]) -> bool:
+    if not node.children:
+        return False
+    if _CONTAINER_TITLE_RE.search(node.title):
+        return True
+
+    children = [nodes[index] for index in node.children]
+    chapter_like_children = sum(is_chapter_like(child.title) for child in children)
+    first_child_gap = max(0, children[0].page - node.page)
+    return len(children) >= 2 and chapter_like_children >= 2 and first_child_gap <= 3
+
+
+def _outline_item_index(
+    node: _OutlineNode,
+    candidates: list[SplitCandidate],
+    flat_items: list[_FlatItem],
+) -> int | None:
+    target_key = _title_key(node.title)
+    nearby = [
+        candidate
+        for candidate in candidates
+        if candidate.pdf_item_index is not None
+        and candidate.source_locator.page_start is not None
+        and abs(candidate.source_locator.page_start - node.page) <= 1
+    ]
+    nearby.sort(
+        key=lambda candidate: (
+            abs((candidate.source_locator.page_start or node.page) - node.page),
+            candidate.pdf_item_index or 0,
+        )
+    )
+    for candidate in nearby:
+        candidate_key = _title_key(candidate.title)
+        if candidate_key and (candidate_key == target_key or target_key in candidate_key):
+            return candidate.pdf_item_index
+
+    # Printed chapter titles are often split into a number and a title, or
+    # extracted with tracking spaces between capital letters. Concatenate the
+    # nearby headings before falling back to the first item on the target page.
+    same_page = [
+        candidate for candidate in nearby if candidate.source_locator.page_start == node.page
+    ]
+    same_page.sort(key=lambda candidate: candidate.pdf_item_index or 0)
+    combined = ""
+    first_index: int | None = None
+    for candidate in same_page[:6]:
+        if first_index is None:
+            first_index = candidate.pdf_item_index
+        combined += _title_key(candidate.title)
+        if target_key and (combined == target_key or target_key in combined):
+            return first_index
+    if first_index is not None:
+        return first_index
+    exact_page = _page_item_index(flat_items, node.page)
+    if exact_page is not None:
+        return exact_page
+    return next(
+        (fi.index for fi in flat_items if fi.page_no is not None and 0 < fi.page_no - node.page <= 1),
+        None,
+    )
+
+
+def _page_item_index(flat_items: list[_FlatItem], page: int) -> int | None:
+    return next((fi.index for fi in flat_items if fi.page_no == page), None)
+
+
+def _title_key(value: str) -> str:
+    return "".join(char for char in normalize_title(value).casefold() if char.isalnum())
+
+
+def _next_outline_matter_index(
+    candidates: list[SplitCandidate], *, after_index: int
+) -> int | None:
+    fences = [
+        candidate.pdf_content_start_index
+        if candidate.pdf_content_start_index is not None
+        else candidate.pdf_item_index
+        for candidate in candidates
+        if candidate.reason == "pdf-outline-matter"
+        and candidate.pdf_item_index is not None
+        and candidate.pdf_item_index > after_index
+    ]
+    return min((index for index in fences if index is not None), default=None)
 
 
 def _pdf_outline(pdf_path: Path) -> list[tuple[int, str, int]]:

@@ -32,6 +32,11 @@ class SplitCandidate(PreppyModel):
     # in a document are auto-selected as chapters; deeper ones stay in the
     # plan, unselected, so a reviewer can promote a specific section by hand.
     heading_level: int | None = None
+    # Hierarchy supplied by a PDF outline. This is intentionally separate
+    # from ``heading_level`` because Docling's visual heading depth and the
+    # PDF outline depth can disagree.
+    outline_level: int | None = None
+    parent_title: str | None = None
     source_locator: SourceLocator = Field(default_factory=SourceLocator)
     # EPUB-only bookkeeping: which spine document and child-node offset the
     # boundary starts at, so a re-loaded plan can be re-applied deterministically
@@ -41,6 +46,10 @@ class SplitCandidate(PreppyModel):
     # reading-order item stream, so a re-loaded plan can be re-sliced without
     # re-running boundary detection.
     pdf_item_index: int | None = None
+    # A container divider (Part / Book / Unit) may precede the first child
+    # chapter. Its short prelude belongs with that child without turning the
+    # entire container into one giant chapter.
+    pdf_content_start_index: int | None = None
 
 
 class SplitPlan(PreppyModel):
@@ -74,10 +83,16 @@ def apply_matter_flags(
     ``--include-frontmatter``/``--include-backmatter`` loosen the default
     auto-detected selection.
     """
+    has_outline_matter = any(candidate.reason == "pdf-outline-matter" for candidate in candidates)
     for candidate in candidates:
-        if include_frontmatter and candidate.kind == "frontmatter":
+        outline_authoritative = not has_outline_matter or candidate.reason == "pdf-outline-matter"
+        if include_frontmatter and candidate.kind == "frontmatter" and outline_authoritative:
             candidate.selected = True
-        if include_backmatter and candidate.kind == "backmatter":
+        if (
+            include_backmatter
+            and candidate.kind in {"backmatter", "notes", "bibliography", "index"}
+            and outline_authoritative
+        ):
             candidate.selected = True
 
 

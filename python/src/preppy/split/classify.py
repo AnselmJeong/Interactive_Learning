@@ -78,6 +78,10 @@ def compile_boundary_pattern(boundary_pattern: str | None) -> re.Pattern[str] | 
 def normalize_title(value: str | None) -> str:
     if not value:
         return ""
+    # PDF outline strings occasionally contain embedded NUL/control
+    # characters. They are not visible to a reader, but they prevent an
+    # otherwise exact outline-to-heading match.
+    value = "".join(char for char in value if char >= " " or char in "\t\n\r")
     value = re.sub(r"\s+", " ", value).strip()
     value = re.sub(r"\s*[|/]+\s*", " ", value)
     return value.strip()

@@ -67,6 +67,10 @@ class Chapter(PreppyModel):
     figure_ids: list[str] = Field(default_factory=list)
     boundary_reason: str
     boundary_confidence: float = 1.0
+    # Optional structural context for books whose chapters are nested under
+    # Part / Book / Unit containers in the PDF outline.
+    parent_title: str | None = None
+    outline_level: int | None = None
 
 
 class Figure(PreppyModel):

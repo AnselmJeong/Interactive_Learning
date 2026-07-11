@@ -255,7 +255,7 @@ def _print_plan_table(split_plan: SplitPlan) -> None:
         table.add_row(
             str(candidate.order),
             "yes" if candidate.selected else "no",
-            str(candidate.heading_level) if candidate.heading_level is not None else "-",
+            str(candidate.outline_level or candidate.heading_level or "-"),
             candidate.kind,
             candidate.title,
             candidate.reason,
