@@ -171,7 +171,7 @@ describe("annotation side-chat service", () => {
   });
 
   test("grounds an opted-in side-chat turn with Ollama web sources and preserves them on the answer", async () => {
-    let searchQuery = "";
+    const searchQueries: string[] = [];
     const webCalls: ChatParams[] = [];
     const client = {
       listModels: async () => [],
@@ -193,14 +193,14 @@ describe("annotation side-chat service", () => {
         client,
       }) as never,
       async (query) => {
-        searchQuery = query;
+        searchQueries.push(query);
         return [{
           id: "S1",
           title: "Research source",
           url: "https://example.com/research",
           provider: "Web search",
           retrievedAt: "2026-07-10T00:00:00.000Z",
-          snippet: "Evidence connecting a premise to a conclusion.",
+          snippet: "Evidence about the selected claim connecting a premise to a conclusion.",
         }];
       }
     );
@@ -213,7 +213,8 @@ describe("annotation side-chat service", () => {
       useWebSearch: true,
     });
 
-    expect(searchQuery).toBe("premise conclusion current evidence");
+    expect(searchQueries).toEqual(['"selected claim" premise conclusion current evidence']);
+    expect(webCalls[0]?.messages[1]?.content).toContain("Selected text: selected claim");
     expect(webCalls[1]?.messages.some((message) => message.content.includes("[S1] Research source"))).toBe(true);
     expect(webCalls[1]?.messages[0]?.content).toContain("primary factual basis");
     expect(webCalls[1]?.messages[0]?.content).not.toContain("The selected claim connects the premise to the conclusion.");
@@ -222,6 +223,65 @@ describe("annotation side-chat service", () => {
     expect(response.thread.messages[1]?.content).not.toContain("본문만 반복");
     expect(response.thread.messages[1]?.sources?.[0]).toMatchObject({ id: "S1", url: "https://example.com/research" });
     expect(response.thread.sourceMeta.some((source) => source.url === "https://example.com/research")).toBe(true);
+  });
+
+  test("retries an irrelevant module-biased search with the exact selected concept", async () => {
+    const searchQueries: string[] = [];
+    const webCalls: ChatParams[] = [];
+    let queryRewriteCount = 0;
+    const client = {
+      listModels: async () => [],
+      chatJson: async () => ({}),
+      chatText: async (params: ChatParams) => {
+        webCalls.push(params);
+        if (params.maxTokens === 64) {
+          queryRewriteCount += 1;
+          return queryRewriteCount === 1
+            ? "Roman Stoicism comprehensive overview history principles"
+            : "imago Dei Christian theology meaning history significance";
+        }
+        return "imago Dei는 기독교 신학의 인간 이해와 연결되는 개념입니다. [S1]";
+      },
+    };
+    service = new AnnotationService(
+      { getArtifacts: async () => ({
+        ...artifacts(),
+        coursePlan: {
+          ...artifacts().coursePlan,
+          modules: [{ ...artifacts().coursePlan.modules[0]!, title: "Roman Stoicism" }],
+        },
+        sourceIndex: { "chunk-1": { sourceId: "source-1", title: "Roman Stoicism", locator: "p. 1" } },
+      }) } as never,
+      async () => ({
+        publicSettings: { aiProvider: "openai", providers: { openai: { selectedModel: "test-model" } } },
+        apiKey: { value: "test-key", source: "test" },
+        client,
+      }) as never,
+      async (query) => {
+        searchQueries.push(query);
+        if (searchQueries.length === 1) {
+          return [{ id: "S1", title: "Roman Stoicism", url: "https://example.com/stoicism", snippet: "Stoic ethics and Roman philosophy." }];
+        }
+        return [{ id: "S1", title: "Imago Dei", url: "https://example.com/imago-dei", snippet: "Imago Dei in Christian theological anthropology." }];
+      }
+    );
+
+    const response = await service.askTurn({
+      materialId: "material-1",
+      chunkId: "chunk-1",
+      selectedText: "imago Dei",
+      userText: "포괄적으로 설명해줘",
+      useWebSearch: true,
+    });
+
+    expect(webCalls[0]?.messages[1]?.content).toContain("Selected text: imago Dei");
+    expect(webCalls[0]?.messages[1]?.content).toContain("Learner question: 포괄적으로 설명해줘");
+    expect(searchQueries).toEqual([
+      '"imago Dei" Roman Stoicism comprehensive overview history principles',
+      "imago Dei Christian theology meaning history significance",
+    ]);
+    expect(response.thread.messages[1]?.content).toContain("[S1]");
+    expect(response.thread.messages[1]?.sources?.[0]?.url).toBe("https://example.com/imago-dei");
   });
 
   test("fails closed when a searched answer still omits every valid source citation after repair", async () => {
@@ -237,7 +297,7 @@ describe("annotation side-chat service", () => {
         apiKey: { value: "test-key", source: "test" },
         client,
       }) as never,
-      async () => [{ id: "S1", title: "Source", url: "https://example.com", snippet: "Relevant evidence" }]
+      async () => [{ id: "S1", title: "Source", url: "https://example.com", snippet: "Relevant evidence about the selected claim" }]
     );
 
     await expect(service.askTurn({

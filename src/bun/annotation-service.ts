@@ -151,6 +151,7 @@ const QUESTION_THREAD_MAX_TOTAL_CHARS = 120_000;
 const QUESTION_THREAD_CONTEXT_MESSAGES = 16;
 const QUESTION_THREAD_SUMMARY_CHARS = 4_000;
 const QUESTION_WEB_SEARCH_QUERY_CHARS = 260;
+const QUESTION_WEB_SEARCH_FOCUS_CHARS = 120;
 const TERM_RENDERING_RULE = [
   "When writing in Korean, do not replace romanized proper nouns or culturally specific technical terms with Korean-only transliterations.",
   "If the source or lookup result gives a romanized original form, preserve that form.",
@@ -845,9 +846,64 @@ function sanitizeWikipediaSummaryBody(value: string) {
 }
 
 function normalizeGeneratedSearchQuery(value: string) {
-  return value
-    .replace(/^["'`]+|["'`]+$/g, "")
+  const normalized = value
     .replace(/^\s*(search\s+query|query|english\s+query)\s*:\s*/i, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const unwrapped = normalized.length > 1 && /["'`]/.test(normalized[0] || "") && normalized.at(-1) === normalized[0]
+    ? normalized.slice(1, -1).trim()
+    : normalized;
+  return unwrapped.slice(0, QUESTION_WEB_SEARCH_QUERY_CHARS);
+}
+
+function normalizedSearchWords(value: string) {
+  return value
+    .normalize("NFKC")
+    .toLocaleLowerCase("en-US")
+    .match(/[\p{L}\p{N}]+/gu) || [];
+}
+
+function selectedSearchFocus(selectedText: string) {
+  const focus = normalizeSelectedPassage(selectedText, QUESTION_WEB_SEARCH_FOCUS_CHARS);
+  const allWords = normalizedSearchWords(focus);
+  const ignoredWords = new Set(["a", "an", "and", "for", "in", "of", "on", "or", "the", "to"]);
+  const meaningfulWords = allWords.filter((word) => word.length > 1 && !ignoredWords.has(word));
+  const words = meaningfulWords.length ? meaningfulWords : allWords;
+  const isTermLike = Boolean(focus) && allWords.length > 0 && allWords.length <= 12 && !/[.!?。！？](?:\s|$)/.test(focus);
+  return { focus, words, isTermLike };
+}
+
+function queryIncludesSelectedFocus(query: string, focus: string, words: string[]) {
+  const queryText = normalizedSearchWords(query).join(" ");
+  const focusText = words.join(" ");
+  return Boolean(focusText) && (queryText.includes(focusText) || words.every((word) => queryText.includes(word)));
+}
+
+function ensureSelectedFocusInQuery(query: string, selectedText: string) {
+  const { focus, words, isTermLike } = selectedSearchFocus(selectedText);
+  if (!isTermLike || queryIncludesSelectedFocus(query, focus, words)) return query;
+  return `"${focus.replace(/["\n\r]/g, " ")}" ${query}`.replace(/\s+/g, " ").trim().slice(0, QUESTION_WEB_SEARCH_QUERY_CHARS);
+}
+
+function searchSourcesMatchSelectedFocus(sources: LookupSourceMeta[], selectedText: string) {
+  const { words, isTermLike } = selectedSearchFocus(selectedText);
+  if (!isTermLike) return true;
+  return sources.some((source) => {
+    const sourceWords = new Set(normalizedSearchWords(`${source.title} ${source.snippet || ""}`));
+    return words.every((word) => sourceWords.has(word));
+  });
+}
+
+function fallbackQuestionSearchQuery(selectedText: string, question: string) {
+  const { focus, isTermLike } = selectedSearchFocus(selectedText);
+  const anchoredFocus = isTermLike ? `"${focus.replace(/["\n\r]/g, " ")}"` : focus;
+  return `${anchoredFocus} ${question}`.replace(/\s+/g, " ").trim().slice(0, QUESTION_WEB_SEARCH_QUERY_CHARS);
+}
+
+function retryQuestionSearchQuery(selectedText: string, question: string) {
+  const { focus, isTermLike } = selectedSearchFocus(selectedText);
+  if (!isTermLike) return fallbackQuestionSearchQuery(selectedText, question);
+  return `"${focus.replace(/["\n\r]/g, " ")}" ${question} authoritative sources`
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, QUESTION_WEB_SEARCH_QUERY_CHARS);
@@ -1126,7 +1182,7 @@ export class AnnotationService {
     const { publicSettings, apiKey, client } = await this.providerClient();
     const model = publicSettings.providers[publicSettings.aiProvider].selectedModel;
     if (!apiKey.value || !model) throw new Error("AI provider is not configured");
-    const webSources = useWebSearch ? await this.searchQuestionSources(client, model, question, context) : [];
+    const webSources = useWebSearch ? await this.searchQuestionSources(client, model, selectedText, question, context) : [];
 
     const prompt = [
       `Selected text: ${selectedText}`,
@@ -1196,7 +1252,7 @@ export class AnnotationService {
     const { publicSettings, apiKey, client } = await this.providerClient();
     const model = publicSettings.providers[publicSettings.aiProvider].selectedModel;
     if (!apiKey.value || !model) throw new Error("AI provider is not configured");
-    const webSources = useWebSearch ? await this.searchQuestionSources(client, model, question, context) : [];
+    const webSources = useWebSearch ? await this.searchQuestionSources(client, model, selectedText, question, context) : [];
 
     const recentHistory = history.slice(-QUESTION_THREAD_CONTEXT_MESSAGES);
     const earlierSummary = compactEarlierThread(history.slice(0, -QUESTION_THREAD_CONTEXT_MESSAGES));
@@ -1256,11 +1312,12 @@ export class AnnotationService {
   private async searchQuestionSources(
     client: AiChatClient,
     model: string,
+    selectedText: string,
     question: string,
     context: ReturnType<typeof moduleQuestionContext>
   ) {
     if (!this.questionWebSearch) throw new Error("Ollama 웹 검색 기능이 구성되지 않았습니다.");
-    const fallback = `${question} ${context.sourceTitle}`.replace(/\s+/g, " ").trim().slice(0, QUESTION_WEB_SEARCH_QUERY_CHARS);
+    const fallback = fallbackQuestionSearchQuery(selectedText, question);
     let query = fallback;
     try {
       const generated = await client.chatText({
@@ -1273,23 +1330,67 @@ export class AnnotationService {
           {
             role: "system",
             content: [
-              "Create one web search query for finding broad, high-quality references that answer the learner's question.",
+              "Create one web search query that interprets the selected text together with the learner's question and finds broad, high-quality references that answer that combined intent.",
+              "The selected text is the primary search subject. The source title and current topic are disambiguation hints only and must never replace the selected subject.",
+              "When the selected text is a short name, title, concept, or technical term, include it exactly in the query.",
               "Write the query in English even when the learner asks in another language.",
               "Preserve exact names, titles, and technical terms when translation could lose precision.",
-              "Return only the query text, under 18 words, with no quotes, label, or explanation.",
+              "Return only the query text, under 18 words, with no label or explanation.",
             ].join(" "),
           },
           {
             role: "user",
-            content: `Learner question: ${question}\nSource title: ${context.sourceTitle}${context.module?.title ? `\nCurrent topic: ${context.module.title}` : ""}`,
+            content: [
+              `Selected text: ${selectedText}`,
+              `Learner question: ${question}`,
+              "Disambiguation context (secondary only):",
+              `Source title: ${context.sourceTitle}`,
+              context.module?.title ? `Current topic: ${context.module.title}` : "",
+            ].filter(Boolean).join("\n"),
           },
         ],
       });
-      query = normalizeGeneratedSearchQuery(generated) || fallback;
+      query = ensureSelectedFocusInQuery(normalizeGeneratedSearchQuery(generated) || fallback, selectedText);
     } catch (error) {
       console.warn("[annotations] Web search query rewrite failed; using the learner question", error);
     }
-    return normalizeSourceMetaList(await this.questionWebSearch(query), 10);
+    console.info(`[annotations] Web search query: ${query}`);
+    const initialSources = normalizeSourceMetaList(await this.questionWebSearch(query), 10);
+    if (searchSourcesMatchSelectedFocus(initialSources, selectedText)) return initialSources;
+
+    let retryQuery = retryQuestionSearchQuery(selectedText, question);
+    try {
+      const rewrittenRetry = await client.chatText({
+        model,
+        temperature: 0,
+        maxTokens: 64,
+        timeoutMs: 30_000,
+        thinking: "disabled",
+        messages: [
+          {
+            role: "system",
+            content: [
+              "Rewrite a failed web search query so the results directly concern the selected text and answer the learner's intent.",
+              "Include a short selected name, title, concept, or technical term exactly as written.",
+              "Do not include the document title or module topic unless it is part of the learner's question.",
+              "Write one English query under 18 words. Return only the query, with no label or explanation.",
+            ].join(" "),
+          },
+          {
+            role: "user",
+            content: `Selected text: ${selectedText}\nLearner question: ${question}\nFailed query: ${query}`,
+          },
+        ],
+      });
+      retryQuery = ensureSelectedFocusInQuery(normalizeGeneratedSearchQuery(rewrittenRetry) || retryQuery, selectedText);
+    } catch (error) {
+      console.warn("[annotations] Web search retry rewrite failed; using an exact selected-text query", error);
+    }
+    if (retryQuery === query) retryQuery = retryQuestionSearchQuery(selectedText, question);
+    if (retryQuery === query) return initialSources;
+    console.info(`[annotations] Web search results missed the selected text; retrying with: ${retryQuery}`);
+    const retrySources = normalizeSourceMetaList(await this.questionWebSearch(retryQuery), 10);
+    return searchSourcesMatchSelectedFocus(retrySources, selectedText) ? retrySources : [];
   }
 
   private async ensureWebGroundedAnswer(
