@@ -283,6 +283,20 @@ export function getDb() {
 
     CREATE INDEX IF NOT EXISTS idx_material_annotations_material_chunk
       ON material_annotations(material_id, chunk_id, created_at ASC);
+
+    CREATE TABLE IF NOT EXISTS project_transfer_history (
+      export_id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      parent_export_id TEXT,
+      device_id TEXT NOT NULL,
+      direction TEXT NOT NULL CHECK (direction IN ('export', 'import')),
+      project_state_hash TEXT NOT NULL,
+      transferred_at INTEGER NOT NULL,
+      applied_at INTEGER
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_project_transfer_history_project
+      ON project_transfer_history(project_id, transferred_at DESC);
   `);
 
   const projectColumns = db.query<{ name: string }, []>("PRAGMA table_info(projects)").all().map((column) => column.name);

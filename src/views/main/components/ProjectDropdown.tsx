@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ChevronDown, Plus, Trash2 } from "lucide-react";
+import { ChevronDown, Download, FolderInput, Plus, Trash2 } from "lucide-react";
 import type { ProjectSummary } from "../../../shared/rpc-types";
 
 export function ProjectDropdown({
@@ -8,6 +8,8 @@ export function ProjectDropdown({
   busy,
   onSelect,
   onCreate,
+  onImport,
+  onExport,
   onDelete,
 }: {
   projects: ProjectSummary[];
@@ -15,6 +17,8 @@ export function ProjectDropdown({
   busy: boolean;
   onSelect: (project: ProjectSummary) => void;
   onCreate: () => void;
+  onImport: () => void;
+  onExport: (project: ProjectSummary) => void;
   onDelete: (project: ProjectSummary) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -87,6 +91,14 @@ export function ProjectDropdown({
             <button type="button" className="pd-action pd-create" disabled={busy} onClick={() => { onCreate(); setOpen(false); }}>
               <Plus size={15} /> 새 프로젝트
             </button>
+            <button type="button" className="pd-action pd-import" disabled={busy} onClick={() => { onImport(); setOpen(false); }}>
+              <FolderInput size={15} /> 프로젝트 불러오기
+            </button>
+            {activeProject ? (
+              <button type="button" className="pd-action pd-export" disabled={busy} onClick={() => { onExport(activeProject); setOpen(false); }}>
+                <Download size={15} /> 다른 컴퓨터로 내보내기
+              </button>
+            ) : null}
           </div>
         </div>
       ) : null}

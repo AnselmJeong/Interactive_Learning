@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
-import { Archive, BookOpen, Check, Info, Loader2, LocateFixed, MessageSquare, Moon, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Pencil, Play, Send, Settings, Sparkles, Sun, Trash2, Upload, X } from "lucide-react";
-import type { MaterialSummary, PreparedSourceImport, ProjectArchiveExport, ProjectSummary, SourceSummary } from "../../shared/rpc-types";
+import { BookOpen, Check, Download, Info, Loader2, LocateFixed, MessageSquare, Moon, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Pencil, Play, Send, Settings, Sparkles, Sun, Trash2, Upload, X } from "lucide-react";
+import type { MaterialSummary, PreparedSourceImport, ProjectSummary, SourceSummary } from "../../shared/rpc-types";
+import type { ProjectTransferExport, ProjectTransferPreview, SessionReadableExport } from "../../shared/project-transfer-types";
 import type { AppSettings, AiProviderStatus, ChatSubmitShortcut, ProviderModel } from "../../shared/settings-types";
 import type { MaterialAnnotation, MaterialArtifacts } from "../../shared/artifact-types";
 import type { LearningMessageSetSummary, SessionSnapshot, SessionSummary, SourceRef, TutorContext, TutorMessage, TutorPrefetchStatus } from "../../shared/tutor-types";
@@ -13,6 +14,7 @@ import { ImmersiveSourceView } from "./components/ImmersiveSourceView";
 import { LearningSelectionLookup } from "./components/LearningSelectionLookup";
 import { NewProjectModal } from "./components/NewProjectModal";
 import { ProjectDropdown } from "./components/ProjectDropdown";
+import { ProjectTransferImportModal } from "./components/ProjectTransferImportModal";
 import { SourceImportModal } from "./components/SourceImportModal";
 import { AboutModal } from "./components/AboutModal";
 import { SourceFigureCard } from "./components/SourceFigureCard";
@@ -745,6 +747,8 @@ export function App({ request }: { request: RpcRequest }) {
   const [session, setSession] = useState<SessionSnapshot | null>(null);
   const [context, setContext] = useState<TutorContext | null>(null);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
+  const [projectTransferPreview, setProjectTransferPreview] = useState<ProjectTransferPreview | null>(null);
+  const [sessionExportBusyId, setSessionExportBusyId] = useState<string | null>(null);
   const [sourceNotice, setSourceNotice] = useState("");
   const [preparedImport, setPreparedImport] = useState<PreparedSourceImport | null>(null);
   const [expandedSourceMessages, setExpandedSourceMessages] = useState<Set<string>>(new Set());
@@ -977,6 +981,66 @@ export function App({ request }: { request: RpcRequest }) {
       setStatus(`Deleted ${project.title}`);
     } catch (error) {
       setStatus(`Project delete failed: ${(error as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function chooseProjectTransfer() {
+    setBusy(true);
+    setStatus("프로젝트 transfer를 확인하는 중");
+    try {
+      const path = (await request("projects.chooseTransferFile", {})) as string;
+      if (!path) {
+        setStatus(READY_STATUS);
+        return;
+      }
+      const preview = (await request("projects.prepareTransferImport", { path })) as ProjectTransferPreview;
+      setProjectTransferPreview(preview);
+      setStatus("프로젝트 transfer 준비 완료");
+    } catch (error) {
+      setStatus(`프로젝트 불러오기 실패: ${(error as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function cancelProjectTransfer() {
+    const preview = projectTransferPreview;
+    setProjectTransferPreview(null);
+    if (preview) await request("projects.cancelTransferImport", { importId: preview.importId }).catch(() => undefined);
+    setStatus(READY_STATUS);
+  }
+
+  async function commitProjectTransfer() {
+    const preview = projectTransferPreview;
+    if (!preview) return;
+    const mode = preview.classification === "fast_forward" ? "fast_forward" : "create_new";
+    setBusy(true);
+    setStatus("프로젝트 transfer를 적용하는 중");
+    try {
+      await request("projects.commitTransferImport", { importId: preview.importId, mode });
+      setProjectTransferPreview(null);
+      const projects = (await request("projects.list", {})) as ProjectSummary[];
+      setState((current) => ({ ...current, projects }));
+      const imported = projects.find((project) => project.id === preview.projectId);
+      if (imported) await openProject(imported);
+      setStatus(preview.classification === "no_changes" ? "이미 같은 프로젝트 상태입니다" : `${preview.projectTitle} 프로젝트를 불러왔습니다`);
+    } catch (error) {
+      setStatus(`프로젝트 불러오기 실패: ${(error as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function exportProjectTransfer(project: ProjectSummary) {
+    setBusy(true);
+    setStatus("다른 컴퓨터용 project transfer를 만드는 중");
+    try {
+      const result = (await request("projects.exportTransfer", { projectId: project.id })) as ProjectTransferExport;
+      setStatus(`${project.title}: ${result.fileName} 내보내기 완료`);
+    } catch (error) {
+      setStatus(`프로젝트 내보내기 실패: ${(error as Error).message}`);
     } finally {
       setBusy(false);
     }
@@ -1437,6 +1501,19 @@ export function App({ request }: { request: RpcRequest }) {
     }
   }
 
+  async function exportSession(item: SessionSummary) {
+    if (sessionExportBusyId) return;
+    setSessionExportBusyId(item.id);
+    try {
+      const result = (await request("sessions.exportReadable", { sessionId: item.id })) as SessionReadableExport;
+      setStatus(`${item.title}: ${result.fileName} 내보내기 완료`);
+    } catch (error) {
+      setStatus(`세션 내보내기 실패: ${(error as Error).message}`);
+    } finally {
+      setSessionExportBusyId(null);
+    }
+  }
+
   async function sendAnswer(text: string) {
     if (!session || !text.trim()) return false;
     queueAnswerReadySound();
@@ -1600,19 +1677,6 @@ export function App({ request }: { request: RpcRequest }) {
 
   function focusReviewComposer() {
     setComposerFocusToken(Date.now());
-  }
-
-  async function exportProjectArchive() {
-    if (!activeProject) return;
-    setBusy(true);
-    try {
-      const result = (await request("projects.exportArchive", { projectId: activeProject.id })) as ProjectArchiveExport;
-      setStatus(`Exported ${result.sessionCount} sessions to ${result.fileName}`);
-    } catch (error) {
-      setStatus(`Archive export failed: ${(error as Error).message}`);
-    } finally {
-      setBusy(false);
-    }
   }
 
   const allSessionMessages = session?.messages || EMPTY_MESSAGES;
@@ -2045,6 +2109,8 @@ export function App({ request }: { request: RpcRequest }) {
               busy={busy}
               onSelect={(project) => void openProject(project)}
               onCreate={() => setNewProjectOpen(true)}
+              onImport={() => void chooseProjectTransfer()}
+              onExport={(project) => void exportProjectTransfer(project)}
               onDelete={(project) => void deleteProject(project)}
             />
           </section>
@@ -2536,6 +2602,20 @@ export function App({ request }: { request: RpcRequest }) {
                           </button>
                           <button
                             type="button"
+                            className="session-export-button"
+                            onMouseDown={(event) => event.stopPropagation()}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              void exportSession(item);
+                            }}
+                            disabled={sessionExportBusyId === item.id}
+                            title="세션 내보내기"
+                            aria-label={`${item.title} 세션 내보내기`}
+                          >
+                            {sessionExportBusyId === item.id ? <Loader2 size={14} className="spin" /> : <Download size={14} />}
+                          </button>
+                          <button
+                            type="button"
                             className="session-delete-button"
                             onMouseDown={(event) => event.stopPropagation()}
                             onClick={(event) => {
@@ -2558,9 +2638,6 @@ export function App({ request }: { request: RpcRequest }) {
               )}
             </>
           ) : null}
-          <button className="wide-button archive-action" onClick={exportProjectArchive} disabled={!activeProject || busy}>
-            <Archive size={16} /> Export project archive
-          </button>
         </div>
       </aside>
 
@@ -2596,6 +2673,15 @@ export function App({ request }: { request: RpcRequest }) {
             await refreshProjects();
             await openProject(project);
           }}
+        />
+      ) : null}
+
+      {projectTransferPreview ? (
+        <ProjectTransferImportModal
+          preview={projectTransferPreview}
+          busy={busy}
+          onCancel={() => void cancelProjectTransfer()}
+          onConfirm={() => void commitProjectTransfer()}
         />
       ) : null}
       {preparedImport ? (

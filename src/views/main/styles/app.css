@@ -2057,7 +2057,7 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   width: 100%;
   border: 0;
   background: transparent;
-  padding: 10px 42px 10px 11px;
+  padding: 10px 74px 10px 11px;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 8px 10px;
@@ -2071,10 +2071,10 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
 .session-row-open:disabled {
   cursor: not-allowed;
 }
-.session-delete-button {
+.session-delete-button,
+.session-export-button {
   position: absolute;
   top: 8px;
-  right: 8px;
   z-index: 1;
   width: 28px;
   min-height: 28px;
@@ -2086,11 +2086,18 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   place-items: center;
   cursor: pointer;
 }
+.session-delete-button { right: 8px; }
+.session-export-button { right: 38px; }
+.session-export-button:hover:not(:disabled) {
+  background: rgba(38, 111, 105, 0.09);
+  color: var(--accent-2);
+}
 .session-delete-button:hover:not(:disabled) {
   background: rgba(157, 55, 50, 0.08);
   color: var(--danger);
 }
-.session-delete-button:disabled {
+.session-delete-button:disabled,
+.session-export-button:disabled {
   cursor: not-allowed;
 }
 .session-row.active {
@@ -2976,6 +2983,25 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
 .pd-action:hover { background: var(--panel-soft); color: var(--ink); }
 .pd-create { color: var(--accent); }
 .pd-create:hover { background: rgba(167, 125, 18, 0.05); color: var(--accent); }
+.pd-import { border-top: 1px solid color-mix(in srgb, var(--line) 72%, transparent); color: var(--ink); }
+.pd-export { border-top: 1px solid color-mix(in srgb, var(--line) 72%, transparent); font-weight: 560; }
+
+.transfer-import-modal { width: min(620px, 94vw); }
+.transfer-import-header { align-items: flex-start; }
+.transfer-import-header h2 { margin-top: 3px; }
+.transfer-import-header p:last-child { margin: 7px 0 0; color: var(--muted); font-size: 13px; }
+.transfer-import-body { display: grid; gap: 20px; padding: 22px 0; }
+.transfer-import-verdict { display: flex; align-items: flex-start; gap: 12px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 8px; }
+.transfer-import-verdict svg { flex: none; margin-top: 2px; }
+.transfer-import-verdict.safe { background: color-mix(in srgb, var(--accent-2) 7%, var(--panel)); color: var(--accent-2); }
+.transfer-import-verdict.warning { background: color-mix(in srgb, var(--danger) 6%, var(--panel)); color: var(--danger); }
+.transfer-import-verdict strong { display: block; color: var(--ink); }
+.transfer-import-verdict p { margin: 5px 0 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.transfer-counts { margin: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px; overflow: hidden; border: 1px solid var(--line); border-radius: 8px; background: var(--line); }
+.transfer-counts div { display: flex; justify-content: space-between; gap: 8px; padding: 11px 12px; background: var(--panel); }
+.transfer-counts dt { color: var(--muted); font-size: 12px; }
+.transfer-counts dd { margin: 0; color: var(--ink); font-size: 13px; font-weight: 680; }
+.transfer-warning { margin: 0; color: var(--danger); font-size: 13px; line-height: 1.5; }
 
 .sources-section { flex: 1; min-height: 0; display: flex; flex-direction: column; padding-bottom: 16px; }
 .sources-section .source-list-fill { flex: 1; min-height: 0; overflow: auto; padding-right: 2px; align-content: start; }

@@ -18,6 +18,7 @@ import type {
 import type { AiProviderId, AiProviderStatus, AppSettings, ProviderModel, PublicAiProviderUpdate } from "./settings-types";
 import type { LearningMessageSetSummary, SessionSnapshot, SessionSummary, TutorContext, TutorPrefetchStatus, TutorTurnOutput } from "./tutor-types";
 import type { LearningLevel } from "./learning-levels";
+import type { ProjectTransferExport, ProjectTransferImportResult, ProjectTransferPreview, SessionReadableExport } from "./project-transfer-types";
 
 export type ProjectSummary = {
   id: string;
@@ -91,12 +92,6 @@ export type GenerationProgress = {
   progress: number;
 };
 
-export type ProjectArchiveExport = {
-  zipPath: string;
-  fileName: string;
-  sessionCount: number;
-};
-
 export type AiProviderConnectionInput = {
   settings?: AppSettings;
   apiKeys?: Partial<Record<AiProviderId, string>>;
@@ -125,7 +120,11 @@ export type AppRPC = {
       "projects.open": { params: { projectId: string }; response: ProjectSummary };
       "projects.archive": { params: { projectId: string }; response: boolean };
       "projects.delete": { params: { projectId: string }; response: boolean };
-      "projects.exportArchive": { params: { projectId: string; destinationFolder?: string }; response: ProjectArchiveExport };
+      "projects.exportTransfer": { params: { projectId: string; destinationFolder?: string }; response: ProjectTransferExport };
+      "projects.chooseTransferFile": { params: {}; response: string };
+      "projects.prepareTransferImport": { params: { path: string }; response: ProjectTransferPreview };
+      "projects.commitTransferImport": { params: { importId: string; mode: "create_new" | "fast_forward" }; response: ProjectTransferImportResult };
+      "projects.cancelTransferImport": { params: { importId: string }; response: boolean };
       "projects.openFolder": { params: { projectId?: string }; response: boolean };
       "app.openExternal": { params: { url: string }; response: boolean };
       "sources.importPaths": { params: { projectId: string; paths: string[] }; response: SourceSummary[] };
@@ -187,6 +186,7 @@ export type AppRPC = {
       "sessions.returnToProgress": { params: { sessionId: string }; response: { session: SessionSnapshot; context: TutorContext; output: TutorTurnOutput } };
       "sessions.prefetchStatus": { params: { sessionId: string }; response: TutorPrefetchStatus };
       "sessions.delete": { params: { sessionId: string }; response: boolean };
+      "sessions.exportReadable": { params: { sessionId: string; destinationFolder?: string }; response: SessionReadableExport };
       "sessions.selectModule": { params: { sessionId: string; moduleId: string }; response: { session: SessionSnapshot; context: TutorContext } };
       "sessions.openModule": { params: { sessionId: string; moduleId: string }; response: { session: SessionSnapshot; context: TutorContext; output: TutorTurnOutput } };
       "sessions.resumeModule": { params: { sessionId: string; moduleId: string }; response: { session: SessionSnapshot; context: TutorContext; output?: TutorTurnOutput } };

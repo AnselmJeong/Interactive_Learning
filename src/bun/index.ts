@@ -2,6 +2,8 @@ import Electrobun, { BrowserView, Utils } from "electrobun/bun";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { ProjectService } from "./project-service";
+import { ProjectTransferService } from "./project-transfer-service";
+import { SessionExportService } from "./session-export-service";
 import { SettingsService } from "./settings-service";
 import { AiProviderSettingsService } from "./ai-provider-settings";
 import { createAiProviderClient } from "./ai-provider-client";
@@ -24,6 +26,8 @@ configureAppDataBase(Utils.paths.userData);
 configureDatabaseBase(stableDatabaseBase(Utils.paths.userData));
 
 const projects = new ProjectService();
+const projectTransfers = new ProjectTransferService();
+const sessionExports = new SessionExportService();
 const settings = new SettingsService();
 const secrets = new AiProviderSettingsService();
 const sources = new SourceService();
@@ -75,6 +79,18 @@ async function chooseSourcePaths() {
     allowsMultipleSelection: true,
   });
   return normalizeSelectedPaths(selected);
+}
+
+async function chooseProjectTransferPath() {
+  const current = await settings.get();
+  const selected = await Utils.openFileDialog({
+    startingFolder: existsSync(current.defaultDownloadFolder) ? current.defaultDownloadFolder : Utils.paths.home,
+    allowedFileTypes: "zip",
+    canChooseFiles: true,
+    canChooseDirectory: false,
+    allowsMultipleSelection: false,
+  });
+  return firstSelectedPath(selected);
 }
 
 async function providerClient(input: AiProviderConnectionInput = {}) {
@@ -265,7 +281,11 @@ const rpc = BrowserView.defineRPC<AppRPC>({
       "projects.open": ({ projectId }) => projects.open(projectId),
       "projects.archive": ({ projectId }) => projects.archive(projectId),
       "projects.delete": ({ projectId }) => projects.delete(projectId),
-      "projects.exportArchive": ({ projectId, destinationFolder }) => projects.exportArchive(projectId, destinationFolder),
+      "projects.exportTransfer": ({ projectId, destinationFolder }) => projectTransfers.exportTransfer(projectId, destinationFolder),
+      "projects.chooseTransferFile": () => chooseProjectTransferPath(),
+      "projects.prepareTransferImport": ({ path }) => projectTransfers.prepareImport(path),
+      "projects.commitTransferImport": ({ importId, mode }) => projectTransfers.commitImport(importId, mode),
+      "projects.cancelTransferImport": ({ importId }) => projectTransfers.cancelImport(importId),
       "projects.openFolder": ({ projectId }) => openPath(projects.folder(projectId)),
       "app.openExternal": ({ url }) => openExternalUrl(url),
       "sources.openDialog": () => chooseSourcePaths(),
@@ -330,6 +350,7 @@ const rpc = BrowserView.defineRPC<AppRPC>({
       "sessions.returnToProgress": ({ sessionId }) => tutor.returnToProgress(sessionId),
       "sessions.prefetchStatus": ({ sessionId }) => tutor.prefetchStatus(sessionId),
       "sessions.delete": ({ sessionId }) => tutor.deleteSession(sessionId),
+      "sessions.exportReadable": ({ sessionId, destinationFolder }) => sessionExports.exportReadable(sessionId, destinationFolder),
       "sessions.selectModule": ({ sessionId, moduleId }) => tutor.selectModule(sessionId, moduleId),
       "sessions.openModule": ({ sessionId, moduleId }) => tutor.openModule(sessionId, moduleId),
       "sessions.resumeModule": ({ sessionId, moduleId }) => tutor.resumeModule(sessionId, moduleId),
