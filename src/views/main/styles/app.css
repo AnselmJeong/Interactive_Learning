@@ -4326,8 +4326,7 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
 .lookup-image-grid img {
   display: block;
   width: 100%;
-  aspect-ratio: 4 / 3;
-  object-fit: cover;
+  height: auto;
   border-radius: 6px;
   background: var(--surface-soft);
 }
