@@ -28,7 +28,7 @@ import { placeAnnotationsForMessages, shouldRenderInlineAnnotation } from "./ann
 import { annotationCardId, focusAnnotationInline } from "./annotation-inline-links";
 import { playAnswerReadySound, primeAnswerReadySound } from "./notification-sound";
 import { continuePrefetchStateForPreparedRoute, continueReadyFocusKeyForPreparedRoute, nextPrefetchStatusForSession } from "./prefetch-status";
-import { hasExpandedTextSelection, shouldAutoFocusReadyAction } from "./focus-management";
+import { hasExpandedTextSelection, isReadyActionActiveElementIdle, shouldAutoFocusReadyAction } from "./focus-management";
 import { shouldSubmitTextArea } from "./submit-shortcut";
 
 type RpcRequest = (method: string, params: unknown) => Promise<unknown>;
@@ -1849,25 +1849,38 @@ export function App({ request }: { request: RpcRequest }) {
     // retrying a key that was deliberately suppressed during user input or text selection.
     if (busy) return;
     if (lastFocusedReadyActionKeyRef.current === readyContinueFocusKey) return;
-    // Consume this ready key even when focus is suppressed. A later unrelated render must not
-    // steal focus after the learner finishes typing or releases an existing selection.
-    lastFocusedReadyActionKeyRef.current = readyContinueFocusKey;
-    const target = continueButtonRef.current;
-    const activeElement = document.activeElement;
-    const activeElementIsIdle = !activeElement
-      || activeElement === document.body
-      || activeElement === document.documentElement
-      || activeElement === target;
-    const protectedSurfaceOpen = Boolean(document.querySelector(
-      '[role="dialog"], .selection-toolbar, .lookup-popover, .selection-side-chat'
-    ));
-    if (!shouldAutoFocusReadyAction({
-      pointerDown: userPointerDownRef.current,
-      hasTextSelection: hasExpandedTextSelection(window.getSelection()),
-      activeElementIsIdle,
-      protectedSurfaceOpen,
-    })) return;
-    target?.focus({ preventScroll: true });
+    // The parent finishes its ready-state render just before ChatComposer clears a successfully
+    // submitted draft. Inspect the settled DOM on the next frame so an empty focused composer is
+    // idle, while real learner text remains protected from focus stealing.
+    const frame = requestAnimationFrame(() => {
+      if (lastFocusedReadyActionKeyRef.current === readyContinueFocusKey) return;
+      // Consume this ready key even when focus is suppressed. A later unrelated render must not
+      // steal focus after the learner finishes typing or releases an existing selection.
+      lastFocusedReadyActionKeyRef.current = readyContinueFocusKey;
+      const target = continueButtonRef.current;
+      const activeElement = document.activeElement;
+      const activeComposer = activeElement instanceof HTMLTextAreaElement && Boolean(activeElement.closest(".composer"))
+        ? activeElement
+        : null;
+      const activeElementIsIdle = isReadyActionActiveElementIdle({
+        hasActiveElement: Boolean(activeElement),
+        isDocumentRoot: activeElement === document.body || activeElement === document.documentElement,
+        isTarget: activeElement === target,
+        isComposer: Boolean(activeComposer),
+        composerValue: activeComposer?.value,
+      });
+      const protectedSurfaceOpen = Boolean(document.querySelector(
+        '[role="dialog"], .selection-toolbar, .lookup-popover, .selection-side-chat'
+      ));
+      if (!shouldAutoFocusReadyAction({
+        pointerDown: userPointerDownRef.current,
+        hasTextSelection: hasExpandedTextSelection(window.getSelection()),
+        activeElementIsIdle,
+        protectedSurfaceOpen,
+      })) return;
+      target?.focus({ preventScroll: true });
+    });
+    return () => cancelAnimationFrame(frame);
   }, [busy, continuePrefetchState, readyContinueFocusKey, selectedModuleWaiting, showProgressActions, viewMode]);
   const canContinueFromCompletedModule = Boolean(
     !sessionReadOnly

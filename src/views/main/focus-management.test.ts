@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { hasExpandedTextSelection, shouldAutoFocusReadyAction } from "./focus-management";
+import { hasExpandedTextSelection, isReadyActionActiveElementIdle, shouldAutoFocusReadyAction } from "./focus-management";
 
 describe("ready action autofocus guard", () => {
   const idle = {
@@ -31,5 +31,25 @@ describe("ready action autofocus guard", () => {
     expect(hasExpandedTextSelection({ rangeCount: 1, isCollapsed: true })).toBe(false);
     expect(hasExpandedTextSelection({ rangeCount: 0, isCollapsed: false })).toBe(false);
     expect(hasExpandedTextSelection(null)).toBe(false);
+  });
+
+  test("treats an empty focused composer as idle after a successful send", () => {
+    expect(isReadyActionActiveElementIdle({
+      hasActiveElement: true,
+      isDocumentRoot: false,
+      isTarget: false,
+      isComposer: true,
+      composerValue: "",
+    })).toBe(true);
+  });
+
+  test("keeps protecting a composer that contains learner text", () => {
+    expect(isReadyActionActiveElementIdle({
+      hasActiveElement: true,
+      isDocumentRoot: false,
+      isTarget: false,
+      isComposer: true,
+      composerValue: "새 질문을 입력하는 중",
+    })).toBe(false);
   });
 });
