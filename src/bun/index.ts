@@ -21,6 +21,7 @@ import { configureAppDataBase, configureDatabaseBase, stableDatabaseBase } from 
 import { normalizeSelectedPaths } from "./file-dialog-selection";
 import { buildBuddyPromptMessages, cleanBuddyMessage } from "./buddy-message";
 import { searchOllamaWeb } from "./ollama-web-search-service";
+import { searchBraveImages } from "./brave-image-search-service";
 
 configureAppDataBase(Utils.paths.userData);
 configureDatabaseBase(stableDatabaseBase(Utils.paths.userData));
@@ -35,6 +36,9 @@ const materials = new CourseArtifactService(materialOverviewRuntime);
 const annotations = new AnnotationService(materials, providerClient, async (query) => {
   const ollamaKey = await secrets.getApiKey("ollama");
   return searchOllamaWeb(query, ollamaKey.value);
+}, async (query) => {
+  const braveKey = await secrets.getBraveSearchApiKey();
+  return searchBraveImages(query, braveKey.value);
 });
 const tutor = new TutorService(
   (status) => sendToView("tutor.prefetchStatus", status),
@@ -119,6 +123,7 @@ async function providerStatus(reachable = false, error?: string, input: AiProvid
   const overrideKey = input.apiKeys?.[provider]?.trim();
   const apiKey = overrideKey ? { value: overrideKey, source: "settings" as const } : await secrets.getApiKey(provider);
   const keyStates = await secrets.keyStates();
+  const braveSearchKeyState = await secrets.braveSearchKeyState();
   if (overrideKey) {
     keyStates[provider] = { hasApiKey: true, apiKeySource: "settings" } satisfies AiProviderKeyState;
   }
@@ -128,6 +133,7 @@ async function providerStatus(reachable = false, error?: string, input: AiProvid
     baseUrl: providerSettings.baseUrl,
     hasApiKey: Boolean(apiKey.value),
     apiKeySource: apiKey.source,
+    braveSearchKeyState,
     keyStates,
     selectedModel: input.modelPurpose === "vision" ? providerSettings.selectedVisionModel : providerSettings.selectedModel,
     reachable,

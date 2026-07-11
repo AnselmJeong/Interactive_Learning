@@ -39,8 +39,10 @@ export type PublicAiProviderUpdate = {
   provider?: AiProviderId;
   ollamaApiKey?: string;
   apiKeys?: Partial<Record<AiProviderId, string>>;
+  braveSearchApiKey?: string;
   clearApiKey?: boolean;
   clearApiKeyFor?: AiProviderId;
+  clearBraveSearchApiKey?: boolean;
 };
 
 export type AiProviderStatus = {
@@ -49,6 +51,7 @@ export type AiProviderStatus = {
   hasApiKey: boolean;
   apiKeySource: "settings" | "env" | null;
   keyStates: Record<AiProviderId, AiProviderKeyState>;
+  braveSearchKeyState: AiProviderKeyState;
   selectedModel: string;
   reachable: boolean;
   error?: string;

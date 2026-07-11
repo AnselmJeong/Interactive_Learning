@@ -9,6 +9,32 @@ import { getMaterialAnnotation, saveMaterialAnnotation } from "./annotation-stor
 import { AnnotationService } from "./annotation-service";
 import { questionThreadFromResult } from "../shared/question-thread";
 
+describe("annotation image search routing", () => {
+  test("prefers configured broad image search results over Wikipedia lookup", async () => {
+    const service = new AnnotationService(
+      {} as never,
+      async () => { throw new Error("AI provider should not be used"); },
+      undefined,
+      async () => [{
+        title: "Natural selection diagram",
+        thumbnailUrl: "data:image/png;base64,AQID",
+        imageUrl: "https://example.edu/evolution.png",
+        pageUrl: "https://example.edu/evolution",
+        sourceTitle: "example.edu",
+        provider: "brave",
+        width: 1200,
+        height: 800,
+      }]
+    );
+
+    const result = await service.findImages({ materialId: "material-1", chunkId: "chunk-1", selectedText: "natural selection" });
+
+    expect(result.provider).toBe("brave");
+    expect(result.images[0]?.sourceTitle).toBe("example.edu");
+    expect(result.sourceMeta[0]).toMatchObject({ provider: "Brave · example.edu", url: "https://example.edu/evolution" });
+  });
+});
+
 function artifacts(): MaterialArtifacts {
   return {
     manifest: {

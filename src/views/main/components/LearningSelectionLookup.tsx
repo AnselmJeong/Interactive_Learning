@@ -845,15 +845,22 @@ function LookupPopover({
   const [selectedImageKeys, setSelectedImageKeys] = useState<Set<string>>(new Set());
   const [queryText, setQueryText] = useState(() => initialQueryText(panel));
   const selectedResult = panel.result?.kind === "image"
-    ? {
-        ...panel.result,
-        images: panel.result.images.filter((image, index) => selectedImageKeys.has(imageLookupKey(image, index))),
-      }
+    ? (() => {
+        const images = panel.result.images.filter((image, index) => selectedImageKeys.has(imageLookupKey(image, index)));
+        return {
+          ...panel.result,
+          images,
+          sourceMeta: panel.result.provider === "wikipedia"
+            ? panel.result.sourceMeta
+            : panel.result.sourceMeta.filter((source) => images.some((image) => image.pageUrl === source.url)),
+        };
+      })()
     : panel.result;
   const canSave = Boolean(selectedResult && panel.status === "ready" && (selectedResult.kind !== "image" || selectedResult.images.length > 0));
 
   useEffect(() => {
-    setSelectedImageKeys(new Set());
+    const directImage = panel.result?.kind === "image" && panel.result.provider === "direct" ? panel.result.images[0] : undefined;
+    setSelectedImageKeys(directImage ? new Set([imageLookupKey(directImage, 0)]) : new Set());
   }, [panel.result]);
 
   useEffect(() => {
@@ -1008,6 +1015,7 @@ function LookupResultBody({
         ) : (
           <p className="lookup-empty">관련 이미지를 찾지 못했습니다.</p>
         )}
+        <SourceMetaLinks sourceMeta={result.sourceMeta} />
       </div>
     );
   }

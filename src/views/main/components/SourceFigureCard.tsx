@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Check, Image as ImageIcon, Loader2, Save, Sparkles, Trash2 } from "lucide-react";
 import type { MaterialAnnotation, SourceFigure } from "../../../shared/artifact-types";
 import { figureExplanationLookupResult } from "../figure-annotations";
+import { figureAssetFallbackAction } from "../figure-asset-fallback";
 import { MarkdownContent } from "./MarkdownContent";
 
 type RpcRequest = (method: string, params: unknown) => Promise<unknown>;
@@ -49,14 +50,16 @@ export function SourceFigureCard({
   const [explanationModel, setExplanationModel] = useState<string | undefined>();
   const [saveState, setSaveState] = useState<"idle" | "saved">("idle");
   const [error, setError] = useState("");
-  const fallbackAttemptedRef = useRef(false);
+  const fallbackAttemptedKeyRef = useRef<string | null>(null);
+  const fallbackLoadingKeyRef = useRef<string | null>(null);
+  const activeAssetKeyRef = useRef("");
   const mountedRef = useRef(false);
   const fallbackCacheKey = `${materialId}:${figure.id}`;
   const imageRef = useRef<HTMLImageElement | null>(null);
 
   useEffect(() => {
     mountedRef.current = true;
-    fallbackAttemptedRef.current = false;
+    activeAssetKeyRef.current = fallbackCacheKey;
     setImageSrc(figureDataUrlCache.get(fallbackCacheKey) || figure.assetUrl);
     setImageError("");
     return () => {
@@ -75,30 +78,42 @@ export function SourceFigureCard({
   }, [fallbackCacheKey, imageError, imageSrc]);
 
   async function loadFallbackAsset() {
-    if (fallbackAttemptedRef.current) {
+    const action = figureAssetFallbackAction(
+      fallbackCacheKey,
+      fallbackAttemptedKeyRef.current,
+      fallbackLoadingKeyRef.current
+    );
+    if (action === "wait") return;
+    if (action === "failed") {
       setImageError("그림 파일을 불러오지 못했습니다.");
       return;
     }
-    fallbackAttemptedRef.current = true;
+    fallbackAttemptedKeyRef.current = fallbackCacheKey;
+    fallbackLoadingKeyRef.current = fallbackCacheKey;
+    setImageError("");
     const cached = figureDataUrlCache.get(fallbackCacheKey);
     if (cached) {
       setImageSrc(cached);
+      fallbackLoadingKeyRef.current = null;
       return;
     }
 
     try {
       const result = (await request("figures.getAsset", { materialId, figureId: figure.id })) as { dataUrl?: string };
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || activeAssetKeyRef.current !== fallbackCacheKey) return;
       if (!result.dataUrl) {
         setImageError("그림 파일을 불러오지 못했습니다.");
         return;
       }
       figureDataUrlCache.set(fallbackCacheKey, result.dataUrl);
+      setImageError("");
       setImageSrc(result.dataUrl);
     } catch (err) {
-      if (!mountedRef.current) return;
+      if (!mountedRef.current || activeAssetKeyRef.current !== fallbackCacheKey) return;
       const message = (err as Error).message || String(err);
       setImageError(userFacingFigureError(message) || "그림 파일을 불러오지 못했습니다.");
+    } finally {
+      if (fallbackLoadingKeyRef.current === fallbackCacheKey) fallbackLoadingKeyRef.current = null;
     }
   }
 

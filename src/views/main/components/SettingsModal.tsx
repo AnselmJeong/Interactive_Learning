@@ -66,6 +66,7 @@ export function SettingsModal({
   const draftRef = useRef(settings);
   const [activeSection, setActiveSection] = useState<SettingsSectionId>("models");
   const [apiKeys, setApiKeys] = useState<Record<AiProviderId, string>>(EMPTY_KEYS);
+  const [braveSearchApiKey, setBraveSearchApiKey] = useState("");
   const [statusText, setStatusText] = useState(providerStatus.error || "Ready");
   const [busy, setBusy] = useState(false);
   const [visionModels, setVisionModels] = useState<ProviderModel[]>([]);
@@ -117,8 +118,9 @@ export function SettingsModal({
       const saved = (await request("settings.updatePublic", draftRef.current)) as AppSettings;
       draftRef.current = saved;
       setDraft(saved);
-      await request("aiProvider.updateSettings", { provider: saved.aiProvider, apiKeys });
+      await request("aiProvider.updateSettings", { provider: saved.aiProvider, apiKeys, braveSearchApiKey });
       setApiKeys(EMPTY_KEYS);
+      setBraveSearchApiKey("");
       await onUpdated();
       setStatusText("Saved");
     } finally {
@@ -130,6 +132,12 @@ export function SettingsModal({
     await request("aiProvider.updateSettings", { clearApiKeyFor: draftRef.current.aiProvider });
     await onUpdated();
     setStatusText(`${providerLabel(draftRef.current.aiProvider)} key cleared`);
+  }
+
+  async function clearBraveSearchKey() {
+    await request("aiProvider.updateSettings", { clearBraveSearchApiKey: true });
+    await onUpdated();
+    setStatusText("Brave Search key cleared");
   }
 
   async function refreshModels(target: ModelTarget) {
@@ -247,6 +255,7 @@ export function SettingsModal({
   const accessSummary = draft.aiProvider === draft.visionProvider
     ? keySummary(draft.aiProvider)
     : `${keySummary(draft.aiProvider)} · ${keySummary(draft.visionProvider)}`;
+  const braveKeySaved = providerStatus.braveSearchKeyState.hasApiKey;
   const activeNavTitle = SETTINGS_NAV.find((item) => item.id === activeSection)?.title || "Settings";
 
   function renderModelRouting() {
@@ -342,7 +351,26 @@ export function SettingsModal({
               />
             </label>
           ))}
+          <label>
+            <span>
+              Brave Search API key
+              <small className={braveKeySaved ? "" : "missing"}>
+                {braveKeySaved ? `Saved via ${providerStatus.braveSearchKeyState.apiKeySource}` : "Not saved"}
+              </small>
+            </span>
+            <input
+              type="password"
+              value={braveSearchApiKey}
+              onChange={(event) => setBraveSearchApiKey(event.target.value)}
+              placeholder="Blank keeps existing key"
+            />
+          </label>
         </div>
+        {braveKeySaved ? (
+          <button className="wide-button danger compact" type="button" onClick={() => void clearBraveSearchKey()}>
+            <Trash2 size={15} /> Clear Brave Search key
+          </button>
+        ) : null}
       </section>
     );
   }

@@ -95,7 +95,7 @@ export type ImageLookupItem = {
   imageUrl?: string;
   pageUrl?: string;
   sourceTitle?: string;
-  provider: "wikipedia";
+  provider: "brave" | "direct" | "wikipedia";
   width?: number;
   height?: number;
   caption?: string;
@@ -106,7 +106,7 @@ export type ImageLookupResult = {
   title: string;
   query: string;
   body?: string;
-  provider: "wikipedia";
+  provider: "brave" | "direct" | "wikipedia";
   images: ImageLookupItem[];
   retrievedAt: string;
   sourceMeta: LookupSourceMeta[];

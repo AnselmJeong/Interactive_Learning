@@ -7,6 +7,7 @@ type AiProviderSecretSettings = {
   openaiApiKey?: string;
   anthropicApiKey?: string;
   geminiApiKey?: string;
+  braveSearchApiKey?: string;
 };
 
 const PROVIDER_KEY_FIELDS: Record<AiProviderId, keyof AiProviderSecretSettings> = {
@@ -28,6 +29,20 @@ function secretPath() {
 }
 
 export class AiProviderSettingsService {
+  async getBraveSearchApiKey() {
+    const fromEnv = firstEnvValue(["BRAVE_SEARCH_API_KEY"]);
+    if (fromEnv) return { value: fromEnv, source: "env" as const };
+    const saved = await readJsonFile<AiProviderSecretSettings>(secretPath(), {});
+    return saved.braveSearchApiKey
+      ? { value: saved.braveSearchApiKey, source: "settings" as const }
+      : { value: "", source: null };
+  }
+
+  async braveSearchKeyState(): Promise<AiProviderKeyState> {
+    const key = await this.getBraveSearchApiKey();
+    return { hasApiKey: Boolean(key.value), apiKeySource: key.source };
+  }
+
   async getApiKey(provider: AiProviderId) {
     const fromEnv = firstEnvValue(PROVIDER_ENV_KEYS[provider]);
     if (fromEnv) return { value: fromEnv, source: "env" as const };
@@ -54,8 +69,10 @@ export class AiProviderSettingsService {
     provider?: AiProviderId;
     ollamaApiKey?: string;
     apiKeys?: Partial<Record<AiProviderId, string>>;
+    braveSearchApiKey?: string;
     clearApiKey?: boolean;
     clearApiKeyFor?: AiProviderId;
+    clearBraveSearchApiKey?: boolean;
   }) {
     const current = await readJsonFile<AiProviderSecretSettings>(secretPath(), {});
     const next = { ...current };
@@ -65,6 +82,7 @@ export class AiProviderSettingsService {
     } else if (input.clearApiKey) {
       delete next[PROVIDER_KEY_FIELDS[input.provider || "ollama"]];
     }
+    if (input.clearBraveSearchApiKey) delete next.braveSearchApiKey;
 
     if (typeof input.ollamaApiKey === "string" && input.ollamaApiKey.trim()) {
       next.ollamaApiKey = input.ollamaApiKey.trim();
@@ -74,6 +92,9 @@ export class AiProviderSettingsService {
       if (typeof value === "string" && value.trim()) {
         next[PROVIDER_KEY_FIELDS[provider]] = value.trim();
       }
+    }
+    if (typeof input.braveSearchApiKey === "string" && input.braveSearchApiKey.trim()) {
+      next.braveSearchApiKey = input.braveSearchApiKey.trim();
     }
     await writeJsonFile(secretPath(), next);
   }

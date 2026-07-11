@@ -20,6 +20,7 @@ import type {
 } from "../shared/artifact-types";
 import type { AppSettings } from "../shared/settings-types";
 import { isQuestionThreadResult } from "../shared/question-thread";
+import { directImageUrl, loadDirectImage } from "./direct-image-service";
 
 type ProviderClientContext = {
   publicSettings: AppSettings;
@@ -30,6 +31,7 @@ type ProviderClientContext = {
 type ProviderClientFactory = () => Promise<ProviderClientContext>;
 
 type QuestionWebSearch = (query: string) => Promise<LookupSourceMeta[]>;
+type ImageSearch = (query: string) => Promise<ImageLookupItem[]>;
 
 type SelectionLookupInput = {
   materialId: string;
@@ -431,7 +433,7 @@ async function fetchJson<T>(url: string, timeoutMs = 10000): Promise<T> {
   const response = await fetch(url, {
     headers: {
       accept: "application/json",
-      "user-agent": "Learnie/0.7.0 desktop learning app",
+      "user-agent": "Learnie/0.7.2 desktop learning app",
     },
     signal: AbortSignal.timeout(timeoutMs),
   });
@@ -451,7 +453,7 @@ async function fetchImageDataUrl(value: string, timeoutMs = 10000): Promise<stri
   const response = await fetch(url.toString(), {
     headers: {
       accept: "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
-      "user-agent": "Learnie/0.7.0 desktop learning app",
+      "user-agent": "Learnie/0.7.2 desktop learning app",
     },
     signal: AbortSignal.timeout(timeoutMs),
   });
@@ -954,7 +956,8 @@ export class AnnotationService {
   constructor(
     private readonly materials: CourseArtifactService,
     private readonly providerClient: ProviderClientFactory,
-    private readonly questionWebSearch?: QuestionWebSearch
+    private readonly questionWebSearch?: QuestionWebSearch,
+    private readonly imageSearch?: ImageSearch
   ) {}
 
   async define(input: SelectionLookupInput): Promise<LookupResult> {
@@ -1058,8 +1061,52 @@ export class AnnotationService {
   }
 
   async findImages(input: SelectionLookupInput): Promise<ImageLookupResult> {
+    const directUrl = directImageUrl(input.selectedText);
+    if (directUrl) {
+      const image = await loadDirectImage(directUrl);
+      const retrievedAt = new Date().toISOString();
+      return {
+        kind: "image",
+        title: `Image from ${image.sourceTitle}`,
+        query: directUrl.toString(),
+        provider: "direct",
+        images: [image],
+        retrievedAt,
+        sourceMeta: [{
+          title: image.title,
+          url: image.pageUrl,
+          provider: `Direct image · ${image.sourceTitle}`,
+          retrievedAt,
+        }],
+      };
+    }
+
     const term = normalizeSelectedText(input.selectedText);
     if (!term) throw new Error("Selected text is empty");
+
+    if (this.imageSearch) {
+      try {
+        const images = await this.imageSearch(term);
+        if (images.length) {
+          return {
+            kind: "image",
+            title: `Image results for ${term}`,
+            query: term,
+            provider: "brave",
+            images,
+            retrievedAt: new Date().toISOString(),
+            sourceMeta: images.map((image) => ({
+              title: image.title,
+              ...(image.pageUrl ? { url: image.pageUrl } : {}),
+              provider: image.sourceTitle ? `Brave · ${image.sourceTitle}` : "Brave Image Search",
+              retrievedAt: new Date().toISOString(),
+            })),
+          };
+        }
+      } catch (error) {
+        console.warn(`[annotations] Brave image search unavailable; falling back to Wikipedia: ${(error as Error).message}`);
+      }
+    }
 
     const wiki = await lookupWikipedia(term);
     const images = wiki ? await wikipediaImageItems(wiki) : [];
