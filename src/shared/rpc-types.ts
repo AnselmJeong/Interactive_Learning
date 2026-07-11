@@ -144,6 +144,7 @@ export type AppRPC = {
       "materials.resumeMessageSetGeneration": { params: { messageSetId: string }; response: LearningMessageSetSummary };
       "materials.pauseMessageSetGeneration": { params: { messageSetId: string }; response: LearningMessageSetSummary };
       "figures.getAsset": { params: { materialId: string; figureId: string }; response: { figureId: string; mimeType: string; dataUrl: string } };
+      "figures.getAssetUrl": { params: { materialId: string; figureId: string }; response: { figureId: string; url: string } };
       "figures.explain": { params: { materialId: string; figureId: string; userPrompt?: string; contextChunkIds?: string[] }; response: { figureId: string; explanation: string; model: string; visionCapable: true } };
       "annotations.define": { params: { materialId: string; chunkId: string; selectedText: string }; response: LookupResult };
       "annotations.ask": { params: { materialId: string; chunkId: string; selectedText: string; question: string; useWebSearch?: boolean }; response: LookupResult };

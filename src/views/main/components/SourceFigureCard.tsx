@@ -30,7 +30,7 @@ function captionFor(figure: SourceFigure) {
   return figure.caption?.trim() || "Figure from source";
 }
 
-const figureDataUrlCache = new Map<string, string>();
+const figureAssetUrlCache = new Map<string, string>();
 
 export function SourceFigureCard({
   figure,
@@ -44,7 +44,7 @@ export function SourceFigureCard({
 }: SourceFigureCardProps) {
   const [busy, setBusy] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [imageSrc, setImageSrc] = useState(figure.assetUrl);
+  const [imageSrc, setImageSrc] = useState(() => figureAssetUrlCache.get(`${materialId}:${figure.id}`) || "");
   const [imageError, setImageError] = useState("");
   const [explanation, setExplanation] = useState("");
   const [explanationModel, setExplanationModel] = useState<string | undefined>();
@@ -60,12 +60,14 @@ export function SourceFigureCard({
   useEffect(() => {
     mountedRef.current = true;
     activeAssetKeyRef.current = fallbackCacheKey;
-    setImageSrc(figureDataUrlCache.get(fallbackCacheKey) || figure.assetUrl);
+    const cached = figureAssetUrlCache.get(fallbackCacheKey);
+    setImageSrc(cached || "");
     setImageError("");
+    if (!cached) void loadFallbackAsset();
     return () => {
       mountedRef.current = false;
     };
-  }, [fallbackCacheKey, figure.assetUrl]);
+  }, [fallbackCacheKey]);
 
   useEffect(() => {
     if (imageError) return;
@@ -91,7 +93,7 @@ export function SourceFigureCard({
     fallbackAttemptedKeyRef.current = fallbackCacheKey;
     fallbackLoadingKeyRef.current = fallbackCacheKey;
     setImageError("");
-    const cached = figureDataUrlCache.get(fallbackCacheKey);
+    const cached = figureAssetUrlCache.get(fallbackCacheKey);
     if (cached) {
       setImageSrc(cached);
       fallbackLoadingKeyRef.current = null;
@@ -99,15 +101,15 @@ export function SourceFigureCard({
     }
 
     try {
-      const result = (await request("figures.getAsset", { materialId, figureId: figure.id })) as { dataUrl?: string };
+      const result = (await request("figures.getAssetUrl", { materialId, figureId: figure.id })) as { url?: string };
       if (!mountedRef.current || activeAssetKeyRef.current !== fallbackCacheKey) return;
-      if (!result.dataUrl) {
+      if (!result.url) {
         setImageError("그림 파일을 불러오지 못했습니다.");
         return;
       }
-      figureDataUrlCache.set(fallbackCacheKey, result.dataUrl);
+      figureAssetUrlCache.set(fallbackCacheKey, result.url);
       setImageError("");
-      setImageSrc(result.dataUrl);
+      setImageSrc(result.url);
     } catch (err) {
       if (!mountedRef.current || activeAssetKeyRef.current !== fallbackCacheKey) return;
       const message = (err as Error).message || String(err);
@@ -174,6 +176,11 @@ export function SourceFigureCard({
           <div className="source-figure-image-error">
             <ImageIcon size={18} />
             <span>{imageError}</span>
+          </div>
+        ) : !imageSrc ? (
+          <div className="source-figure-image-error" aria-label="그림 파일 불러오는 중">
+            <Loader2 size={18} className="spin" />
+            <span>그림 파일을 불러오는 중입니다.</span>
           </div>
         ) : (
           <img

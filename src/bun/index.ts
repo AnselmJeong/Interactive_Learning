@@ -22,6 +22,7 @@ import { normalizeSelectedPaths } from "./file-dialog-selection";
 import { buildBuddyPromptMessages, cleanBuddyMessage } from "./buddy-message";
 import { searchOllamaWeb } from "./ollama-web-search-service";
 import { searchBraveImages } from "./brave-image-search-service";
+import { createFigureAssetServer } from "./figure-asset-server";
 
 configureAppDataBase(Utils.paths.userData);
 configureDatabaseBase(stableDatabaseBase(Utils.paths.userData));
@@ -33,6 +34,11 @@ const settings = new SettingsService();
 const secrets = new AiProviderSettingsService();
 const sources = new SourceService();
 const materials = new CourseArtifactService(materialOverviewRuntime);
+const figureAssetServer = createFigureAssetServer(async (materialId, figureId) => {
+  const artifacts = await materials.getArtifacts(materialId);
+  const figure = artifacts.figures.find((item) => item.id === figureId);
+  return figure ? { path: figure.assetPath, mimeType: figure.mimeType || "image/png" } : null;
+});
 const annotations = new AnnotationService(materials, providerClient, async (query) => {
   const ollamaKey = await secrets.getApiKey("ollama");
   return searchOllamaWeb(query, ollamaKey.value);
@@ -338,6 +344,7 @@ const rpc = BrowserView.defineRPC<AppRPC>({
       "materials.resumeMessageSetGeneration": ({ messageSetId }) => tutor.resumeMessageSetGeneration(messageSetId),
       "materials.pauseMessageSetGeneration": ({ messageSetId }) => tutor.pauseMessageSetGeneration(messageSetId),
       "figures.getAsset": ({ materialId, figureId }) => getFigureAsset(materialId, figureId),
+      "figures.getAssetUrl": ({ materialId, figureId }) => ({ figureId, url: figureAssetServer.urlFor(materialId, figureId) }),
       "figures.explain": ({ materialId, figureId, userPrompt, contextChunkIds }) => explainFigure(materialId, figureId, userPrompt, contextChunkIds),
       "annotations.define": (params) => annotations.define(params),
       "annotations.ask": (params) => annotations.ask(params),
