@@ -313,4 +313,22 @@ describe("immutable prepared message route", () => {
     expect(origins).toEqual(["prepared-a0", "prepared-b0", "prepared-a1"]);
     expect(getDb().query<{ count: number }, []>("SELECT COUNT(*) AS count FROM prepared_learning_messages WHERE message_set_id = 'set-route'").get()?.count).toBe(3);
   });
+
+  test("consumes an obsolete prepared route without adding it to the visible transcript", async () => {
+    seedRoute();
+    const service = new TutorService();
+    const obsolete = getDb().query<Record<string, unknown>, []>("SELECT * FROM prepared_learning_messages WHERE id = 'prepared-a0'").get();
+    expect(obsolete).toBeTruthy();
+    const internal = service as unknown as {
+      discardObsoletePreparedRoute: (sessionId: string, messageSetId: string, row: Record<string, unknown>) => void;
+      revealPreparedMessageUnlocked: (id: string) => Promise<{ message: string }>;
+      snapshot: (id: string) => { messages: Array<{ content: string }> };
+    };
+
+    internal.discardObsoletePreparedRoute("session-route", "set-route", obsolete!);
+
+    expect(internal.snapshot("session-route").messages).toEqual([]);
+    expect(getDb().query<{ count: number }, []>("SELECT COUNT(*) AS count FROM learning_messages WHERE delivery_state = 'discarded'").get()?.count).toBe(1);
+    expect((await internal.revealPreparedMessageUnlocked("session-route")).message).toBe("A1");
+  });
 });

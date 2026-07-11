@@ -1866,7 +1866,7 @@ export class TutorService {
       .query<{ ordinal: number }, [string]>("SELECT COALESCE(MAX(ordinal) + 1, 0) AS ordinal FROM learning_messages WHERE session_id = ?")
       .get(input.sessionId)?.ordinal || 0;
     const ordinal = deliveryState === "prepared" ? allOrdinal : visibleOrdinal;
-    if (deliveryState === "visible") this.shiftPreparedMessages(input.sessionId, ordinal, 1);
+    if (deliveryState === "visible") this.shiftNonVisibleMessages(input.sessionId, ordinal, 1);
     getDb()
       .query(
         `INSERT INTO learning_messages
@@ -1898,12 +1898,12 @@ export class TutorService {
     return { id, ordinal };
   }
 
-  private shiftPreparedMessages(sessionId: string, fromOrdinal: number, by: number) {
+  private shiftNonVisibleMessages(sessionId: string, fromOrdinal: number, by: number) {
     if (by <= 0) return;
     const rows = getDb()
       .query<{ id: string; ordinal: number }, [string, number]>(
         `SELECT id, ordinal FROM learning_messages
-         WHERE session_id = ? AND delivery_state = 'prepared' AND ordinal >= ?
+         WHERE session_id = ? AND delivery_state != 'visible' AND ordinal >= ?
          ORDER BY ordinal DESC`
       )
       .all(sessionId, fromOrdinal);
@@ -2890,15 +2890,25 @@ export class TutorService {
   }
 
   private async revealPreparedMessageUnlocked(sessionId: string, options: { returning?: boolean; moduleId?: string } = {}) {
-    const session = this.snapshotHeader(sessionId);
+    let session = this.snapshotHeader(sessionId);
     if (session.status !== "active") throw new Error("This session is not active");
     const messageSet = await this.ensureSessionMessageSet(sessionId);
-    const row = await this.waitForNextSessionPreparedRow(
-      sessionId,
-      messageSet.id,
-      session.lastRevealedRouteIndex,
-      options.moduleId
-    );
+    const curriculumChunkIds = await this.artifacts
+      .getArtifacts(session.materialId)
+      .then((artifacts) => new Set(this.orderedCurriculum(artifacts).map((chunk) => chunk.id)))
+      .catch(() => null);
+    let row: PreparedLearningMessageRow;
+    while (true) {
+      row = await this.waitForNextSessionPreparedRow(
+        sessionId,
+        messageSet.id,
+        session.lastRevealedRouteIndex,
+        options.moduleId
+      );
+      if (!curriculumChunkIds || !row.source_chunk_id || curriculumChunkIds.has(row.source_chunk_id)) break;
+      this.discardObsoletePreparedRoute(sessionId, messageSet.id, row);
+      session = this.snapshotHeader(sessionId);
+    }
     let output = this.messageOutputFromPreparedRow(row);
     if (options.returning) output = this.withReturningBridge(output);
     const generatedCursor = this.cursorFromPreparedRow(row, session);
@@ -2985,6 +2995,49 @@ export class TutorService {
         .run(sessionId, row.module_id, row.module_index, visibleMessageId, now);
     }).immediate();
     return output;
+  }
+
+  private discardObsoletePreparedRoute(sessionId: string, messageSetId: string, row: PreparedLearningMessageRow) {
+    getDb().transaction(() => {
+      const current = this.getSessionRow(sessionId);
+      if (current.message_set_id !== messageSetId) throw new Error("Session message set changed before obsolete route cleanup");
+      const alreadyConsumed = getDb()
+        .query<{ id: string }, [string, string]>(
+          "SELECT id FROM learning_messages WHERE session_id = ? AND origin_prepared_message_id = ? LIMIT 1"
+        )
+        .get(sessionId, row.id);
+      if (!alreadyConsumed) {
+        const ordinal = getDb()
+          .query<{ ordinal: number }, [string]>("SELECT COALESCE(MAX(ordinal) + 1, 0) AS ordinal FROM learning_messages WHERE session_id = ?")
+          .get(sessionId)?.ordinal || 0;
+        getDb()
+          .query(
+            `INSERT INTO learning_messages
+             (id, session_id, role, content, blocks_json, module_id, source_refs_json, choices_json, visual_id,
+              state_update_json, delivery_state, origin_prepared_message_id, conversation_kind, created_at, ordinal)
+             VALUES (?, ?, 'assistant', ?, '[]', ?, '[]', '[]', NULL, NULL, 'discarded', ?, 'main', ?, ?)`
+          )
+          .run(crypto.randomUUID(), sessionId, row.content, row.module_id, row.id, Date.now(), ordinal);
+      }
+      const now = Date.now();
+      getDb()
+        .query(
+          `UPDATE learning_sessions
+           SET last_revealed_route_index = MAX(last_revealed_route_index, ?), updated_at = ?
+           WHERE id = ?`
+        )
+        .run(row.route_index, now, sessionId);
+      getDb()
+        .query(
+          `INSERT INTO session_module_progress
+           (session_id, module_id, last_revealed_module_index, last_revealed_message_id, updated_at)
+           VALUES (?, ?, ?, NULL, ?)
+           ON CONFLICT(session_id, module_id) DO UPDATE SET
+             last_revealed_module_index = MAX(session_module_progress.last_revealed_module_index, excluded.last_revealed_module_index),
+             updated_at = excluded.updated_at`
+        )
+        .run(sessionId, row.module_id, row.module_index, now);
+    }).immediate();
   }
 
   private preparedCursorMatches(session: SessionSnapshot, cursor: PreparedMessageCursor) {

@@ -80,6 +80,42 @@ export function materialGenerationKey(projectId: string, sourceIds: string[]) {
   return `${projectId}:${[...new Set(sourceIds)].sort().join("\u0000")}`;
 }
 
+function normalizedCaptionText(text: string) {
+  return text.normalize("NFKC").replace(/\s+/g, " ").trim();
+}
+
+function markdownImageAlt(text: string) {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith("![") || !trimmed.endsWith(")")) return null;
+  const separator = trimmed.lastIndexOf("](");
+  if (separator <= 2) return null;
+  return trimmed.slice(2, separator);
+}
+
+// PDF-to-Markdown sources can contain the same figure caption twice: first as the
+// image alt text and again as a plain caption paragraph. Keep the image-bearing
+// chunk as the canonical learning unit so the tutor does not teach the caption twice.
+export function normalizeFigureCaptionChunks(chunks: SourceChunk[]) {
+  const removedChunkIds = new Set<string>();
+  for (let index = 0; index < chunks.length - 1; index += 1) {
+    const imageChunk = chunks[index]!;
+    const followingChunk = chunks[index + 1]!;
+    const imageAlt = markdownImageAlt(imageChunk.text);
+    if (
+      imageChunk.kind === "caption" &&
+      imageAlt != null &&
+      (followingChunk.kind === "caption" || followingChunk.kind === "body") &&
+      normalizedCaptionText(imageAlt) === normalizedCaptionText(followingChunk.text)
+    ) {
+      removedChunkIds.add(followingChunk.id);
+    }
+  }
+  return {
+    chunks: chunks.filter((chunk) => !removedChunkIds.has(chunk.id)),
+    removedChunkIds,
+  };
+}
+
 function uniqueSourceIds(sourceIds: string[]) {
   return [...new Set(sourceIds.filter(Boolean))];
 }
@@ -437,7 +473,8 @@ export class CourseArtifactService {
     });
 
     try {
-      const sourceChunks = (await Promise.all(sourceIds.map((sourceId) => this.sources.loadChunks(sourceId)))).flat();
+      const loadedSourceChunks = (await Promise.all(sourceIds.map((sourceId) => this.sources.loadChunks(sourceId)))).flat();
+      const { chunks: sourceChunks } = normalizeFigureCaptionChunks(loadedSourceChunks);
       const figures = (await Promise.all(sourceIds.map((sourceId) => this.sources.loadFigures(sourceId)))).flat();
       if (!sourceChunks.length) throw new Error("No chunks were extracted for selected sources");
       const conceptMap = buildConcepts(sourceChunks);
@@ -604,7 +641,18 @@ export class CourseArtifactService {
       readFile(row.visual_specs_path, "utf8").then((raw) => JSON.parse(raw) as VisualSpec[]),
       readFile(row.source_index_path, "utf8").then((raw) => JSON.parse(raw) as Record<string, { sourceId: string; title: string; locator: string }>),
     ]);
-    const sourceChunks = await this.loadMaterialSourceChunks(row);
+    const loadedSourceChunks = await this.loadMaterialSourceChunks(row);
+    const { chunks: sourceChunks, removedChunkIds } = normalizeFigureCaptionChunks(loadedSourceChunks);
+    const sanitizedPlan = sanitizeCoursePlan(coursePlan);
+    const normalizedCoursePlan = removedChunkIds.size
+      ? {
+          ...sanitizedPlan,
+          modules: sanitizedPlan.modules.map((module) => ({
+            ...module,
+            sourceChunkIds: module.sourceChunkIds.filter((id) => !removedChunkIds.has(id)),
+          })),
+        }
+      : sanitizedPlan;
     const overview = await this.loadMaterialOverview(row, sourceChunks);
     const figures = await this.loadMaterialFigures(row);
     const figureIndex = await this.loadMaterialFigureIndex(row, figures);
@@ -612,7 +660,7 @@ export class CourseArtifactService {
       manifest,
       overview,
       conceptMap,
-      coursePlan: sanitizeCoursePlan(coursePlan),
+      coursePlan: normalizedCoursePlan,
       lecturePlan,
       presentationPlan,
       criticReport,

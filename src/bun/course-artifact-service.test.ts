@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { canReuseMaterialForGeneration, generateMaterialOverview, materialGenerationKey } from "./course-artifact-service";
+import { canReuseMaterialForGeneration, generateMaterialOverview, materialGenerationKey, normalizeFigureCaptionChunks } from "./course-artifact-service";
 import type { SourceChunk } from "../shared/artifact-types";
 import type { AiChatClient, ChatParams } from "./openai-compatible-client";
 
@@ -15,6 +15,39 @@ describe("material generation dedupe", () => {
       materialGenerationKey("project-a", ["source-a", "source-b"])
     );
     expect(materialGenerationKey("project-b", ["source-a", "source-b"])).not.toBe(materialGenerationKey("project-a", ["source-a", "source-b"]));
+  });
+});
+
+describe("figure caption curriculum normalization", () => {
+  const chunk = (id: string, kind: SourceChunk["kind"], text: string): SourceChunk => ({
+    id,
+    headingPath: ["Section"],
+    locator: "p. 1",
+    kind,
+    text,
+    confidence: 1,
+  });
+
+  test("keeps the image caption and removes an immediately repeated plain caption", () => {
+    const image = chunk("figure", "caption", "![Fig. 1. A caption](../assets/figure.png)");
+    const repeated = chunk("caption", "body", "Fig. 1. A caption");
+    const prose = chunk("prose", "body", "The argument continues here.");
+
+    const result = normalizeFigureCaptionChunks([image, repeated, prose]);
+
+    expect(result.chunks.map((item) => item.id)).toEqual(["figure", "prose"]);
+    expect([...result.removedChunkIds]).toEqual(["caption"]);
+  });
+
+  test("does not remove a distinct caption or a non-adjacent matching paragraph", () => {
+    const image = chunk("figure", "caption", "![Fig. 1. A caption](../assets/figure.png)");
+    const prose = chunk("prose", "body", "The argument continues here.");
+    const laterCaption = chunk("later", "body", "Fig. 1. A caption");
+
+    const result = normalizeFigureCaptionChunks([image, prose, laterCaption]);
+
+    expect(result.chunks.map((item) => item.id)).toEqual(["figure", "prose", "later"]);
+    expect(result.removedChunkIds.size).toBe(0);
   });
 });
 
