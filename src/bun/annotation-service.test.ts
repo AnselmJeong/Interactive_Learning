@@ -127,6 +127,49 @@ describe("annotation side-chat service", () => {
     ]);
   });
 
+  test("saves a chat note with its text anchor and snapshot payload", async () => {
+    const textAnchor = {
+      version: 1 as const,
+      surface: "chat" as const,
+      scope: "chat-message" as const,
+      chunkId: "chunk-1",
+      messageId: "message-1",
+      blockId: null,
+      selectedText: "selected claim",
+      normalizedText: "selected claim",
+      occurrence: 0,
+      startOffset: 4,
+      endOffset: 18,
+      prefix: "The ",
+      suffix: " connects",
+      scopeTextLength: 60,
+    };
+
+    const saved = await service.save({
+      materialId: "material-1",
+      chunkId: "chunk-1",
+      surface: "chat",
+      anchorMessageId: "message-1",
+      anchorBlockId: null,
+      textAnchor,
+      kind: "note",
+      selectedText: "selected claim",
+      result: { kind: "note", note: "이 전제가 결론으로 이어지는 이유를 다시 보기" },
+      sourceMeta: [],
+    });
+
+    expect(saved).toMatchObject({
+      kind: "note",
+      surface: "chat",
+      anchorMessageId: "message-1",
+      textAnchor,
+      result: { kind: "note", note: "이 전제가 결론으로 이어지는 이유를 다시 보기" },
+    });
+    const snapshotPath = join(tempRoot, "project-1", "materials", "material-1", "annotations.json");
+    const snapshot = JSON.parse(await readFile(snapshotPath, "utf8"));
+    expect(snapshot[0]).toMatchObject({ id: saved.id, kind: "note", textAnchor, result: saved.result });
+  });
+
   test("grounds an opted-in side-chat turn with Ollama web sources and preserves them on the answer", async () => {
     let searchQuery = "";
     const webCalls: ChatParams[] = [];

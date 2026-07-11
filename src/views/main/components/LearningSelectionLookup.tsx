@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type PointerEvent, type RefObject } from "react";
-import { Highlighter, Image as ImageIcon, Loader2, MessageSquare, Save, Search, Trash2, X } from "lucide-react";
-import type { ImageLookupResult, LookupResult, MaterialAnnotation, QuestionThreadResult, TextSelectionAnchor } from "../../../shared/artifact-types";
+import { Highlighter, Image as ImageIcon, Loader2, MessageSquare, Save, Search, StickyNote, Trash2, X } from "lucide-react";
+import type { ImageLookupResult, LookupResult, MaterialAnnotation, NoteResult, QuestionThreadResult, TextSelectionAnchor } from "../../../shared/artifact-types";
 import type { ChatSubmitShortcut } from "../../../shared/settings-types";
 import { MarkdownContent } from "./MarkdownContent";
 import { highlightAnnotationIdsForRange } from "../annotation-inline-links";
@@ -35,6 +35,15 @@ type LookupPanelState = {
   error?: string;
 };
 
+type NotePanelState = {
+  selection: SelectionState;
+  status: "editing" | "saving" | "error";
+  x: number;
+  y: number;
+  note: string;
+  error?: string;
+};
+
 type LearningSelectionLookupProps = {
   rootRef: RefObject<HTMLElement | null>;
   materialId: string | null;
@@ -64,7 +73,7 @@ function clampPoint(x: number, y: number) {
 
 function toolbarPointForRange(rect: DOMRect, container: HTMLElement | null) {
   const toolbarWidth = 58;
-  const toolbarHeight = 216;
+  const toolbarHeight = 264;
   const margin = 14;
   const containerRect = container?.getBoundingClientRect();
   const preferredRight = containerRect ? containerRect.right - toolbarWidth - margin : window.innerWidth - toolbarWidth - margin;
@@ -120,6 +129,7 @@ export function LearningSelectionLookup({
 }: LearningSelectionLookupProps) {
   const [selection, setSelection] = useState<SelectionState | null>(null);
   const [lookupPanel, setLookupPanel] = useState<LookupPanelState | null>(null);
+  const [notePanel, setNotePanel] = useState<NotePanelState | null>(null);
   const [sideChat, setSideChat] = useState<SideChatSession | null>(null);
   const [closedDraft, setClosedDraft] = useState<SideChatSession | null>(null);
   const selectionTimerRef = useRef<number | null>(null);
@@ -142,6 +152,7 @@ export function LearningSelectionLookup({
       lookupRequestSeqRef.current += 1;
       setSelection(null);
       setLookupPanel(null);
+      setNotePanel(null);
       window.getSelection()?.removeAllRanges();
     }
 
@@ -167,6 +178,7 @@ export function LearningSelectionLookup({
     sideChatDraftsRef.current.clear();
     setSideChat(null);
     setClosedDraft(null);
+    setNotePanel(null);
   }, [materialId]);
 
   useEffect(() => {
@@ -198,6 +210,7 @@ export function LearningSelectionLookup({
       y: point.y,
     });
     setLookupPanel(null);
+    setNotePanel(null);
     setSelection(null);
     onResumeHandled?.();
   }, [onResumeHandled, resumeRequest]);
@@ -282,6 +295,7 @@ export function LearningSelectionLookup({
       }
       setSelection(nextSelection);
       setLookupPanel(null);
+      setNotePanel(null);
       setSideChat(existing ? { ...existing, x: panelPoint.x, y: panelPoint.y } : {
         key,
         selection: nextSelection,
@@ -297,6 +311,7 @@ export function LearningSelectionLookup({
     const requestSeq = lookupRequestSeqRef.current + 1;
     lookupRequestSeqRef.current = requestSeq;
     setSelection(nextSelection);
+    setNotePanel(null);
     setLookupPanel({ action, selection: nextSelection, status: "loading", x: panelPoint.x, y: panelPoint.y, queryText });
     const method = annotationMethod(action);
     try {
@@ -516,6 +531,51 @@ export function LearningSelectionLookup({
     }
   }
 
+  function openNote(sourceSelection = selection) {
+    if (!sourceSelection) return;
+    const panelPoint = clampPoint(sourceSelection.x - 448, sourceSelection.y);
+    setLookupPanel(null);
+    setNotePanel({
+      selection: { ...sourceSelection },
+      status: "editing",
+      x: panelPoint.x,
+      y: panelPoint.y,
+      note: "",
+    });
+  }
+
+  async function saveNote(panel: NotePanelState) {
+    if (!materialId || panel.status === "saving") return;
+    const note = panel.note.trim();
+    if (!note) return;
+    setNotePanel({ ...panel, status: "saving", error: undefined });
+    try {
+      const result: NoteResult = { kind: "note", note };
+      const saved = (await request("annotations.save", {
+        materialId,
+        chunkId: panel.selection.chunkId,
+        surface: "chat",
+        anchorMessageId: panel.selection.anchorMessageId || null,
+        anchorBlockId: panel.selection.anchorBlockId || null,
+        textAnchor: panel.selection.textAnchor || null,
+        kind: "note",
+        selectedText: panel.selection.text,
+        result,
+        sourceMeta: [],
+      })) as MaterialAnnotation;
+      onAnnotationSaved?.(saved);
+      setNotePanel(null);
+      window.getSelection()?.removeAllRanges();
+      setSelection(null);
+    } catch (error) {
+      setNotePanel({
+        ...panel,
+        status: "error",
+        error: `저장 실패: ${(error as Error).message || String(error)}`,
+      });
+    }
+  }
+
   useEffect(() => {
     function onHighlightShortcut(event: KeyboardEvent) {
       if (!shouldHighlightSelection(event)) return;
@@ -602,6 +662,16 @@ export function LearningSelectionLookup({
           </button>
           <button
             type="button"
+            className="note-action"
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => openNote()}
+            aria-label="노트 추가"
+            title="노트 추가"
+          >
+            <StickyNote size={20} />
+          </button>
+          <button
+            type="button"
             className="lookup-action"
             onMouseDown={(event) => event.preventDefault()}
             onClick={() => void runLookup("lookup")}
@@ -629,6 +699,15 @@ export function LearningSelectionLookup({
           onSearch={(queryText) => void searchLookupResult(lookupPanel, queryText)}
           onClose={closePanel}
           onMove={(x, y) => setLookupPanel((current) => (current ? { ...current, x, y } : current))}
+        />
+      ) : null}
+      {notePanel ? (
+        <NotePopover
+          panel={notePanel}
+          onChange={(note) => setNotePanel((current) => current ? { ...current, note, status: "editing", error: undefined } : current)}
+          onSave={() => void saveNote(notePanel)}
+          onClose={() => setNotePanel(null)}
+          onMove={(x, y) => setNotePanel((current) => current ? { ...current, x, y } : current)}
         />
       ) : null}
       {sideChat ? (
@@ -663,6 +742,88 @@ export function LearningSelectionLookup({
         </div>
       ) : null}
     </>
+  );
+}
+
+function NotePopover({
+  panel,
+  onChange,
+  onSave,
+  onClose,
+  onMove,
+}: {
+  panel: NotePanelState;
+  onChange: (note: string) => void;
+  onSave: () => void;
+  onClose: () => void;
+  onMove: (x: number, y: number) => void;
+}) {
+  const dragRef = useRef<{ offsetX: number; offsetY: number } | null>(null);
+  const [dragging, setDragging] = useState(false);
+
+  useEffect(() => {
+    if (!dragging) return;
+    function onPointerMove(event: globalThis.PointerEvent) {
+      const drag = dragRef.current;
+      if (!drag) return;
+      const next = clampPoint(event.clientX - drag.offsetX, event.clientY - drag.offsetY);
+      onMove(next.x, next.y);
+    }
+    function onPointerUp() {
+      dragRef.current = null;
+      setDragging(false);
+    }
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+    window.addEventListener("pointercancel", onPointerUp);
+    return () => {
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+      window.removeEventListener("pointercancel", onPointerUp);
+    };
+  }, [dragging, onMove]);
+
+  function startDrag(event: PointerEvent<HTMLElement>) {
+    if ((event.target as Element).closest("button, textarea")) return;
+    event.preventDefault();
+    dragRef.current = {
+      offsetX: event.clientX - panel.x,
+      offsetY: event.clientY - panel.y,
+    };
+    setDragging(true);
+  }
+
+  return (
+    <aside className={`note-popover ${dragging ? "dragging" : ""}`} role="dialog" aria-label="선택 텍스트 노트" style={{ left: panel.x, top: panel.y }}>
+      <header onPointerDown={startDrag} title="드래그해서 이동">
+        <div>
+          <span><StickyNote size={15} /> 노트</span>
+          <strong>{panel.selection.text}</strong>
+        </div>
+        <button type="button" onClick={onClose} title="닫기" aria-label="닫기">
+          <X size={15} />
+        </button>
+      </header>
+      <label>
+        <span>이 선택에 남길 말</span>
+        <textarea
+          autoFocus
+          maxLength={5000}
+          rows={7}
+          value={panel.note}
+          onChange={(event) => onChange(event.target.value)}
+          placeholder="나중에 다시 볼 생각이나 질문, 연결할 내용을 적어보세요."
+        />
+      </label>
+      {panel.error ? <p className="lookup-error">{panel.error}</p> : null}
+      <footer>
+        <small>{panel.note.length.toLocaleString()} / 5,000</small>
+        <button type="button" onClick={onSave} disabled={!panel.note.trim() || panel.status === "saving"}>
+          {panel.status === "saving" ? <Loader2 size={15} className="spin" /> : <Save size={15} />}
+          {panel.status === "saving" ? "저장 중" : "노트 저장"}
+        </button>
+      </footer>
+    </aside>
   );
 }
 

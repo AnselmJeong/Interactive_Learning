@@ -1133,7 +1133,7 @@ function SavedAnnotationCard({
       {result.kind === "define" || result.kind === "lookup" || result.kind === "question" || result.kind === "image" ? (
         <LookupResultBody result={result} />
       ) : result.kind === "note" ? (
-        <p className="lookup-result-summary">{result.note}</p>
+        <MarkdownContent content={result.note} compact />
       ) : (
         <p className="lookup-result-summary">표시된 텍스트입니다.</p>
       )}

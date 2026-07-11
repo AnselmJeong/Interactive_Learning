@@ -20,7 +20,9 @@ function annotation(kind: MaterialAnnotation["kind"]): MaterialAnnotation {
     normalizedText: "selected text",
     result: kind === "highlight"
       ? { kind: "highlight", style: "yellow" }
-      : {
+      : kind === "note"
+        ? { kind: "note", note: "my note" }
+        : {
           kind: "lookup",
           title: "selected text",
           body: "summary",
@@ -52,6 +54,15 @@ describe("annotation inline links", () => {
     expect(inlineAnnotationTagName(highlight)).toBe("mark");
     expect(inlineClasses(highlight, null)).toContain("annotation-inline-mark");
     expect(inlineClasses(highlight, null)).not.toContain("annotation-inline-link");
+  });
+
+  test("renders notes as interactive links to their annotation card", () => {
+    const note = annotation("note");
+
+    expect(isInteractiveInlineAnnotation(note)).toBe(true);
+    expect(inlineAnnotationTagName(note)).toBe("a");
+    expect(inlineClasses(note, null)).toContain("annotation-inline-link");
+    expect(inlineClasses(note, null)).toContain("annotation-kind-note");
   });
 
   test("starts annotation ranges in the following text node at paragraph boundaries", () => {

@@ -393,7 +393,7 @@ function ChatSavedAnnotationCard({
           </div>
         ) : null
       ) : result.kind === "note" ? (
-        <p>{result.note}</p>
+        <MarkdownContent content={result.note} compact />
       ) : (
         <p>저장된 표시입니다.</p>
       )}
