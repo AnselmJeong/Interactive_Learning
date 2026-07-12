@@ -13,11 +13,19 @@ import tempfile
 from pathlib import Path
 
 from preppy import __version__
-from preppy.models import FiguresIndex, Manifest, OutputPaths, PreppyDocument
+from preppy.models import (
+    FiguresIndex,
+    Manifest,
+    OutputPaths,
+    PreppyDocument,
+    TablesIndex,
+)
 from preppy.paths import output_paths
 
 
-def write_source_pack(document: PreppyDocument, output_dir: Path, *, overwrite: bool = False) -> None:
+def write_source_pack(
+    document: PreppyDocument, output_dir: Path, *, overwrite: bool = False
+) -> None:
     output_dir = output_dir.resolve()
     if output_dir.exists():
         if not overwrite:
@@ -25,10 +33,14 @@ def write_source_pack(document: PreppyDocument, output_dir: Path, *, overwrite: 
                 f"Output directory already exists: {output_dir}. Use --overwrite to replace it."
             )
         if not output_dir.is_dir():
-            raise NotADirectoryError(f"Output path exists and is not a directory: {output_dir}")
+            raise NotADirectoryError(
+                f"Output path exists and is not a directory: {output_dir}"
+            )
 
     output_dir.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix=".preppy-build-", dir=output_dir.parent) as tmp:
+    with tempfile.TemporaryDirectory(
+        prefix=".preppy-build-", dir=output_dir.parent
+    ) as tmp:
         staging = Path(tmp) / output_dir.name
         _write_into(document, staging)
 
@@ -59,11 +71,18 @@ def _write_into(document: PreppyDocument, root: Path) -> None:
     figures_index = FiguresIndex(figures=[figure.meta for figure in document.figures])
     _write_json(paths["figures"], figures_index.model_dump(mode="json"))
 
-    diagnostics_data = document.diagnostics.model_dump(mode="json") if document.diagnostics else {}
+    tables_index = TablesIndex(tables=document.tables)
+    _write_json(paths["tables"], tables_index.model_dump(mode="json"))
+
+    diagnostics_data = (
+        document.diagnostics.model_dump(mode="json") if document.diagnostics else {}
+    )
     _write_json(paths["diagnostics"], diagnostics_data)
 
     _write_json(paths["document"], document.document_model.model_dump(mode="json"))
 
 
 def _write_json(path: Path, data: object) -> None:
-    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    path.write_text(
+        json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
+    )

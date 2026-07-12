@@ -12,6 +12,7 @@ import type {
   NoteResult,
   QuestionThreadResult,
   QualityStatus,
+  DocumentType,
   SourceType,
   TextSelectionAnchor,
 } from "./artifact-types";
@@ -37,6 +38,7 @@ export type SourceSummary = {
   projectId: string;
   title: string;
   sourceType: SourceType;
+  documentType: DocumentType;
   originalFileName: string;
   qualityStatus: QualityStatus;
   learningStatus: "not_started" | "in_progress" | "completed";
@@ -60,6 +62,7 @@ export type PreparedSourceImport = {
   projectId: string;
   sourceName: string;
   sourcePath: string;
+  documentType: DocumentType;
   itemCount: number;
   items: PreparedSourceImportItem[];
 };
@@ -127,8 +130,8 @@ export type AppRPC = {
       "projects.cancelTransferImport": { params: { importId: string }; response: boolean };
       "projects.openFolder": { params: { projectId?: string }; response: boolean };
       "app.openExternal": { params: { url: string }; response: boolean };
-      "sources.importPaths": { params: { projectId: string; paths: string[] }; response: SourceSummary[] };
-      "sources.prepareImport": { params: { projectId: string; paths: string[] }; response: PreparedSourceImport };
+      "sources.importPaths": { params: { projectId: string; paths: string[]; documentType?: DocumentType }; response: SourceSummary[] };
+      "sources.prepareImport": { params: { projectId: string; paths: string[]; documentType?: DocumentType }; response: PreparedSourceImport };
       "sources.commitPreparedImport": { params: { projectId: string; importId: string; selectedItemIds: string[] }; response: SourceSummary[] };
       "sources.cancelPreparedImport": { params: { projectId: string; importId: string }; response: boolean };
       "sources.openDialog": { params: { projectId: string }; response: string[] };

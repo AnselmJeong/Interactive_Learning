@@ -70,6 +70,37 @@ describe("project database migrations", () => {
     expect(materialColumns).toContain("overview_json");
   });
 
+  test("adds book-default document semantics to legacy sources", async () => {
+    const appData = join(tempRoot, "learnie");
+    await mkdir(appData, { recursive: true });
+    const legacyDb = new Database(join(appData, "projects.sqlite"), { create: true });
+    legacyDb.exec(`
+      CREATE TABLE project_sources (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        title TEXT NOT NULL,
+        source_type TEXT NOT NULL,
+        original_file_name TEXT NOT NULL,
+        original_file_path TEXT,
+        imported_file_path TEXT NOT NULL,
+        content_hash TEXT NOT NULL,
+        manifest_path TEXT,
+        chunks_path TEXT,
+        quality_status TEXT NOT NULL DEFAULT 'pending',
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      INSERT INTO project_sources
+      (id, project_id, title, source_type, original_file_name, imported_file_path, content_hash, created_at, updated_at)
+      VALUES ('legacy-source', 'legacy-project', 'Legacy Book', 'markdown', 'book.md', 'book.md', 'hash', 1, 1);
+    `);
+    legacyDb.close();
+
+    const row = getDb().query<{ document_type: string }, []>("SELECT document_type FROM project_sources WHERE id = 'legacy-source'").get();
+
+    expect(row?.document_type).toBe("book");
+  });
+
   test("moves legacy prepared batch rows into immutable message sets and binds the session", () => {
     const now = Date.now();
     const database = getDb();

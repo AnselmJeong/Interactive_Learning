@@ -60,4 +60,25 @@ describe("SourceLearningPreview", () => {
     expect(html).toContain(">Renamed source</h2>");
     expect(html).not.toContain(">STALE TITLE</h2>");
   });
+
+  test("shows only the topic overview for an article and hides module details", () => {
+    const artifacts = {
+      overview: { paragraph: "이 논문은 소셜 미디어 보상과 우울 관련 행동의 관계를 연구한다." },
+      coursePlan: {
+        title: "Article",
+        estimatedTimeMinutes: 15,
+        modules: [{ id: "module-1", title: "Results" }],
+      },
+      sourceChunks: [{ id: "chunk-1" }],
+    } as unknown as MaterialArtifacts;
+
+    const html = renderToStaticMarkup(createElement(SourceLearningPreview, { artifacts, documentType: "article" }));
+
+    expect(html).toContain("이 논문이 다루는 것");
+    expect(html).toContain(artifacts.overview.paragraph);
+    expect(html).toContain(" Article</span>");
+    expect(html).not.toContain("학습 흐름");
+    expect(html).not.toContain("modules");
+    expect(html).not.toContain(">Results</strong>");
+  });
 });

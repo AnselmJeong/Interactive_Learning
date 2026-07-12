@@ -27,6 +27,7 @@ export function getDb() {
       project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
       title TEXT NOT NULL,
       source_type TEXT NOT NULL CHECK (source_type IN ('markdown', 'pdf', 'text')),
+      document_type TEXT NOT NULL DEFAULT 'book' CHECK (document_type IN ('book', 'article')),
       original_file_name TEXT NOT NULL,
       original_file_path TEXT,
       imported_file_path TEXT NOT NULL,
@@ -305,6 +306,10 @@ export function getDb() {
   }
   if (!projectColumns.includes("learning_level")) {
     db.exec("ALTER TABLE projects ADD COLUMN learning_level TEXT NOT NULL DEFAULT 'medium';");
+  }
+  const sourceColumns = db.query<{ name: string }, []>("PRAGMA table_info(project_sources)").all().map((column) => column.name);
+  if (!sourceColumns.includes("document_type")) {
+    db.exec("ALTER TABLE project_sources ADD COLUMN document_type TEXT NOT NULL DEFAULT 'book' CHECK (document_type IN ('book', 'article'));");
   }
   const messageColumns = db.query<{ name: string }, []>("PRAGMA table_info(learning_messages)").all().map((column) => column.name);
   if (!messageColumns.includes("choices_json")) {

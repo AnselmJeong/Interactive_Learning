@@ -9,6 +9,7 @@ diagnostics per PRD section 11 ("Fallbacks ... must be visible in diagnostics").
 
 from __future__ import annotations
 
+import re
 import time
 from pathlib import Path
 
@@ -24,6 +25,7 @@ from preppy.models import (
     ChapterDetectionDiagnostics,
     ConversionDiagnostics,
     Diagnostics,
+    DocumentType,
     DocumentItem,
     DocumentModel,
     ErrorRecord,
@@ -40,7 +42,14 @@ from preppy.paths import asset_relpath, chapter_relpath
 from preppy.split.slug import slugify
 
 
-def convert(pdf_path: Path, *, reason: str, elapsed_seconds: float = 0.0) -> PreppyDocument:
+def convert(
+    pdf_path: Path,
+    *,
+    reason: str,
+    elapsed_seconds: float = 0.0,
+    document_type: DocumentType = "book",
+    include_backmatter: bool = False,
+) -> PreppyDocument:
     start_time = time.monotonic()
     doc = pymupdf.open(str(pdf_path))
     try:
@@ -50,6 +59,9 @@ def convert(pdf_path: Path, *, reason: str, elapsed_seconds: float = 0.0) -> Pre
 
         pages_text = [page.get_text("text") for page in doc]
         body_text = "\n\n".join(text.strip() for text in pages_text if text.strip())
+        references_removed = False
+        if document_type == "article" and not include_backmatter:
+            body_text, references_removed = _strip_article_references(body_text)
 
         exporter = FigureExporter()
         figures: list[FigureAsset] = []
@@ -88,7 +100,9 @@ def convert(pdf_path: Path, *, reason: str, elapsed_seconds: float = 0.0) -> Pre
                         height=exported.height,
                         sha256=exported.sha256,
                     )
-                    figures.append(FigureAsset(meta=figure_meta, image_bytes=image_bytes))
+                    figures.append(
+                        FigureAsset(meta=figure_meta, image_bytes=image_bytes)
+                    )
                 figure_ids.append(exported.figure_id)
 
         markdown = render_chapter_markdown(title, body_text)
@@ -96,13 +110,17 @@ def convert(pdf_path: Path, *, reason: str, elapsed_seconds: float = 0.0) -> Pre
         chapter_meta = Chapter(
             index=1,
             title=title,
-            kind="chapter",
+            kind="article" if document_type == "article" else "chapter",
             slug=slug,
             path=chapter_relpath(1, slug),
             source_locator=SourceLocator(page_start=1, page_end=doc.page_count),
             char_count=len(body_text),
             figure_ids=figure_ids,
-            boundary_reason="fallback-pymupdf-whole-document",
+            boundary_reason=(
+                "fallback-pymupdf-article"
+                if document_type == "article"
+                else "fallback-pymupdf-whole-document"
+            ),
             boundary_confidence=0.2,
         )
         chapters = [ChapterContent(meta=chapter_meta, markdown=markdown)]
@@ -112,15 +130,27 @@ def convert(pdf_path: Path, *, reason: str, elapsed_seconds: float = 0.0) -> Pre
             filename=pdf_path.name,
             type="pdf",
             sha256=sha256_file(pdf_path),
+            document_type=document_type,
             title=title,
             author=author,
+            authors=[
+                part.strip()
+                for part in re.split(r";|\band\b", author or "", flags=re.IGNORECASE)
+                if part.strip()
+            ],
+            year=_metadata_year(metadata.get("creationDate")),
             language=None,
         )
 
         document_model = DocumentModel(
             source_type="pdf",
             items=[DocumentItem(kind="fallback-whole-document", text=title)],
-            meta={"num_pages": doc.page_count, "engine": "pymupdf-fallback"},
+            meta={
+                "num_pages": doc.page_count,
+                "engine": "pymupdf-fallback",
+                "document_type": document_type,
+                "references_removed": references_removed,
+            },
         )
 
         elapsed = elapsed_seconds + (time.monotonic() - start_time)
@@ -129,13 +159,20 @@ def convert(pdf_path: Path, *, reason: str, elapsed_seconds: float = 0.0) -> Pre
             conversion=ConversionDiagnostics(
                 input_type="pdf",
                 engine="fallback_pymupdf",
-                options={},
+                options={
+                    "document_type": document_type,
+                    "references_removed": references_removed,
+                },
                 elapsed_seconds=elapsed,
                 fallback_used=True,
                 fallback_reason=reason,
             ),
             chapter_detection=ChapterDetectionDiagnostics(
-                method="fallback-single-chapter",
+                method=(
+                    "fallback-single-article"
+                    if document_type == "article"
+                    else "fallback-single-chapter"
+                ),
                 candidates=[],
                 selected_count=1,
             ),
@@ -166,7 +203,9 @@ def convert(pdf_path: Path, *, reason: str, elapsed_seconds: float = 0.0) -> Pre
                     )
                 ],
             ),
-            errors=[ErrorRecord(message=f"Docling conversion failed: {reason}", fatal=False)],
+            errors=[
+                ErrorRecord(message=f"Docling conversion failed: {reason}", fatal=False)
+            ],
         )
 
         return PreppyDocument(
@@ -191,7 +230,29 @@ def _image_bbox(page: pymupdf.Page, xref: int) -> list[float] | None:
     return [float(rect.x0), float(rect.y0), float(rect.x1), float(rect.y1)]
 
 
-def convert_unreadable(pdf_path: Path, *, reason: str, elapsed_seconds: float = 0.0) -> PreppyDocument:
+def _strip_article_references(text: str) -> tuple[str, bool]:
+    match = re.search(
+        r"(?im)^\s*(?:references?|bibliography|works cited|literature cited|"
+        r"literaturverzeichnis|références|referencias|참고\s*문헌|参考文献)\s*[:.]?\s*$",
+        text,
+    )
+    if not match or match.start() < len(text) // 5:
+        return text, False
+    return text[: match.start()].rstrip(), True
+
+
+def _metadata_year(value: str | None) -> int | None:
+    match = re.search(r"\b(?:19|20)\d{2}\b", value or "")
+    return int(match.group(0)) if match else None
+
+
+def convert_unreadable(
+    pdf_path: Path,
+    *,
+    reason: str,
+    elapsed_seconds: float = 0.0,
+    document_type: DocumentType = "book",
+) -> PreppyDocument:
     """Last-resort result when even the PyMuPDF fallback cannot open the file.
 
     Returns a structurally valid but empty ``PreppyDocument`` (zero chapters,
@@ -209,6 +270,7 @@ def convert_unreadable(pdf_path: Path, *, reason: str, elapsed_seconds: float = 
         filename=pdf_path.name,
         type="pdf",
         sha256=digest,
+        document_type=document_type,
         title=pdf_path.stem,
     )
     diagnostics = Diagnostics(
@@ -219,7 +281,9 @@ def convert_unreadable(pdf_path: Path, *, reason: str, elapsed_seconds: float = 
             fallback_used=True,
             fallback_reason=reason,
         ),
-        chapter_detection=ChapterDetectionDiagnostics(method="unreadable", candidates=[], selected_count=0),
+        chapter_detection=ChapterDetectionDiagnostics(
+            method="unreadable", candidates=[], selected_count=0
+        ),
         figures=FigureDiagnostics(),
         quality=QualityDiagnostics(
             warnings=[

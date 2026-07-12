@@ -13,8 +13,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-from preppy.models import FiguresIndex, Manifest
-from preppy.paths import DIAGNOSTICS_FILENAME, DOCUMENT_FILENAME, FIGURES_FILENAME, MANIFEST_FILENAME
+from preppy.models import FiguresIndex, Manifest, TablesIndex
+from preppy.paths import (
+    DIAGNOSTICS_FILENAME,
+    DOCUMENT_FILENAME,
+    FIGURES_FILENAME,
+    MANIFEST_FILENAME,
+    TABLES_FILENAME,
+)
 
 _IMAGE_LINK_RE = re.compile(r"!\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 _REMOTE_SCHEME_RE = re.compile(r"^(https?://|data:)", re.IGNORECASE)
@@ -33,6 +39,7 @@ class InspectReport:
     output_dir: Path
     chapter_count: int = 0
     figure_count: int = 0
+    table_count: int = 0
     issues: list[InspectIssue] = field(default_factory=list)
 
     @property
@@ -52,11 +59,14 @@ def inspect_output(output_dir: Path) -> InspectReport:
     report = InspectReport(output_dir=output_dir)
 
     if not output_dir.is_dir():
-        report.issues.append(InspectIssue("error", f"Output directory does not exist: {output_dir}"))
+        report.issues.append(
+            InspectIssue("error", f"Output directory does not exist: {output_dir}")
+        )
         return report
 
     manifest = _load_manifest(output_dir, report)
     figures_index = _load_figures(output_dir, report)
+    tables_index = _load_tables(output_dir, report)
     _check_diagnostics_present(output_dir, report)
 
     if manifest is None:
@@ -64,9 +74,12 @@ def inspect_output(output_dir: Path) -> InspectReport:
 
     report.chapter_count = len(manifest.chapters)
     report.figure_count = len(figures_index.figures) if figures_index else 0
+    report.table_count = len(tables_index.tables) if tables_index else 0
 
     if manifest.source.type not in ("pdf", "epub"):
-        report.issues.append(InspectIssue("error", f"Unsupported source type: {manifest.source.type!r}"))
+        report.issues.append(
+            InspectIssue("error", f"Unsupported source type: {manifest.source.type!r}")
+        )
 
     if not manifest.chapters:
         report.issues.append(InspectIssue("error", "Manifest lists zero chapters."))
@@ -80,6 +93,8 @@ def inspect_output(output_dir: Path) -> InspectReport:
         figure_ids = _check_figure_ids(figures_index, report)
         _check_figure_assets(figures_index, output_dir, report)
     _check_figure_id_references(manifest, figure_ids, report)
+    table_ids = _check_table_ids(tables_index, report) if tables_index else set()
+    _check_table_id_references(manifest, table_ids, report)
 
     return report
 
@@ -92,13 +107,18 @@ def _load_manifest(output_dir: Path, report: InspectReport) -> Manifest | None:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        report.issues.append(InspectIssue("error", f"Could not parse {MANIFEST_FILENAME}: {exc}"))
+        report.issues.append(
+            InspectIssue("error", f"Could not parse {MANIFEST_FILENAME}: {exc}")
+        )
         return None
     try:
         return Manifest.model_validate(data)
     except Exception as exc:  # noqa: BLE001 - surfaced as an inspect finding, not a crash
         report.issues.append(
-            InspectIssue("error", f"{MANIFEST_FILENAME} does not match the manifest schema: {exc}")
+            InspectIssue(
+                "error",
+                f"{MANIFEST_FILENAME} does not match the manifest schema: {exc}",
+            )
         )
         return None
 
@@ -111,13 +131,34 @@ def _load_figures(output_dir: Path, report: InspectReport) -> FiguresIndex | Non
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        report.issues.append(InspectIssue("error", f"Could not parse {FIGURES_FILENAME}: {exc}"))
+        report.issues.append(
+            InspectIssue("error", f"Could not parse {FIGURES_FILENAME}: {exc}")
+        )
         return None
     try:
         return FiguresIndex.model_validate(data)
     except Exception as exc:  # noqa: BLE001
         report.issues.append(
-            InspectIssue("error", f"{FIGURES_FILENAME} does not match the figures schema: {exc}")
+            InspectIssue(
+                "error", f"{FIGURES_FILENAME} does not match the figures schema: {exc}"
+            )
+        )
+        return None
+
+
+def _load_tables(output_dir: Path, report: InspectReport) -> TablesIndex | None:
+    path = output_dir / TABLES_FILENAME
+    if not path.exists():
+        report.issues.append(InspectIssue("warning", f"Missing {TABLES_FILENAME}"))
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        return TablesIndex.model_validate(data)
+    except Exception as exc:  # noqa: BLE001
+        report.issues.append(
+            InspectIssue(
+                "error", f"{TABLES_FILENAME} does not match the tables schema: {exc}"
+            )
         )
         return None
 
@@ -130,12 +171,17 @@ def _check_diagnostics_present(output_dir: Path, report: InspectReport) -> None:
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        report.issues.append(InspectIssue("error", f"Could not parse {DIAGNOSTICS_FILENAME}: {exc}"))
+        report.issues.append(
+            InspectIssue("error", f"Could not parse {DIAGNOSTICS_FILENAME}: {exc}")
+        )
         return
     for error in data.get("errors", []):
         if error.get("fatal"):
             report.issues.append(
-                InspectIssue("error", f"Conversion reported a fatal error: {error.get('message')}")
+                InspectIssue(
+                    "error",
+                    f"Conversion reported a fatal error: {error.get('message')}",
+                )
             )
     if not (output_dir / DOCUMENT_FILENAME).exists():
         report.issues.append(InspectIssue("warning", f"Missing {DOCUMENT_FILENAME}"))
@@ -146,19 +192,28 @@ def _check_chapter_indexes(manifest: Manifest, report: InspectReport) -> None:
     expected = list(range(1, len(indexes) + 1))
     if indexes != expected:
         report.issues.append(
-            InspectIssue("error", f"Chapter indexes are not contiguous starting at 1: {indexes}")
+            InspectIssue(
+                "error", f"Chapter indexes are not contiguous starting at 1: {indexes}"
+            )
         )
 
 
-def _check_chapter_paths(manifest: Manifest, output_dir: Path, report: InspectReport) -> None:
+def _check_chapter_paths(
+    manifest: Manifest, output_dir: Path, report: InspectReport
+) -> None:
     seen: set[str] = set()
     for chapter in manifest.chapters:
         if chapter.path in seen:
-            report.issues.append(InspectIssue("error", f"Duplicate chapter path: {chapter.path}"))
+            report.issues.append(
+                InspectIssue("error", f"Duplicate chapter path: {chapter.path}")
+            )
         seen.add(chapter.path)
         if not (output_dir / chapter.path).is_file():
             report.issues.append(
-                InspectIssue("error", f"Chapter {chapter.index} path does not exist: {chapter.path}")
+                InspectIssue(
+                    "error",
+                    f"Chapter {chapter.index} path does not exist: {chapter.path}",
+                )
             )
 
 
@@ -166,20 +221,40 @@ def _check_figure_ids(figures_index: FiguresIndex, report: InspectReport) -> set
     seen: set[str] = set()
     for figure in figures_index.figures:
         if figure.id in seen:
-            report.issues.append(InspectIssue("error", f"Duplicate figure id: {figure.id}"))
+            report.issues.append(
+                InspectIssue("error", f"Duplicate figure id: {figure.id}")
+            )
         seen.add(figure.id)
     return seen
 
 
-def _check_figure_assets(figures_index: FiguresIndex, output_dir: Path, report: InspectReport) -> None:
+def _check_figure_assets(
+    figures_index: FiguresIndex, output_dir: Path, report: InspectReport
+) -> None:
     for figure in figures_index.figures:
         if not (output_dir / figure.asset_path).is_file():
             report.issues.append(
-                InspectIssue("error", f"Figure {figure.id} asset does not exist: {figure.asset_path}")
+                InspectIssue(
+                    "error",
+                    f"Figure {figure.id} asset does not exist: {figure.asset_path}",
+                )
             )
 
 
-def _check_markdown_image_links(manifest: Manifest, output_dir: Path, report: InspectReport) -> None:
+def _check_table_ids(tables_index: TablesIndex, report: InspectReport) -> set[str]:
+    seen: set[str] = set()
+    for table in tables_index.tables:
+        if table.id in seen:
+            report.issues.append(
+                InspectIssue("error", f"Duplicate table id: {table.id}")
+            )
+        seen.add(table.id)
+    return seen
+
+
+def _check_markdown_image_links(
+    manifest: Manifest, output_dir: Path, report: InspectReport
+) -> None:
     for chapter in manifest.chapters:
         chapter_path = output_dir / chapter.path
         if not chapter_path.is_file():
@@ -199,12 +274,29 @@ def _check_markdown_image_links(manifest: Manifest, output_dir: Path, report: In
                 )
 
 
-def _check_figure_id_references(manifest: Manifest, figure_ids: set[str], report: InspectReport) -> None:
+def _check_figure_id_references(
+    manifest: Manifest, figure_ids: set[str], report: InspectReport
+) -> None:
     for chapter in manifest.chapters:
         for figure_id in chapter.figure_ids:
             if figure_id not in figure_ids:
                 report.issues.append(
                     InspectIssue(
-                        "error", f"Chapter {chapter.index} references unknown figure id: {figure_id}"
+                        "error",
+                        f"Chapter {chapter.index} references unknown figure id: {figure_id}",
+                    )
+                )
+
+
+def _check_table_id_references(
+    manifest: Manifest, table_ids: set[str], report: InspectReport
+) -> None:
+    for chapter in manifest.chapters:
+        for table_id in chapter.table_ids:
+            if table_id not in table_ids:
+                report.issues.append(
+                    InspectIssue(
+                        "error",
+                        f"Chapter {chapter.index} references unknown table id: {table_id}",
                     )
                 )

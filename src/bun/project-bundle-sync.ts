@@ -4,7 +4,7 @@ import { basename, dirname, join } from "node:path";
 import { getDb } from "./project-db";
 import { dataPath } from "./paths";
 import { listMaterialAnnotations, replaceMaterialAnnotations } from "./annotation-store";
-import type { MaterialAnnotation, MaterialManifest, MaterialOverview, QualityStatus, SourceManifest, SourceType } from "../shared/artifact-types";
+import type { DocumentType, MaterialAnnotation, MaterialManifest, MaterialOverview, QualityStatus, SourceManifest, SourceType } from "../shared/artifact-types";
 import type { ProjectSummary } from "../shared/rpc-types";
 import type { SessionSnapshot, TutorMessage } from "../shared/tutor-types";
 import { normalizeLearningLevel, type LearningLevel } from "../shared/learning-levels";
@@ -100,6 +100,10 @@ function qualityStatus(value: unknown): QualityStatus {
 
 function sourceType(value: unknown): SourceType {
   return value === "markdown" || value === "pdf" || value === "text" ? value : "text";
+}
+
+function documentType(value: unknown): DocumentType {
+  return value === "article" ? "article" : "book";
 }
 
 function titleFromFile(path: string) {
@@ -380,6 +384,7 @@ async function importSources(projectDir: string, projectId: string) {
     const importedPath = await firstExistingFile(dir, ["original.md", "original.pdf", "original.txt"]);
     const originalFileName = importedPath ? basename(importedPath) : basename(manifest.originalPath || `${manifest.title || sourceId}.txt`);
     const type = sourceType(manifest.sourceType);
+    const sourceDocumentType = documentType(manifest.documentType);
     const createdAt = timestamp(manifest.importedAt);
     const updatedAt = timestamp(manifest.updatedAt || manifest.importedAt);
     const contentHash = await hashProjectFile(importedPath, [manifestPath, chunksPath]);
@@ -388,12 +393,13 @@ async function importSources(projectDir: string, projectId: string) {
       .query(
         `INSERT INTO project_sources
          (id, project_id, title, source_type, original_file_name, original_file_path, imported_file_path,
-          content_hash, manifest_path, chunks_path, quality_status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          document_type, content_hash, manifest_path, chunks_path, quality_status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            project_id = excluded.project_id,
            title = excluded.title,
            source_type = excluded.source_type,
+           document_type = excluded.document_type,
            original_file_name = excluded.original_file_name,
            original_file_path = excluded.original_file_path,
            imported_file_path = excluded.imported_file_path,
@@ -411,6 +417,7 @@ async function importSources(projectDir: string, projectId: string) {
         originalFileName,
         manifest.originalPath || null,
         importedPath || manifestPath,
+        sourceDocumentType,
         contentHash,
         manifestPath,
         existsSync(chunksPath) ? chunksPath : null,

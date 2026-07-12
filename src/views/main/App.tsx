@@ -3,7 +3,7 @@ import { BookOpen, Check, Download, Info, Loader2, LocateFixed, MessageSquare, M
 import type { MaterialSummary, PreparedSourceImport, ProjectSummary, SourceSummary } from "../../shared/rpc-types";
 import type { ProjectTransferExport, ProjectTransferPreview, SessionReadableExport } from "../../shared/project-transfer-types";
 import type { AppSettings, AiProviderStatus, ChatSubmitShortcut, ProviderModel } from "../../shared/settings-types";
-import type { MaterialAnnotation, MaterialArtifacts } from "../../shared/artifact-types";
+import type { DocumentType, MaterialAnnotation, MaterialArtifacts } from "../../shared/artifact-types";
 import type { LearningMessageSetSummary, SessionSnapshot, SessionSummary, SourceRef, TutorContext, TutorMessage, TutorPrefetchStatus } from "../../shared/tutor-types";
 import { displayableCourseTitle, displayableHeadingPath, displayableModuleTitle, displayableOutlineTitle, titleCasedSourceTitle } from "../../shared/display-title";
 import { SettingsModal } from "./components/SettingsModal";
@@ -16,6 +16,7 @@ import { NewProjectModal } from "./components/NewProjectModal";
 import { ProjectDropdown } from "./components/ProjectDropdown";
 import { ProjectTransferImportModal } from "./components/ProjectTransferImportModal";
 import { SourceImportModal } from "./components/SourceImportModal";
+import { SourceDocumentTypeModal } from "./components/SourceDocumentTypeModal";
 import { AboutModal } from "./components/AboutModal";
 import { SourceFigureCard } from "./components/SourceFigureCard";
 import { LearningBuddy } from "./components/LearningBuddy";
@@ -751,6 +752,7 @@ export function App({ request }: { request: RpcRequest }) {
   const [sessionExportBusyId, setSessionExportBusyId] = useState<string | null>(null);
   const [sourceNotice, setSourceNotice] = useState("");
   const [preparedImport, setPreparedImport] = useState<PreparedSourceImport | null>(null);
+  const [pendingSourcePaths, setPendingSourcePaths] = useState<string[]>([]);
   const [expandedSourceMessages, setExpandedSourceMessages] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [batchActionBusy, setBatchActionBusy] = useState(false);
@@ -1153,10 +1155,27 @@ export function App({ request }: { request: RpcRequest }) {
         setSourceNotice("No files selected");
         return;
       }
-      setBusy(true);
-      const prepared = (await request("sources.prepareImport", { projectId: activeProject.id, paths })) as PreparedSourceImport;
-      setPreparedImport(prepared);
+      setPendingSourcePaths(paths);
       setSourceNotice("");
+    } catch (error) {
+      setSourceNotice(`Import failed: ${(error as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function prepareSelectedSources(documentType: DocumentType) {
+    if (!activeProject || !pendingSourcePaths.length) return;
+    setBusy(true);
+    setSourceNotice("");
+    try {
+      const prepared = (await request("sources.prepareImport", {
+        projectId: activeProject.id,
+        paths: pendingSourcePaths,
+        documentType,
+      })) as PreparedSourceImport;
+      setPreparedImport(prepared);
+      setPendingSourcePaths([]);
     } catch (error) {
       setSourceNotice(`Import failed: ${(error as Error).message}`);
     } finally {
@@ -1900,6 +1919,7 @@ export function App({ request }: { request: RpcRequest }) {
   const visibleVisual = isTeachingGuideVisual(context?.visual) ? null : context?.visual;
   const activeSourceId = activeMaterial && activeMaterial.sourceIds.length === 1 ? activeMaterial.sourceIds[0] : null;
   const activeSource = activeSourceId ? state.sources.find((source) => source.id === activeSourceId) || null : null;
+  const isArticlePreview = activeSource?.documentType === "article" && !session;
   const sourceRefById = useMemo(() => {
     const refs = new Map<string, SourceRef>();
     for (const ref of context?.sourceRefs || []) refs.set(ref.chunkId, ref);
@@ -2297,8 +2317,8 @@ export function App({ request }: { request: RpcRequest }) {
           <section className="course-strip">
             <div className="course-strip-summary">
               <div className="course-outline-stat">
-                <span>Course outline</span>
-                <strong>{artifacts.coursePlan.modules.length} modules</strong>
+                <span>{isArticlePreview ? "Article" : "Course outline"}</span>
+                <strong>{isArticlePreview ? "주제 요약" : `${artifacts.coursePlan.modules.length} modules`}</strong>
               </div>
               <div className="course-progress">
                 <div className="course-progress-row preparation-progress">
@@ -2480,7 +2500,11 @@ export function App({ request }: { request: RpcRequest }) {
               ) : null}
             </>
           ) : artifacts ? (
-            <SourceLearningPreview artifacts={artifacts} title={activeSource ? displayableSourceName(activeSource) : undefined} />
+            <SourceLearningPreview
+              artifacts={artifacts}
+              title={activeSource ? displayableSourceName(activeSource) : undefined}
+              documentType={activeSource?.documentType || "book"}
+            />
           ) : (
             <div className="empty-state">
               <h3>Learning Workspace</h3>
@@ -2551,7 +2575,7 @@ export function App({ request }: { request: RpcRequest }) {
           </div>
           {activeMaterial ? (
             <>
-              <div className="inspector-tabs" role="tablist" aria-label="Inspector sections">
+              <div className={`inspector-tabs ${isArticlePreview ? "single" : ""}`} role="tablist" aria-label="Inspector sections">
                 <button
                   type="button"
                   role="tab"
@@ -2562,7 +2586,7 @@ export function App({ request }: { request: RpcRequest }) {
                 >
                   Sessions
                 </button>
-                <button
+                {!isArticlePreview ? <button
                   type="button"
                   role="tab"
                   aria-selected={inspectorTab === "modules"}
@@ -2571,9 +2595,9 @@ export function App({ request }: { request: RpcRequest }) {
                   onClick={() => setInspectorTab("modules")}
                 >
                   Modules
-                </button>
+                </button> : null}
               </div>
-              {inspectorTab === "modules" ? (
+              {inspectorTab === "modules" && !isArticlePreview ? (
                 <section className="inspector-section inspector-tab-panel" id="inspector-modules-panel" role="tabpanel">
                   <p className="inspector-count">{inspectorModules.length} module{inspectorModules.length === 1 ? "" : "s"}</p>
                   <div className="outline-list">
@@ -2699,6 +2723,14 @@ export function App({ request }: { request: RpcRequest }) {
       ) : null}
       {preparedImport ? (
         <SourceImportModal request={request} prepared={preparedImport} onCancel={cancelPreparedImport} onImported={finishPreparedImport} />
+      ) : null}
+      {pendingSourcePaths.length ? (
+        <SourceDocumentTypeModal
+          paths={pendingSourcePaths}
+          busy={busy}
+          onCancel={() => setPendingSourcePaths([])}
+          onContinue={prepareSelectedSources}
+        />
       ) : null}
       {pendingAnnotationDeletion ? (
         <div className="annotation-delete-undo-toast" role="status">

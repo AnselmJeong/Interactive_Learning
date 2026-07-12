@@ -52,6 +52,30 @@ describe("figure caption curriculum normalization", () => {
 });
 
 describe("material overview", () => {
+  test("uses a topic-only overview prompt for articles", async () => {
+    let requestMessages: ChatParams["messages"] = [];
+    const client = {
+      listModels: async () => [],
+      chatText: async () => "",
+      chatJson: async (params: ChatParams) => {
+        requestMessages = params.messages;
+        return {
+          paragraph: "이 논문은 소셜 미디어에서 받는 반응이 게시 행동과 정신건강의 관계를 이해하는 데 어떤 역할을 하는지 다룬다. 연구진은 실제 이용 기록과 우울 관련 측정을 함께 살펴보며, 온라인 보상에 대한 행동적 반응을 현실 환경에서 분석하는 접근을 취한다. 이를 통해 소셜 미디어 사용과 정신건강을 연결하는 심리적 과정을 탐색한다.",
+        };
+      },
+    } satisfies AiChatClient;
+    const chunks: SourceChunk[] = [
+      { id: "chunk-1", headingPath: ["Results"], locator: "p. 1", kind: "body", text: "The paper reports detailed numerical findings.", confidence: 1 },
+    ];
+
+    const overview = await generateMaterialOverview("Paper", chunks, { client, model: "test-model" }, "article");
+    const systemPrompt = requestMessages.find((message) => message.role === "system")?.content || "";
+
+    expect(systemPrompt).toContain("세부 결과");
+    expect(systemPrompt).toContain("연구 주제");
+    expect(overview.generatorVersion).toBe("article-overview-v1-topic-only");
+  });
+
   test("sends every source chunk to the model and stores a Korean-only subject summary", async () => {
     const chunks: SourceChunk[] = [
       { id: "chunk-1", headingPath: ["Opening tension"], locator: "p. 1", kind: "body", text: "The source begins by challenging a familiar assumption. It then establishes the central problem.", confidence: 1 },

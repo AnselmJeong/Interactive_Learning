@@ -23,6 +23,7 @@ export function SourceImportModal({
 
   const activeItem = useMemo(() => prepared.items.find((item) => item.id === activeId) || prepared.items[0] || null, [prepared.items, activeId]);
   const selectedCount = selectedIds.size;
+  const isArticle = prepared.documentType === "article";
 
   function toggleItem(item: PreparedSourceImportItem) {
     setSelectedIds((current) => {
@@ -61,7 +62,7 @@ export function SourceImportModal({
           <div>
             <p className="eyebrow">Import Sources</p>
             <h2>{prepared.sourceName}</h2>
-            <p>{prepared.itemCount} markdown files prepared</p>
+            <p>{isArticle ? `${prepared.itemCount} article${prepared.itemCount === 1 ? "" : "s"} prepared` : `${prepared.itemCount} markdown files prepared`}</p>
           </div>
           <button className="icon-button" onClick={() => void onCancel()} disabled={busy} title="닫기">
             <X size={18} />
@@ -69,7 +70,7 @@ export function SourceImportModal({
         </header>
 
         <section className="source-import-body">
-          <aside className="source-import-list" aria-label="Prepared markdown files">
+          <aside className="source-import-list" aria-label={isArticle ? "Prepared articles" : "Prepared markdown files"}>
             <div className="source-import-tools">
               <button type="button" onClick={() => setSelectedIds(new Set(prepared.items.map((item) => item.id)))} disabled={busy}>
                 모두 선택
@@ -146,7 +147,7 @@ export function SourceImportModal({
             취소
           </button>
           <button className="wide-button primary" onClick={() => void commit()} disabled={busy || selectedCount === 0}>
-            {busy ? <Loader2 size={16} className="spin" /> : <Check size={16} />} 선택 소스 가져오기
+            {busy ? <Loader2 size={16} className="spin" /> : <Check size={16} />} {isArticle ? "선택 논문 가져오기" : "선택 소스 가져오기"}
           </button>
         </footer>
       </div>

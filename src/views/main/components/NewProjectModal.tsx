@@ -1,8 +1,10 @@
 import { useState } from "react";
 import { Check, FileText, Loader2, Plus, X } from "lucide-react";
 import type { PreparedSourceImport, ProjectSummary, SourceSummary } from "../../../shared/rpc-types";
+import type { DocumentType } from "../../../shared/artifact-types";
 import { LEARNING_LEVEL_OPTIONS, type LearningLevel } from "../../../shared/learning-levels";
 import { SourceImportModal } from "./SourceImportModal";
+import { SourceDocumentTypeModal } from "./SourceDocumentTypeModal";
 
 type RpcRequest = (method: string, params: unknown) => Promise<unknown>;
 
@@ -24,6 +26,7 @@ export function NewProjectModal({
   const [project, setProject] = useState<ProjectSummary | null>(null);
   const [sources, setSources] = useState<SourceSummary[]>([]);
   const [preparedImport, setPreparedImport] = useState<PreparedSourceImport | null>(null);
+  const [pendingSourcePaths, setPendingSourcePaths] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
 
@@ -53,9 +56,26 @@ export function NewProjectModal({
         setNotice("선택된 파일이 없습니다");
         return;
       }
-      setBusy(true);
-      const prepared = (await request("sources.prepareImport", { projectId: project.id, paths })) as PreparedSourceImport;
+      setPendingSourcePaths(paths);
+    } catch (error) {
+      setNotice((error as Error).message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function prepareSources(documentType: DocumentType) {
+    if (!project || !pendingSourcePaths.length) return;
+    setBusy(true);
+    setNotice("");
+    try {
+      const prepared = (await request("sources.prepareImport", {
+        projectId: project.id,
+        paths: pendingSourcePaths,
+        documentType,
+      })) as PreparedSourceImport;
       setPreparedImport(prepared);
+      setPendingSourcePaths([]);
     } catch (error) {
       setNotice((error as Error).message);
     } finally {
@@ -191,6 +211,14 @@ export function NewProjectModal({
       </div>
       {preparedImport ? (
         <SourceImportModal request={request} prepared={preparedImport} onCancel={cancelPreparedImport} onImported={finishPreparedImport} />
+      ) : null}
+      {pendingSourcePaths.length ? (
+        <SourceDocumentTypeModal
+          paths={pendingSourcePaths}
+          busy={busy}
+          onCancel={() => setPendingSourcePaths([])}
+          onContinue={prepareSources}
+        />
       ) : null}
     </div>
   );

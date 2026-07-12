@@ -315,9 +315,9 @@ const rpc = BrowserView.defineRPC<AppRPC>({
         sendToView("sources.ingestionProgress", { projectId, stage: "complete", message: "Sources imported", progress: 100 });
         return sources.list(projectId);
       },
-      "sources.prepareImport": async ({ projectId, paths }) => {
+      "sources.prepareImport": async ({ projectId, paths, documentType }) => {
         sendToView("sources.ingestionProgress", { projectId, stage: "extracting", message: "Preparing source preview", progress: 20 });
-        const result = await sources.prepareImport(projectId, paths);
+        const result = await sources.prepareImport(projectId, paths, documentType || "book");
         sendToView("sources.ingestionProgress", { projectId, stage: "indexing", message: "Source preview ready", progress: 80 });
         return result;
       },
@@ -328,9 +328,9 @@ const rpc = BrowserView.defineRPC<AppRPC>({
         return result;
       },
       "sources.cancelPreparedImport": ({ projectId, importId }) => sources.cancelPreparedImport(projectId, importId),
-      "sources.importPaths": async ({ projectId, paths }) => {
+      "sources.importPaths": async ({ projectId, paths, documentType }) => {
         sendToView("sources.ingestionProgress", { projectId, stage: "extracting", message: "Importing sources", progress: 20 });
-        const result = await sources.importPaths(projectId, paths);
+        const result = await sources.importPaths(projectId, paths, documentType || "book");
         sendToView("sources.ingestionProgress", { projectId, stage: "complete", message: "Sources imported", progress: 100 });
         return result;
       },

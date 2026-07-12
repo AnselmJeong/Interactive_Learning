@@ -13,7 +13,7 @@ from typer.core import TyperGroup
 from preppy.diagnostics import render_diagnostics
 from preppy.engines import epub_dom, pdf_docling
 from preppy.inspect import InspectReport, inspect_output
-from preppy.models import PreppyDocument
+from preppy.models import DocumentType, PreppyDocument
 from preppy.split.plan import SplitPlan, load_plan, save_plan
 from preppy.writers import write_source_pack
 
@@ -38,7 +38,7 @@ class _DefaultBuildGroup(TyperGroup):
 app = typer.Typer(
     cls=_DefaultBuildGroup,
     name="preppy",
-    help="Build Interactive_Learning-ready chapter Markdown source packs from PDF and EPUB books.",
+    help="Build Interactive_Learning-ready Markdown source packs from PDF/EPUB books and PDF articles.",
     no_args_is_help=True,
     add_completion=False,
 )
@@ -51,13 +51,21 @@ def _detect_input_type(path: Path) -> Literal["pdf", "epub"]:
         return "pdf"
     if suffix == ".epub":
         return "epub"
-    console.print(f"[bold red]Unsupported input type {path.suffix!r}. Expected .pdf or .epub.[/bold red]")
+    console.print(
+        f"[bold red]Unsupported input type {path.suffix!r}. Expected .pdf or .epub.[/bold red]"
+    )
     raise typer.Exit(code=1)
 
 
 @app.command()
 def build(
-    input_path: Path = typer.Argument(..., exists=True, dir_okay=False, metavar="INPUT", help="Path to the source PDF or EPUB."),
+    input_path: Path = typer.Argument(
+        ...,
+        exists=True,
+        dir_okay=False,
+        metavar="INPUT",
+        help="Path to the source PDF or EPUB.",
+    ),
     output: Path | None = typer.Option(
         None,
         "-o",
@@ -65,44 +73,94 @@ def build(
         file_okay=False,
         help="Directory to write the source pack into. Defaults to ./output.",
     ),
+    document_type: DocumentType = typer.Option(
+        "book",
+        "--document-type",
+        help="Document semantics: split a book into chapters, or keep an article as one unit and remove references.",
+    ),
     plan: Path | None = typer.Option(
-        None, "--plan", exists=True, dir_okay=False, help="Use a reviewed split-plan JSON instead of auto-detecting boundaries."
+        None,
+        "--plan",
+        exists=True,
+        dir_okay=False,
+        help="Use a reviewed split-plan JSON instead of auto-detecting boundaries.",
     ),
     include_frontmatter: bool = typer.Option(
-        False, "--include-frontmatter/--exclude-frontmatter", help="Include cover, preface, TOC, and similar front matter."
+        False,
+        "--include-frontmatter/--exclude-frontmatter",
+        help="Include cover, preface, TOC, and similar front matter.",
     ),
     include_backmatter: bool = typer.Option(
-        False, "--include-backmatter/--exclude-backmatter", help="Include notes, index, bibliography, and similar back matter."
+        False,
+        "--include-backmatter/--exclude-backmatter",
+        help="Include notes/index/bibliography; in article mode, retain References.",
     ),
-    ocr: bool = typer.Option(False, "--ocr/--no-ocr", help="PDF only: enable OCR for scanned pages (Docling)."),
+    ocr: bool = typer.Option(
+        False,
+        "--ocr/--no-ocr",
+        help="PDF only: enable OCR for scanned pages (Docling).",
+    ),
     table_structure: bool = typer.Option(
-        True, "--table-structure/--no-table-structure", help="PDF only: enable table structure recognition."
+        True,
+        "--table-structure/--no-table-structure",
+        help="PDF only: enable table structure recognition.",
     ),
     extract_figures: bool = typer.Option(
-        True, "--extract-figures/--no-extract-figures", help="Export figures into assets/ and link them from Markdown."
+        True,
+        "--extract-figures/--no-extract-figures",
+        help="Export figures into assets/ and link them from Markdown.",
     ),
-    images_scale: float = typer.Option(2.0, "--images-scale", help="PDF only: resolution multiplier for exported figures."),
+    images_scale: float = typer.Option(
+        2.0,
+        "--images-scale",
+        help="PDF only: resolution multiplier for exported figures.",
+    ),
     boundary_pattern: str | None = typer.Option(
-        None, "--boundary-pattern", help=r"Regex for headings that start a new chapter, e.g. '^(Chapter|CHAPTER)\b'."
+        None,
+        "--boundary-pattern",
+        help=r"Regex for headings that start a new chapter, e.g. '^(Chapter|CHAPTER)\b'.",
     ),
-    min_chapter_chars: int = typer.Option(1000, "--min-chapter-chars", help="Warn when a chapter has fewer characters than this."),
-    overwrite: bool = typer.Option(False, "--overwrite", help="Replace an existing output directory."),
-    json_output: bool = typer.Option(False, "--json", help="Print a machine-readable JSON summary instead of a Rich report."),
+    min_chapter_chars: int = typer.Option(
+        1000,
+        "--min-chapter-chars",
+        help="Warn when a content unit has fewer characters than this.",
+    ),
+    overwrite: bool = typer.Option(
+        False, "--overwrite", help="Replace an existing output directory."
+    ),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Print a machine-readable JSON summary instead of a Rich report.",
+    ),
 ) -> None:
-    """Convert a PDF or EPUB book into an Interactive_Learning-ready source pack."""
+    """Convert a book or research article into an Interactive_Learning-ready source pack."""
     output_console = Console(stderr=json_output)
     input_type = _detect_input_type(input_path)
+    if document_type == "article" and input_type != "pdf":
+        raise typer.BadParameter(
+            "--document-type article currently requires a PDF input."
+        )
+    if document_type == "article" and plan is not None:
+        raise typer.BadParameter(
+            "--plan is only valid for --document-type book; articles are not chapter-split."
+        )
     if output is None:
         output = Path("output")
 
     if output.exists() and not overwrite:
-        output_console.print(f"[bold red]Output already exists: {output}. Use --overwrite to replace it.[/bold red]")
+        output_console.print(
+            f"[bold red]Output already exists: {output}. Use --overwrite to replace it.[/bold red]"
+        )
         raise typer.Exit(code=1)
 
-    with output_console.status(f"[bold green]Converting {input_path.name}...[/bold green]", spinner="dots12"):
+    with output_console.status(
+        f"[bold green]Converting {input_path.name}...[/bold green]", spinner="dots12"
+    ):
         document = _run_build(
             input_path,
             input_type,
+            document_type=document_type,
             plan_path=plan,
             include_frontmatter=include_frontmatter,
             include_backmatter=include_backmatter,
@@ -125,7 +183,9 @@ def build(
             render_diagnostics(document.diagnostics, output_console)
         _print_inspect_issues(report)
 
-    has_fatal = document.diagnostics is not None and document.diagnostics.has_fatal_errors
+    has_fatal = (
+        document.diagnostics is not None and document.diagnostics.has_fatal_errors
+    )
     if not report.ok or has_fatal:
         raise typer.Exit(code=1)
 
@@ -134,6 +194,7 @@ def _run_build(
     input_path: Path,
     input_type: Literal["pdf", "epub"],
     *,
+    document_type: DocumentType,
     plan_path: Path | None,
     include_frontmatter: bool,
     include_backmatter: bool,
@@ -145,8 +206,10 @@ def _run_build(
     min_chapter_chars: int,
 ) -> PreppyDocument:
     if input_type == "epub":
-        split_plan = load_plan(plan_path) if plan_path is not None else epub_dom.build_plan(
-            input_path, boundary_pattern=boundary_pattern
+        split_plan = (
+            load_plan(plan_path)
+            if plan_path is not None
+            else epub_dom.build_plan(input_path, boundary_pattern=boundary_pattern)
         )
         return epub_dom.convert(
             input_path,
@@ -161,6 +224,7 @@ def _run_build(
     return pdf_docling.convert(
         input_path,
         pdf_plan,
+        document_type=document_type,
         ocr=ocr,
         table_structure=table_structure,
         extract_figures=extract_figures,
@@ -174,25 +238,50 @@ def _run_build(
 
 @app.command(name="plan")
 def make_plan(
-    input_path: Path = typer.Argument(..., exists=True, dir_okay=False, metavar="INPUT", help="Path to the source PDF or EPUB."),
-    output: Path = typer.Option(..., "-o", "--output", dir_okay=False, help="Where to write the editable split-plan JSON."),
-    boundary_pattern: str | None = typer.Option(
-        None, "--boundary-pattern", help=r"Regex for headings that start a new chapter, e.g. '^(Chapter|CHAPTER)\b'."
+    input_path: Path = typer.Argument(
+        ...,
+        exists=True,
+        dir_okay=False,
+        metavar="INPUT",
+        help="Path to the source PDF or EPUB.",
     ),
-    ocr: bool = typer.Option(False, "--ocr/--no-ocr", help="PDF only: enable OCR while detecting boundaries."),
+    output: Path = typer.Option(
+        ...,
+        "-o",
+        "--output",
+        dir_okay=False,
+        help="Where to write the editable split-plan JSON.",
+    ),
+    boundary_pattern: str | None = typer.Option(
+        None,
+        "--boundary-pattern",
+        help=r"Regex for headings that start a new chapter, e.g. '^(Chapter|CHAPTER)\b'.",
+    ),
+    ocr: bool = typer.Option(
+        False, "--ocr/--no-ocr", help="PDF only: enable OCR while detecting boundaries."
+    ),
     table_structure: bool = typer.Option(
-        True, "--table-structure/--no-table-structure", help="PDF only: enable table structure recognition."
+        True,
+        "--table-structure/--no-table-structure",
+        help="PDF only: enable table structure recognition.",
     ),
 ) -> None:
     """Detect chapter boundaries and write an editable split plan, without building the source pack."""
     input_type = _detect_input_type(input_path)
 
-    with console.status(f"[bold green]Analyzing {input_path.name}...[/bold green]", spinner="dots12"):
+    with console.status(
+        f"[bold green]Analyzing {input_path.name}...[/bold green]", spinner="dots12"
+    ):
         if input_type == "epub":
-            split_plan = epub_dom.build_plan(input_path, boundary_pattern=boundary_pattern)
+            split_plan = epub_dom.build_plan(
+                input_path, boundary_pattern=boundary_pattern
+            )
         else:
             split_plan = pdf_docling.build_plan(
-                input_path, boundary_pattern=boundary_pattern, ocr=ocr, table_structure=table_structure
+                input_path,
+                boundary_pattern=boundary_pattern,
+                ocr=ocr,
+                table_structure=table_structure,
             )
 
     save_plan(split_plan, output)
@@ -206,8 +295,12 @@ def make_plan(
 
 @app.command(name="inspect")
 def inspect_cmd(
-    output: Path = typer.Argument(..., exists=True, file_okay=False, help="Source-pack directory to validate."),
-    json_output: bool = typer.Option(False, "--json", help="Print a machine-readable JSON report instead of text."),
+    output: Path = typer.Argument(
+        ..., exists=True, file_okay=False, help="Source-pack directory to validate."
+    ),
+    json_output: bool = typer.Option(
+        False, "--json", help="Print a machine-readable JSON report instead of text."
+    ),
 ) -> None:
     """Validate an existing source pack and report import risks."""
     report = inspect_output(output)
@@ -218,15 +311,24 @@ def inspect_cmd(
                 "ok": report.ok,
                 "chapter_count": report.chapter_count,
                 "figure_count": report.figure_count,
-                "issues": [{"severity": i.severity, "message": i.message} for i in report.issues],
+                "table_count": report.table_count,
+                "issues": [
+                    {"severity": i.severity, "message": i.message}
+                    for i in report.issues
+                ],
             }
         )
     else:
         console.print(
-            f"[bold]{output}[/bold]: {report.chapter_count} chapters, {report.figure_count} figures"
+            f"[bold]{output}[/bold]: {report.chapter_count} content units, "
+            f"{report.figure_count} figures, {report.table_count} tables"
         )
         _print_inspect_issues(report)
-        console.print("[bold green]OK[/bold green]" if report.ok else "[bold red]BROKEN[/bold red]")
+        console.print(
+            "[bold green]OK[/bold green]"
+            if report.ok
+            else "[bold red]BROKEN[/bold red]"
+        )
 
     raise typer.Exit(code=0 if report.ok else 1)
 
@@ -264,14 +366,22 @@ def _print_plan_table(split_plan: SplitPlan) -> None:
     console.print(table)
 
 
-def _json_summary(document: PreppyDocument, output: Path, report: InspectReport) -> dict:
+def _json_summary(
+    document: PreppyDocument, output: Path, report: InspectReport
+) -> dict:
     return {
         "output": str(output),
         "ok": report.ok,
         "chapter_count": report.chapter_count,
         "figure_count": report.figure_count,
-        "issues": [{"severity": i.severity, "message": i.message} for i in report.issues],
-        "diagnostics": document.diagnostics.model_dump(mode="json") if document.diagnostics else None,
+        "table_count": report.table_count,
+        "document_type": document.source.document_type,
+        "issues": [
+            {"severity": i.severity, "message": i.message} for i in report.issues
+        ],
+        "diagnostics": document.diagnostics.model_dump(mode="json")
+        if document.diagnostics
+        else None,
     }
 
 

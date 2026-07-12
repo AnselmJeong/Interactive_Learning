@@ -1,4 +1,5 @@
 export type SourceType = "markdown" | "pdf" | "text";
+export type DocumentType = "book" | "article";
 export type QualityStatus = "good" | "warning" | "poor";
 export type MaterialStatus = "draft" | "generating" | "ready" | "failed";
 
@@ -8,6 +9,7 @@ export type SourceManifest = {
   title: string;
   updatedAt?: string;
   sourceType: SourceType;
+  documentType: DocumentType;
   originalPath?: string;
   importedAt: string;
   extractionMethod: string;

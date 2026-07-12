@@ -4,6 +4,7 @@ import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join, resolve } from "node:path";
 import { findExistingPythonExecutable, pathListSeparator, pythonRuntimeBinDirs } from "./platform-utils";
+import type { DocumentType } from "../shared/artifact-types";
 
 type PreppyBuildResult = {
   output: string;
@@ -92,10 +93,10 @@ function preppyFailureMessage(result: PreppyBuildResult, fallback = "Preppy conv
   return ["Preppy conversion failed.", ...visible, ...extra].join("\n");
 }
 
-function spawnPreppy(inputPath: string, outputPath: string) {
+function spawnPreppy(inputPath: string, outputPath: string, documentType: DocumentType) {
   const pythonRoot = resolvePythonRoot();
   const { command, args } = pythonCommand(pythonRoot);
-  const childArgs = [...args, inputPath, "-o", outputPath, "--overwrite", "--json"];
+  const childArgs = [...args, inputPath, "-o", outputPath, "--document-type", documentType, "--overwrite", "--json"];
   const pathParts = [
     ...pythonRuntimeBinDirs(pythonRoot),
     process.env.PATH || "",
@@ -147,13 +148,13 @@ function spawnPreppy(inputPath: string, outputPath: string) {
   });
 }
 
-export async function buildPreppySourcePack(inputPath: string) {
+export async function buildPreppySourcePack(inputPath: string, documentType: DocumentType = "book") {
   const tempRoot = await mkdtemp(join(tmpdir(), "learnie-preppy-"));
   const safeName = basename(inputPath).replace(/\.[^.]+$/, "") || "source";
   const outputPath = join(tempRoot, `${safeName}.preppy`);
   await mkdir(outputPath, { recursive: true });
   try {
-    await spawnPreppy(inputPath, outputPath);
+    await spawnPreppy(inputPath, outputPath, documentType);
     return {
       outputPath,
       cleanup: async () => {

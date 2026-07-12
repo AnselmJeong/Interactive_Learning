@@ -9,6 +9,7 @@ import type {
   CourseModule,
   CoursePlan,
   CriticReport,
+  DocumentType,
   LecturePlan,
   MaterialArtifacts,
   MaterialManifest,
@@ -138,6 +139,7 @@ function compactText(text: string, max = 180) {
 }
 
 export const MATERIAL_OVERVIEW_GENERATOR_VERSION = "material-overview-v2-llm-full-source";
+export const ARTICLE_OVERVIEW_GENERATOR_VERSION = "article-overview-v1-topic-only";
 
 export type MaterialOverviewRuntime = {
   client: AiChatClient;
@@ -166,8 +168,9 @@ function validOverviewParagraph(value: unknown) {
   return normalized;
 }
 
-export function isCurrentMaterialOverview(overview: MaterialOverview | null | undefined) {
-  return overview?.generatorVersion === MATERIAL_OVERVIEW_GENERATOR_VERSION && Boolean(validOverviewParagraph(overview));
+export function isCurrentMaterialOverview(overview: MaterialOverview | null | undefined, documentType: DocumentType = "book") {
+  const expectedVersion = documentType === "article" ? ARTICLE_OVERVIEW_GENERATOR_VERSION : MATERIAL_OVERVIEW_GENERATOR_VERSION;
+  return overview?.generatorVersion === expectedVersion && Boolean(validOverviewParagraph(overview));
 }
 
 function isRetryableOverviewFormatError(error: unknown) {
@@ -178,17 +181,27 @@ function isRetryableOverviewFormatError(error: unknown) {
 export async function generateMaterialOverview(
   title: string,
   chunks: SourceChunk[],
-  runtime: MaterialOverviewRuntime
+  runtime: MaterialOverviewRuntime,
+  documentType: DocumentType = "book"
 ): Promise<MaterialOverview> {
   const sourceContext = fullSourceContext(chunks);
-  const system = [
-    "당신은 주어진 원문 전체의 핵심 주제를 정확하게 요약하는 편집자다.",
-    "반드시 원문 전체를 종합하여 이 글이 무엇을 다루는지, 중심 문제와 핵심 주장, 주요 개념의 관계나 긴장을 한국어 한 문단 3~5문장으로 설명한다.",
-    "학습 방법, 학습 가치, 모듈, 목차, 대목 수, 독자가 해야 할 일을 언급하지 않는다.",
-    "원문의 문장을 그대로 인용하거나 영어를 섞지 말고, 고유명사와 전문 용어도 자연스러운 한국어 표기로 쓴다.",
-    "근거 없는 일반론과 '핵심 구조를 자기 말로 설명한다' 같은 상투적인 문장을 쓰지 않는다.",
-    "반환 형식은 반드시 {\"paragraph\":\"한국어 요약\"} 형태의 JSON 객체 하나다.",
-  ].join(" ");
+  const system = documentType === "article"
+    ? [
+        "당신은 연구 논문이 무엇을 다루는지 독자가 빠르게 파악하도록 소개하는 학술 편집자다.",
+        "논문의 연구 주제, 문제의식, 배경, 그리고 사용한 접근을 원문 전체에 근거해 한국어 한 문단 3~4문장으로 설명한다.",
+        "구체적인 표본 수, 수치, 효과 크기, 통계값, 세부 결과, 결과의 강도나 최종 결론은 요약하지 않는다.",
+        "학습 방법, 학습 가치, 모듈, 목차, 대목 수, 독자가 해야 할 일을 언급하지 않는다.",
+        "원문의 문장을 그대로 인용하거나 불필요한 영어를 섞지 말고, 연구가 다루는 범위가 분명하게 드러나게 쓴다.",
+        "반환 형식은 반드시 {\"paragraph\":\"한국어 요약\"} 형태의 JSON 객체 하나다.",
+      ].join(" ")
+    : [
+        "당신은 주어진 원문 전체의 핵심 주제를 정확하게 요약하는 편집자다.",
+        "반드시 원문 전체를 종합하여 이 글이 무엇을 다루는지, 중심 문제와 핵심 주장, 주요 개념의 관계나 긴장을 한국어 한 문단 3~5문장으로 설명한다.",
+        "학습 방법, 학습 가치, 모듈, 목차, 대목 수, 독자가 해야 할 일을 언급하지 않는다.",
+        "원문의 문장을 그대로 인용하거나 영어를 섞지 말고, 고유명사와 전문 용어도 자연스러운 한국어 표기로 쓴다.",
+        "근거 없는 일반론과 '핵심 구조를 자기 말로 설명한다' 같은 상투적인 문장을 쓰지 않는다.",
+        "반환 형식은 반드시 {\"paragraph\":\"한국어 요약\"} 형태의 JSON 객체 하나다.",
+      ].join(" ");
   const sourceMessage = `자료 제목: ${title}\n\n다음은 요약해야 할 원문 전체다. 일부만 골라 요약하지 말고 처음부터 끝까지 종합하라.\n\n${sourceContext}`;
   let lastResponse: unknown = null;
   let lastError: Error | null = null;
@@ -232,7 +245,7 @@ export async function generateMaterialOverview(
         paragraph,
         sourceChunkIds: chunks.map((chunk) => chunk.id),
         generatedAt: new Date().toISOString(),
-        generatorVersion: MATERIAL_OVERVIEW_GENERATOR_VERSION,
+        generatorVersion: documentType === "article" ? ARTICLE_OVERVIEW_GENERATOR_VERSION : MATERIAL_OVERVIEW_GENERATOR_VERSION,
       };
     }
   }
@@ -469,6 +482,7 @@ export class CourseArtifactService {
     const id = crypto.randomUUID();
     const now = Date.now();
     const rows = sourceIds.map((sourceId) => this.sources.getRow(sourceId));
+    const documentType: DocumentType = rows.length === 1 && rows[0]!.document_type === "article" ? "article" : "book";
     const sourceTitleById = new Map(rows.map((row) => [row.id, row.title]));
     const sourceTitleForChunk: SourceTitleForChunk = (chunk) => {
       const sourceId = this.sourceIdForChunk(chunk, sourceIds);
@@ -497,7 +511,7 @@ export class CourseArtifactService {
       if (!sourceChunks.length) throw new Error("No chunks were extracted for selected sources");
       const conceptMap = buildConcepts(sourceChunks);
       const coursePlan = buildCoursePlan(title, sourceChunks, conceptMap, sourceTitleForChunk);
-      const overview = await this.createMaterialOverview(title, sourceChunks);
+      const overview = await this.createMaterialOverview(title, sourceChunks, documentType);
       const visuals = buildVisuals(sourceChunks, sourceTitleForChunk);
       const lecturePlan = buildLecturePlan(id, sourceChunks, sourceTitleForChunk);
       const presentationPlan = buildPresentationPlan(id, sourceChunks, sourceTitleForChunk);
@@ -635,15 +649,16 @@ export class CourseArtifactService {
   async getArtifacts(materialId: string): Promise<MaterialArtifacts> {
     const row = this.getRow(materialId);
     const cached = this.artifactCache.get(materialId);
-    if (cached?.updatedAt === row.updated_at && (!this.materialOverviewRuntime || isCurrentMaterialOverview(cached.artifacts.overview))) {
+    const documentType = this.documentTypeForMaterial(materialId);
+    if (cached?.updatedAt === row.updated_at && (!this.materialOverviewRuntime || isCurrentMaterialOverview(cached.artifacts.overview, documentType))) {
       return { ...cached.artifacts, annotations: listMaterialAnnotations(materialId) };
     }
-    const artifacts = await this.loadHeavyArtifacts(row);
+    const artifacts = await this.loadHeavyArtifacts(row, documentType);
     this.artifactCache.set(materialId, { updatedAt: row.updated_at, artifacts });
     return { ...artifacts, annotations: listMaterialAnnotations(materialId) };
   }
 
-  private async loadHeavyArtifacts(row: MaterialRow): Promise<HeavyMaterialArtifacts> {
+  private async loadHeavyArtifacts(row: MaterialRow, documentType: DocumentType): Promise<HeavyMaterialArtifacts> {
     if (!row.manifest_path || !row.concept_map_path || !row.course_plan_path || !row.visual_specs_path || !row.source_index_path) {
       throw new Error("Material artifacts are incomplete");
     }
@@ -671,7 +686,7 @@ export class CourseArtifactService {
           })),
         }
       : sanitizedPlan;
-    const overview = await this.loadMaterialOverview(row, sourceChunks);
+    const overview = await this.loadMaterialOverview(row, sourceChunks, documentType);
     const figures = await this.loadMaterialFigures(row);
     const figureIndex = await this.loadMaterialFigureIndex(row, figures);
     return {
@@ -690,12 +705,12 @@ export class CourseArtifactService {
     };
   }
 
-  private async loadMaterialOverview(row: MaterialRow, sourceChunks: SourceChunk[]) {
+  private async loadMaterialOverview(row: MaterialRow, sourceChunks: SourceChunk[], documentType: DocumentType) {
     const overviewPath = row.overview_path || (row.manifest_path ? join(dirname(row.manifest_path), "material_overview.json") : null);
     if (row.overview_json) {
       try {
         const databaseOverview = JSON.parse(row.overview_json) as MaterialOverview;
-        if (isCurrentMaterialOverview(databaseOverview)) return databaseOverview;
+        if (isCurrentMaterialOverview(databaseOverview, documentType)) return databaseOverview;
       } catch {
         // Invalid legacy JSON is replaced from the artifact file or regenerated below.
       }
@@ -704,7 +719,7 @@ export class CourseArtifactService {
     if (overviewPath) {
       try {
         storedOverview = JSON.parse(await readFile(overviewPath, "utf8")) as MaterialOverview;
-        if (isCurrentMaterialOverview(storedOverview)) {
+        if (isCurrentMaterialOverview(storedOverview, documentType)) {
           this.persistMaterialOverview(row.id, storedOverview, overviewPath);
           return storedOverview;
         }
@@ -716,7 +731,7 @@ export class CourseArtifactService {
       if (storedOverview?.paragraph?.trim()) return storedOverview;
       throw new Error("Material overview is missing");
     }
-    const overview = await this.createMaterialOverview(row.title, sourceChunks);
+    const overview = await this.createMaterialOverview(row.title, sourceChunks, documentType);
     this.persistMaterialOverview(row.id, overview, overviewPath);
     if (overviewPath) {
       await writeFile(overviewPath, `${JSON.stringify(overview, null, 2)}\n`, "utf8").catch((error) => {
@@ -732,9 +747,14 @@ export class CourseArtifactService {
       .run(JSON.stringify(overview), overviewPath, materialId);
   }
 
-  private async createMaterialOverview(title: string, sourceChunks: SourceChunk[]) {
+  private documentTypeForMaterial(materialId: string): DocumentType {
+    const sourceIds = this.sourceIds(materialId);
+    return sourceIds.length === 1 && this.sources.getRow(sourceIds[0]!).document_type === "article" ? "article" : "book";
+  }
+
+  private async createMaterialOverview(title: string, sourceChunks: SourceChunk[], documentType: DocumentType = "book") {
     if (!this.materialOverviewRuntime) throw new Error("AI provider is required to summarize the full source");
-    return generateMaterialOverview(title, sourceChunks, await this.materialOverviewRuntime());
+    return generateMaterialOverview(title, sourceChunks, await this.materialOverviewRuntime(), documentType);
   }
 
   private async loadMaterialSourceChunks(row: MaterialRow) {

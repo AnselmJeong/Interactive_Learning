@@ -82,3 +82,45 @@ describe("source title rename", () => {
     await expect(new SourceService().rename("project", "source", "   ")).rejects.toThrow("Source title is required");
   });
 });
+
+describe("article source packs", () => {
+  let tempRoot = "";
+
+  beforeEach(async () => {
+    tempRoot = await mkdtemp(join(tmpdir(), "learnie-article-source-test-"));
+    process.env.LEARNIE_APP_DATA_ROOT = tempRoot;
+    closeDbForTests();
+  });
+
+  afterEach(async () => {
+    closeDbForTests();
+    delete process.env.LEARNIE_APP_DATA_ROOT;
+    if (tempRoot) await rm(tempRoot, { recursive: true, force: true });
+    tempRoot = "";
+  });
+
+  test("imports one article pack entry as one article source", async () => {
+    const project = await new ProjectService().create({ title: "Article Project" });
+    const pack = join(tempRoot, "paper.preppy");
+    const chapterPath = "chapters/001-paper.md";
+    await mkdir(join(pack, "chapters"), { recursive: true });
+    await writeFile(join(pack, chapterPath), "# A Reliable Paper\n\nThis paper studies a focused question.", "utf8");
+    await writeFile(join(pack, "figures.json"), "{\"figures\":[]}", "utf8");
+    await writeFile(join(pack, "manifest.json"), JSON.stringify({
+      schema_version: 2,
+      source: { document_type: "article" },
+      output: { chapters_dir: "chapters", assets_dir: "assets" },
+      chapters: [{ index: 1, title: "A Reliable Paper", kind: "article", path: chapterPath, char_count: 54 }],
+    }), "utf8");
+
+    const service = new SourceService();
+    const prepared = await service.prepareImport(project.id, [pack], "article");
+    const imported = await service.commitPreparedImport(project.id, prepared.id, prepared.items.map((item) => item.id));
+
+    expect(prepared.documentType).toBe("article");
+    expect(prepared.items).toHaveLength(1);
+    expect(imported).toHaveLength(1);
+    expect(imported[0]?.documentType).toBe("article");
+    expect(service.list(project.id)[0]?.documentType).toBe("article");
+  });
+});

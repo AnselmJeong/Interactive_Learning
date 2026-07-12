@@ -8,6 +8,7 @@ CHAPTERS_DIR = "chapters"
 ASSETS_DIR = "assets"
 MANIFEST_FILENAME = "manifest.json"
 FIGURES_FILENAME = "figures.json"
+TABLES_FILENAME = "tables.json"
 DIAGNOSTICS_FILENAME = "diagnostics.json"
 DOCUMENT_FILENAME = "document.json"
 
@@ -36,6 +37,7 @@ def output_paths(output_dir: Path) -> dict[str, Path]:
         "assets": output_dir / ASSETS_DIR,
         "manifest": output_dir / MANIFEST_FILENAME,
         "figures": output_dir / FIGURES_FILENAME,
+        "tables": output_dir / TABLES_FILENAME,
         "diagnostics": output_dir / DIAGNOSTICS_FILENAME,
         "document": output_dir / DOCUMENT_FILENAME,
     }

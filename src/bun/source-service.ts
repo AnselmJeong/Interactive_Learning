@@ -5,7 +5,7 @@ import { getDb } from "./project-db";
 import { dataPath, sourceDirAt } from "./paths";
 import { buildPreppySourcePack } from "./preppy-service";
 import { SettingsService } from "./settings-service";
-import type { SourceChunk, SourceFigure, SourceManifest, SourceType } from "../shared/artifact-types";
+import type { DocumentType, SourceChunk, SourceFigure, SourceManifest, SourceType } from "../shared/artifact-types";
 import type { PreparedSourceImport, PreparedSourceImportItem, SourceSummary } from "../shared/rpc-types";
 
 type SourceRow = {
@@ -13,6 +13,7 @@ type SourceRow = {
   project_id: string;
   title: string;
   source_type: SourceType;
+  document_type: DocumentType;
   original_file_name: string;
   original_file_path: string | null;
   imported_file_path: string;
@@ -37,6 +38,9 @@ type SourceLearningStatusRow = {
 };
 
 type PreppyManifest = {
+  source?: {
+    document_type?: DocumentType;
+  };
   output?: {
     chapters_dir?: string;
     assets_dir?: string;
@@ -74,6 +78,7 @@ type PreparedImportEntry = {
   projectId: string;
   sourceName: string;
   sourcePath: string;
+  documentType: DocumentType;
   folders: Array<{ path: string; originalSourcePath: string; cleanup?: () => Promise<void> }>;
   files: Array<{ path: string }>;
   items: PreparedSourceImportItem[];
@@ -88,6 +93,7 @@ function toSource(row: SourceRow, learningStatus: SourceLearningStatus = "not_st
     projectId: row.project_id,
     title: row.title,
     sourceType: row.source_type,
+    documentType: row.document_type || "book",
     originalFileName: row.original_file_name,
     qualityStatus: row.quality_status,
     learningStatus,
@@ -365,6 +371,7 @@ async function readPreppyManifest(importedRoot: string) {
       if (typeof chapter.index === "number") chapterIndexByPath.set(normalized, chapter.index);
     }
     return {
+      documentType: manifest.source?.document_type === "article" ? "article" as const : "book" as const,
       chaptersDir: manifest.output?.chapters_dir || "chapters",
       assetsDir: manifest.output?.assets_dir || "assets",
       chapterTitleByPath,
@@ -372,6 +379,7 @@ async function readPreppyManifest(importedRoot: string) {
     };
   } catch {
     return {
+      documentType: "book" as const,
       chaptersDir: "chapters",
       assetsDir: "assets",
       chapterTitleByPath: new Map<string, string>(),
@@ -517,6 +525,7 @@ function toPrepared(entry: PreparedImportEntry): PreparedSourceImport {
     projectId: entry.projectId,
     sourceName: entry.sourceName,
     sourcePath: entry.sourcePath,
+    documentType: entry.documentType,
     itemCount: entry.items.length,
     items: entry.items,
   };
@@ -530,14 +539,17 @@ export class SourceService {
     return row?.root_path || dataPath("projects");
   }
 
-  async importPaths(projectId: string, paths: string[]) {
+  async importPaths(projectId: string, paths: string[], documentType: DocumentType = "book") {
     const imported: SourceSummary[] = [];
     for (const path of paths) {
       const info = await stat(path);
+      if (documentType === "article" && info.isFile() && extname(path).toLowerCase() !== ".pdf") {
+        throw new Error("Article import currently supports PDF files only.");
+      }
       if (info.isDirectory()) {
         imported.push(...(await this.importFolder(projectId, path)));
       } else if (info.isFile() && isPreppyInputFile(path)) {
-        const sourcePack = await buildPreppySourcePack(path);
+        const sourcePack = await buildPreppySourcePack(path, documentType);
         try {
           imported.push(...(await this.importFolder(projectId, sourcePack.outputPath, path)));
         } finally {
@@ -550,7 +562,7 @@ export class SourceService {
     return imported;
   }
 
-  async prepareImport(projectId: string, paths: string[]) {
+  async prepareImport(projectId: string, paths: string[], documentType: DocumentType = "book") {
     const id = crypto.randomUUID();
     const settings = await this.settings.get();
     const entry: PreparedImportEntry = {
@@ -558,6 +570,7 @@ export class SourceService {
       projectId,
       sourceName: paths.length === 1 ? titleForPath(paths[0]!) : `${paths.length} selected sources`,
       sourcePath: paths.join(", "),
+      documentType,
       folders: [],
       files: [],
       items: [],
@@ -567,10 +580,13 @@ export class SourceService {
     try {
       for (const path of paths) {
         const info = await stat(path);
+        if (documentType === "article" && info.isFile() && extname(path).toLowerCase() !== ".pdf") {
+          throw new Error("Article import currently supports PDF files only.");
+        }
         if (info.isDirectory()) {
           await this.addPreparedFolder(entry, path, path, settings.sourceImportMinChars);
         } else if (info.isFile() && isPreppyInputFile(path)) {
-          const sourcePack = await buildPreppySourcePack(path);
+          const sourcePack = await buildPreppySourcePack(path, documentType);
           await this.addPreparedFolder(entry, sourcePack.outputPath, path, settings.sourceImportMinChars, sourcePack.cleanup);
         } else if (info.isFile() && isImportableFile(path)) {
           await this.addPreparedFile(entry, path, settings.sourceImportMinChars);
@@ -754,6 +770,7 @@ export class SourceService {
           textRoot,
           chaptersDir: preppyManifest.chaptersDir,
           assetsDir: preppyManifest.assetsDir,
+          documentType: preppyManifest.documentType,
           contentHash: folderDigest,
           importedAt: new Date().toISOString(),
           textFileCount: textFiles.length,
@@ -777,6 +794,7 @@ export class SourceService {
         manifestPath,
         chapterIndex: preppyManifest.chapterIndexByPath.get(manifestPath),
         figures: preppyFigures,
+        documentType: preppyManifest.documentType,
       });
       imported.push(result.source);
       if (result.created) createdCount += 1;
@@ -815,7 +833,13 @@ export class SourceService {
     originalPath: string,
     importedPath: string,
     title: string,
-    preppy?: { importedRoot: string; manifestPath: string; chapterIndex: number | undefined; figures: PreppyFigure[] }
+    preppy?: {
+      importedRoot: string;
+      manifestPath: string;
+      chapterIndex: number | undefined;
+      figures: PreppyFigure[];
+      documentType: DocumentType;
+    }
   ) {
     const { digest, bytes } = await hashFile(importedPath);
     const existing = getDb()
@@ -841,6 +865,7 @@ export class SourceService {
       projectId,
       title,
       type,
+      documentType: preppy?.documentType || "book",
       originalPath,
       originalFileName: basename(importedPath),
       importedPath,
@@ -859,6 +884,7 @@ export class SourceService {
     projectId: string;
     title: string;
     type: SourceType;
+    documentType?: DocumentType;
     originalPath: string;
     originalFileName: string;
     importedPath: string;
@@ -877,6 +903,7 @@ export class SourceService {
       title: input.title,
       updatedAt: new Date().toISOString(),
       sourceType: input.type,
+      documentType: input.documentType || "book",
       originalPath: input.originalPath,
       importedAt: new Date().toISOString(),
       extractionMethod: input.extractionMethod,
@@ -894,8 +921,8 @@ export class SourceService {
       .query(
         `INSERT INTO project_sources
          (id, project_id, title, source_type, original_file_name, original_file_path, imported_file_path,
-          content_hash, manifest_path, chunks_path, quality_status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          document_type, content_hash, manifest_path, chunks_path, quality_status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         input.id,
@@ -905,6 +932,7 @@ export class SourceService {
         input.originalFileName,
         input.originalPath,
         input.importedPath,
+        input.documentType || "book",
         input.digest,
         manifestPath,
         chunksPath,
@@ -957,6 +985,7 @@ export class SourceService {
         id: row.id,
         projectId: row.project_id,
         sourceType: row.source_type,
+        documentType: row.document_type || "book",
         originalPath: row.original_file_path || undefined,
         importedAt: previousManifest?.importedAt || new Date(row.created_at).toISOString(),
         extractionMethod: previousManifest?.extractionMethod || "learnie-source",

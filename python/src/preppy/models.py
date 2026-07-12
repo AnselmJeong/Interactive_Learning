@@ -8,9 +8,11 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 SourceType = Literal["pdf", "epub"]
+DocumentType = Literal["book", "article"]
 
 ChapterKind = Literal[
     "chapter",
+    "article",
     "frontmatter",
     "backmatter",
     "appendix",
@@ -25,6 +27,7 @@ CaptionStatus = Literal[
     "epub_figcaption",
     "epub_adjacent_text",
     "nearby_text",
+    "pdf_text_caption",
     "missing",
     "ambiguous",
 ]
@@ -41,8 +44,14 @@ class SourceInfo(PreppyModel):
     filename: str
     type: SourceType
     sha256: str
+    document_type: DocumentType = "book"
     title: str | None = None
+    subtitle: str | None = None
     author: str | None = None
+    authors: list[str] = Field(default_factory=list)
+    year: int | None = None
+    journal: str | None = None
+    doi: str | None = None
     language: str | None = None
 
 
@@ -65,6 +74,7 @@ class Chapter(PreppyModel):
     source_locator: SourceLocator = Field(default_factory=SourceLocator)
     char_count: int
     figure_ids: list[str] = Field(default_factory=list)
+    table_ids: list[str] = Field(default_factory=list)
     boundary_reason: str
     boundary_confidence: float = 1.0
     # Optional structural context for books whose chapters are nested under
@@ -81,6 +91,7 @@ class Figure(PreppyModel):
     caption: str | None
     caption_status: CaptionStatus
     source_locator: SourceLocator = Field(default_factory=SourceLocator)
+    component_refs: list[str] = Field(default_factory=list)
     width: int | None
     height: int | None
     sha256: str
@@ -90,12 +101,13 @@ class OutputPaths(PreppyModel):
     chapters_dir: str = "chapters"
     assets_dir: str = "assets"
     figures_index: str = "figures.json"
+    tables_index: str = "tables.json"
     diagnostics: str = "diagnostics.json"
     document_model: str = "document.json"
 
 
 class Manifest(PreppyModel):
-    schema_version: int = 1
+    schema_version: int = 2
     tool: str = "preppy"
     tool_version: str
     source: SourceInfo
@@ -105,6 +117,20 @@ class Manifest(PreppyModel):
 
 class FiguresIndex(PreppyModel):
     figures: list[Figure] = Field(default_factory=list)
+
+
+class Table(PreppyModel):
+    id: str
+    source_type: SourceType
+    chapter_index: int | None
+    caption: str | None
+    caption_status: CaptionStatus
+    markdown: str
+    source_locator: SourceLocator = Field(default_factory=SourceLocator)
+
+
+class TablesIndex(PreppyModel):
+    tables: list[Table] = Field(default_factory=list)
 
 
 class DocumentItem(PreppyModel):
@@ -150,6 +176,15 @@ class FigureDiagnostics(PreppyModel):
     skipped: int = 0
     duplicates: int = 0
     missing_captions: int = 0
+    compound_groups: int = 0
+    compound_panels: int = 0
+
+
+class TableDiagnostics(PreppyModel):
+    found: int = 0
+    rendered: int = 0
+    failed: int = 0
+    missing_captions: int = 0
 
 
 class QualityWarning(PreppyModel):
@@ -166,6 +201,8 @@ class QualityDiagnostics(PreppyModel):
     min_chapter_chars: int = 0
     figures_exported: int = 0
     figures_with_captions: int = 0
+    tables_rendered: int = 0
+    tables_with_captions: int = 0
     skipped_images: int = 0
     fallback_usage_count: int = 0
     warnings: list[QualityWarning] = Field(default_factory=list)
@@ -181,6 +218,7 @@ class Diagnostics(PreppyModel):
     conversion: ConversionDiagnostics
     chapter_detection: ChapterDetectionDiagnostics
     figures: FigureDiagnostics = Field(default_factory=FigureDiagnostics)
+    tables: TableDiagnostics = Field(default_factory=TableDiagnostics)
     quality: QualityDiagnostics = Field(default_factory=QualityDiagnostics)
     errors: list[ErrorRecord] = Field(default_factory=list)
 
@@ -217,6 +255,7 @@ class PreppyDocument:
     source: SourceInfo
     chapters: list[ChapterContent] = field(default_factory=list)
     figures: list[FigureAsset] = field(default_factory=list)
+    tables: list[Table] = field(default_factory=list)
     document_model: DocumentModel = field(
         default_factory=lambda: DocumentModel(source_type="pdf")
     )
