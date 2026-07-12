@@ -43,7 +43,7 @@ async function fetchThumbnailDataUrl(url: string, fetchImpl: typeof fetch) {
   const response = await fetchImpl(parsed.toString(), {
     headers: {
       accept: "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
-      "user-agent": "Learnie/0.7.2 desktop learning app",
+      "user-agent": "Learnie/0.7.5 desktop learning app",
     },
     signal: AbortSignal.timeout(10_000),
   });
@@ -73,7 +73,7 @@ export async function searchBraveImages(query: string, apiKey: string, fetchImpl
     headers: {
       accept: "application/json",
       "x-subscription-token": apiKey.trim(),
-      "user-agent": "Learnie/0.7.2 desktop learning app",
+      "user-agent": "Learnie/0.7.5 desktop learning app",
     },
     signal: AbortSignal.timeout(10_000),
   });
