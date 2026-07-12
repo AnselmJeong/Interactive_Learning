@@ -2660,6 +2660,7 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   padding: 30px;
 }
 .settings-panel {
+  --settings-control-height: 44px;
   max-width: none;
   display: grid;
   gap: 24px;
@@ -2749,13 +2750,13 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
 }
 .settings-panel input:not([type="checkbox"]),
 .settings-panel select {
-  min-height: 42px;
+  height: var(--settings-control-height);
+  min-height: var(--settings-control-height);
   border-radius: 8px;
 }
 .settings-panel select {
-  min-height: 50px;
-  padding-top: 10px;
-  padding-bottom: 10px;
+  padding-top: 0;
+  padding-bottom: 0;
   line-height: 1.25;
 }
 .settings-grid label span,
@@ -3962,6 +3963,12 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
 .lookup-saved {
   margin: 0;
   color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+.lookup-warning {
+  margin: 0 0 12px;
+  color: var(--accent-2);
   font-size: 13px;
   line-height: 1.5;
 }

@@ -106,6 +106,7 @@ export type ImageLookupResult = {
   title: string;
   query: string;
   body?: string;
+  warning?: string;
   provider: "brave" | "direct" | "wikipedia";
   images: ImageLookupItem[];
   retrievedAt: string;

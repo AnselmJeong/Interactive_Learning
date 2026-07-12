@@ -353,9 +353,9 @@ export function SettingsModal({
           ))}
           <label>
             <span>
-              Brave Search API key
-              <small className={braveKeySaved ? "" : "missing"}>
-                {braveKeySaved ? `Saved via ${providerStatus.braveSearchKeyState.apiKeySource}` : "Not saved"}
+              Brave Search API key (optional)
+              <small>
+                {braveKeySaved ? `Saved via ${providerStatus.braveSearchKeyState.apiKeySource}` : "Not saved · Wikipedia fallback"}
               </small>
             </span>
             <input

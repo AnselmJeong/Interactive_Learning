@@ -101,4 +101,27 @@ describe("material overview", () => {
     expect(overview.paragraph).not.toMatch(/[A-Za-z]/);
     expect(overview.paragraph).not.toContain("학습에서는");
   });
+
+  test("retries when the first structured overview response is invalid JSON", async () => {
+    let calls = 0;
+    const client = {
+      listModels: async () => [],
+      chatText: async () => "",
+      chatJson: async () => {
+        calls += 1;
+        if (calls === 1) throw new Error("AI returned prose instead of JSON: Model did not return valid JSON");
+        return {
+          paragraph: "이 글은 인간의 기억과 사고를 관계망과 활성화의 흐름으로 설명하는 이론이 어떻게 발전했는지를 다룬다. 개념 사이의 연결과 활성화 확산은 의미 기억과 추론을 설명하며, 상호작용하는 여러 처리 단계는 읽기와 인지가 점진적으로 형성되는 과정을 보여준다. 중심 주장은 사고가 고정된 규칙의 적용이 아니라 연결 강도에 따라 변화하는 역동적인 상태라는 데 있다.",
+        };
+      },
+    } satisfies AiChatClient;
+    const chunks: SourceChunk[] = [
+      { id: "chunk-1", headingPath: [], locator: "p. 1", kind: "body", text: "Complete source text.", confidence: 1 },
+    ];
+
+    const overview = await generateMaterialOverview("Source", chunks, { client, model: "test-model" });
+
+    expect(calls).toBe(2);
+    expect(overview.paragraph).toContain("기억과 사고");
+  });
 });

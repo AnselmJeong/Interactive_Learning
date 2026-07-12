@@ -31,7 +31,7 @@ type ProviderClientContext = {
 type ProviderClientFactory = () => Promise<ProviderClientContext>;
 
 type QuestionWebSearch = (query: string) => Promise<LookupSourceMeta[]>;
-type ImageSearch = (query: string) => Promise<ImageLookupItem[]>;
+type ImageSearch = (query: string) => Promise<{ images: ImageLookupItem[]; warning?: string }>;
 
 type SelectionLookupInput = {
   materialId: string;
@@ -1084,9 +1084,12 @@ export class AnnotationService {
     const term = normalizeSelectedText(input.selectedText);
     if (!term) throw new Error("Selected text is empty");
 
+    let fallbackWarning: string | undefined;
     if (this.imageSearch) {
       try {
-        const images = await this.imageSearch(term);
+        const searchResult = await this.imageSearch(term);
+        const images = searchResult.images;
+        fallbackWarning = searchResult.warning;
         if (images.length) {
           return {
             kind: "image",
@@ -1104,7 +1107,9 @@ export class AnnotationService {
           };
         }
       } catch (error) {
-        console.warn(`[annotations] Brave image search unavailable; falling back to Wikipedia: ${(error as Error).message}`);
+        const message = (error as Error).message || String(error);
+        fallbackWarning = "Brave 이미지 검색을 사용할 수 없어 Wikipedia 이미지 검색으로 전환했습니다.";
+        console.warn(`[annotations] Brave image search unavailable; falling back to Wikipedia: ${message}`);
       }
     }
 
@@ -1115,6 +1120,7 @@ export class AnnotationService {
       kind: "image",
       title: images.length && wiki ? `Image result for ${wiki.title}` : "No image result",
       query: term,
+      ...(fallbackWarning ? { warning: fallbackWarning } : {}),
       provider: "wikipedia",
       images,
       retrievedAt: new Date().toISOString(),

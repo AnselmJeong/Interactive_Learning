@@ -15,16 +15,18 @@ describe("annotation image search routing", () => {
       {} as never,
       async () => { throw new Error("AI provider should not be used"); },
       undefined,
-      async () => [{
-        title: "Natural selection diagram",
-        thumbnailUrl: "data:image/png;base64,AQID",
-        imageUrl: "https://example.edu/evolution.png",
-        pageUrl: "https://example.edu/evolution",
-        sourceTitle: "example.edu",
-        provider: "brave",
-        width: 1200,
-        height: 800,
-      }]
+      async () => ({
+        images: [{
+          title: "Natural selection diagram",
+          thumbnailUrl: "data:image/png;base64,AQID",
+          imageUrl: "https://example.edu/evolution.png",
+          pageUrl: "https://example.edu/evolution",
+          sourceTitle: "example.edu",
+          provider: "brave",
+          width: 1200,
+          height: 800,
+        }],
+      })
     );
 
     const result = await service.findImages({ materialId: "material-1", chunkId: "chunk-1", selectedText: "natural selection" });
@@ -32,6 +34,29 @@ describe("annotation image search routing", () => {
     expect(result.provider).toBe("brave");
     expect(result.images[0]?.sourceTitle).toBe("example.edu");
     expect(result.sourceMeta[0]).toMatchObject({ provider: "Brave · example.edu", url: "https://example.edu/evolution" });
+  });
+
+  test("warns and falls back when Brave is not configured", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response("Not found", { status: 404 })) as unknown as typeof fetch;
+    try {
+      const service = new AnnotationService(
+        {} as never,
+        async () => { throw new Error("AI provider should not be used"); },
+        undefined,
+        async () => ({
+          images: [],
+          warning: "Brave Search API key가 없어 Wikipedia 이미지 검색으로 전환했습니다.",
+        })
+      );
+
+      const result = await service.findImages({ materialId: "material-1", chunkId: "chunk-1", selectedText: "photosynthesis" });
+
+      expect(result.provider).toBe("wikipedia");
+      expect(result.warning).toContain("Brave Search API key");
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });
 

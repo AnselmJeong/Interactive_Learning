@@ -979,6 +979,7 @@ function LookupResultBody({
 
     return (
       <div className="lookup-result-body">
+        {result.warning ? <p className="lookup-warning">{result.warning}</p> : null}
         {result.images.length ? (
           <div className="lookup-image-grid">
             {result.images.map((image, index) => {

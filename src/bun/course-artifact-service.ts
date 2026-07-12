@@ -170,6 +170,11 @@ export function isCurrentMaterialOverview(overview: MaterialOverview | null | un
   return overview?.generatorVersion === MATERIAL_OVERVIEW_GENERATOR_VERSION && Boolean(validOverviewParagraph(overview));
 }
 
+function isRetryableOverviewFormatError(error: unknown) {
+  const message = ((error as Error)?.message || String(error)).toLowerCase();
+  return message.includes("json") || message.includes("structured response");
+}
+
 export async function generateMaterialOverview(
   title: string,
   chunks: SourceChunk[],
@@ -186,6 +191,7 @@ export async function generateMaterialOverview(
   ].join(" ");
   const sourceMessage = `자료 제목: ${title}\n\n다음은 요약해야 할 원문 전체다. 일부만 골라 요약하지 말고 처음부터 끝까지 종합하라.\n\n${sourceContext}`;
   let lastResponse: unknown = null;
+  let lastError: Error | null = null;
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const messages = [
       { role: "system" as const, content: system },
@@ -198,16 +204,28 @@ export async function generateMaterialOverview(
               content: "이 응답은 조건을 어겼다. 영어와 학습 안내 및 목차 언급을 모두 제거하고, 원문 전체의 주제와 주장만 한국어 한 문단으로 다시 작성하라.",
             },
           ]
-        : []),
+        : attempt && lastError
+          ? [{
+              role: "user" as const,
+              content: "이전 응답은 JSON 형식이 완성되지 않았다. 700자 이내의 한국어 3~5문장으로 줄이고, 반드시 닫힌 JSON 객체 하나만 반환하라.",
+            }]
+          : []),
     ];
-    lastResponse = await runtime.client.chatJson({
-      model: runtime.model,
-      messages,
-      temperature: 0.2,
-      maxTokens: 900,
-      timeoutMs: 180_000,
-      thinking: "disabled",
-    });
+    try {
+      lastResponse = await runtime.client.chatJson({
+        model: runtime.model,
+        messages,
+        temperature: 0.2,
+        maxTokens: 1800,
+        timeoutMs: 180_000,
+        thinking: "disabled",
+      });
+      lastError = null;
+    } catch (error) {
+      lastError = error as Error;
+      if (attempt === 0 && isRetryableOverviewFormatError(error)) continue;
+      throw error;
+    }
     const paragraph = validOverviewParagraph(lastResponse);
     if (paragraph) {
       return {

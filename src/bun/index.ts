@@ -44,7 +44,13 @@ const annotations = new AnnotationService(materials, providerClient, async (quer
   return searchOllamaWeb(query, ollamaKey.value);
 }, async (query) => {
   const braveKey = await secrets.getBraveSearchApiKey();
-  return searchBraveImages(query, braveKey.value);
+  if (!braveKey.value) {
+    return {
+      images: [],
+      warning: "Brave Search API key가 없어 Wikipedia 이미지 검색으로 전환했습니다.",
+    };
+  }
+  return { images: await searchBraveImages(query, braveKey.value) };
 });
 const tutor = new TutorService(
   (status) => sendToView("tutor.prefetchStatus", status),
