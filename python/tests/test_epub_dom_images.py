@@ -3,6 +3,7 @@ import json
 from bs4 import BeautifulSoup
 
 from preppy.engines.epub_dom import _handle_image, _replace_epub_noteref_links
+from preppy.figures.captions import infer_caption
 from preppy.figures.export import FigureExporter
 from preppy.inspect import inspect_output
 from preppy.markdown.render import html_to_markdown
@@ -26,6 +27,29 @@ class _FakeBook:
 
     def get_item_with_href(self, href: str) -> _FakeItem | None:
         return self._items.get(href)
+
+
+def test_infer_caption_does_not_consume_adjacent_figure_with_an_image() -> None:
+    """A shared plate caption must not make the following image disposable."""
+    soup = BeautifulSoup(
+        '<figure class="plate_image_portrait"><img src="plate12.jpg"/></figure>'
+        '<figure class="plate_image_portrait">'
+        '<img src="plate12a.jpg"/>'
+        '<figcaption>Caption for plate 12a.</figcaption>'
+        "</figure>",
+        "html.parser",
+    )
+    first, second = soup.find_all("img")
+
+    text, status, source = infer_caption(first)
+    assert text == "Caption for plate 12a."
+    assert status == "epub_adjacent_text"
+    assert source is None
+
+    text, status, source = infer_caption(second)
+    assert text == "Caption for plate 12a."
+    assert status == "epub_figcaption"
+    assert source is not None and source.name == "figcaption"
 
 
 def test_html_fragment_image_reference_is_skipped() -> None:

@@ -268,6 +268,11 @@ def convert(
 
             chapter_figure_ids: list[str] = []
             for img in segment_soup.find_all("img"):
+                # ``find_all`` returns a snapshot. If malformed or unexpected
+                # markup causes an earlier DOM rewrite to decompose a container,
+                # descendants retained in that snapshot are no longer usable.
+                if img.decomposed:
+                    continue
                 figures_found += 1
                 outcome = _handle_image(
                     img,

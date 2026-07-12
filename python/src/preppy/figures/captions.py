@@ -32,13 +32,14 @@ def infer_caption(img: Tag) -> tuple[str | None, CaptionStatus, Tag | None]:
     caller should ``decompose()`` ``source`` once done, so its text is not
     rendered a second time as ordinary body content. ``source`` is always a
     sibling of ``img`` (or of its ``<figure>`` wrapper), never an ancestor,
-    so decomposing it never removes the image itself.
+    and never contains another image. This ensures decomposing it cannot
+    invalidate either the current image or an image still awaiting processing.
     """
     figure = img.find_parent("figure")
 
     if figure is not None:
         figcaption = figure.find("figcaption")
-        if figcaption is not None:
+        if figcaption is not None and not _contains_image(figcaption):
             text = clean_caption_text(figcaption.get_text(" ", strip=True))
             if text:
                 return text, "epub_figcaption", figcaption
@@ -46,7 +47,22 @@ def infer_caption(img: Tag) -> tuple[str | None, CaptionStatus, Tag | None]:
     anchor = figure or img
 
     next_sibling = _next_tag_sibling(anchor)
-    if next_sibling is not None and _has_caption_class(next_sibling):
+    # Some illustrated EPUBs represent a two-part plate as adjacent figures,
+    # with the shared caption stored only in the second figure. Preserve the
+    # existing shared-caption behavior without returning that image-bearing
+    # figure as a disposable caption source.
+    if figure is not None and next_sibling is not None and _contains_image(next_sibling):
+        shared_caption = next_sibling.find("figcaption")
+        if shared_caption is not None and not _contains_image(shared_caption):
+            text = clean_caption_text(shared_caption.get_text(" ", strip=True))
+            if text:
+                return text, "epub_adjacent_text", None
+
+    if (
+        next_sibling is not None
+        and _has_caption_class(next_sibling)
+        and not _contains_image(next_sibling)
+    ):
         text = clean_caption_text(next_sibling.get_text(" ", strip=True))
         if text:
             return text, "epub_adjacent_text", next_sibling
@@ -55,7 +71,7 @@ def infer_caption(img: Tag) -> tuple[str | None, CaptionStatus, Tag | None]:
     # non-figure wrapper, e.g. <div class="figure"><img/><span class="caption">.
     if figure is None and img.parent is not None:
         for sibling in img.parent.find_all(class_=_CAPTION_CLASS_RE, recursive=False):
-            if sibling is img:
+            if sibling is img or _contains_image(sibling):
                 continue
             text = clean_caption_text(sibling.get_text(" ", strip=True))
             if text:
@@ -71,6 +87,8 @@ def infer_caption(img: Tag) -> tuple[str | None, CaptionStatus, Tag | None]:
 
 
 def looks_like_caption(node: Tag, *, short: bool = False) -> bool:
+    if _contains_image(node):
+        return False
     if _has_caption_class(node):
         return True
     if node.name not in {"p", "span", "div", "small", "em", "i"}:
@@ -122,6 +140,11 @@ def _previous_tag_sibling(node: Tag) -> Tag | None:
 def _has_caption_class(node: Tag) -> bool:
     class_attr = " ".join(_class_list(node))
     return bool(_CAPTION_CLASS_RE.search(class_attr))
+
+
+def _contains_image(node: Tag) -> bool:
+    """Return whether deleting a caption candidate would also delete an image."""
+    return node.find("img") is not None
 
 
 def _class_list(node: Tag) -> list[str]:
