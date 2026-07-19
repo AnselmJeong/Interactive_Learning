@@ -20,6 +20,7 @@ import { SourceDocumentTypeModal } from "./components/SourceDocumentTypeModal";
 import { AboutModal } from "./components/AboutModal";
 import { SourceFigureCard } from "./components/SourceFigureCard";
 import { LearningBuddy } from "./components/LearningBuddy";
+import { LEARNING_MILESTONES } from "./learning-milestones";
 import { SourceLearningPreview } from "./components/SourceLearningPreview";
 import { AnnotationInlineScope } from "./components/AnnotationInlineScope";
 import { QuestionThreadAnnotationCard } from "./components/QuestionThreadAnnotationCard";
@@ -2347,6 +2348,15 @@ export function App({ request }: { request: RpcRequest }) {
                     aria-valuetext={`${progressText} 대목, ${progressPercent}%`}
                   >
                     <i style={{ transform: `scaleX(${progressPercent / 100})` }} />
+                    <div className="course-progress-milestones" aria-hidden="true">
+                      {LEARNING_MILESTONES.map((milestone) => (
+                        <b
+                          key={milestone}
+                          className={progressPercent >= milestone ? "reached" : ""}
+                          style={{ left: `${milestone}%` }}
+                        />
+                      ))}
+                    </div>
                   </div>
                 </div>
               </div>
@@ -2552,6 +2562,7 @@ export function App({ request }: { request: RpcRequest }) {
           thinking={tutorThinking}
           prefetchState={continuePrefetchState}
           progressPercent={progressPercent}
+          sessionId={session?.id || null}
           currentModuleTitle={buddyModuleTitle}
           currentModuleContext={buddyModuleContext}
           complete={allModulesCovered || session?.status === "completed"}
