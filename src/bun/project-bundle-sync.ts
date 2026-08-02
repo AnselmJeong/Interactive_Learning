@@ -9,7 +9,7 @@ import type { ProjectSummary } from "../shared/rpc-types";
 import type { SessionSnapshot, TutorMessage } from "../shared/tutor-types";
 import { normalizeLearningLevel, type LearningLevel } from "../shared/learning-levels";
 
-const PROJECT_BUNDLE_SCHEMA_VERSION = 3;
+const PROJECT_BUNDLE_SCHEMA_VERSION = 4;
 
 type ProjectBundleManifest = {
   schemaVersion: number;
@@ -20,6 +20,30 @@ type ProjectBundleManifest = {
   updatedAt: number;
   archivedAt: number | null;
   learningLevel?: LearningLevel;
+};
+
+type ProjectDocumentBundle = {
+  id: string;
+  projectId: string;
+  documentType: DocumentType;
+  title: string;
+  subtitle: string | null;
+  description: string | null;
+  authorsJson: string;
+  publisher: string | null;
+  publishedDate: string | null;
+  isbn10: string | null;
+  isbn13: string | null;
+  journal: string | null;
+  doi: string | null;
+  language: string | null;
+  metadataStatus: string;
+  originalFileName: string;
+  originalFilePath: string | null;
+  contentHash: string | null;
+  coverImagePath: string | null;
+  importedAt: number;
+  updatedAt: number;
 };
 
 type ProjectBundleMarker = {
@@ -336,6 +360,41 @@ export function projectManifestFromSummary(project: ProjectSummary): ProjectBund
 
 export async function writeProjectManifest(project: ProjectSummary) {
   await writeJson(join(project.rootPath, project.id, "project.json"), projectManifestFromSummary(project));
+  await writeProjectDocumentIndex(project.id, project.rootPath);
+}
+
+export async function writeProjectDocumentIndex(projectId: string, rootPath: string) {
+  const rows = getDb().query<{
+    id: string; project_id: string; document_type: DocumentType; title: string; subtitle: string | null;
+    description: string | null; authors_json: string; publisher: string | null; published_date: string | null;
+    isbn_10: string | null; isbn_13: string | null; journal: string | null; doi: string | null;
+    language: string | null; metadata_status: string; original_file_name: string; original_file_path: string | null;
+    content_hash: string | null; cover_image_path: string | null; imported_at: number; updated_at: number;
+  }, [string]>("SELECT * FROM project_documents WHERE project_id = ? ORDER BY imported_at, id").all(projectId);
+  const documents: ProjectDocumentBundle[] = rows.map((row) => ({
+    id: row.id,
+    projectId: row.project_id,
+    documentType: row.document_type,
+    title: row.title,
+    subtitle: row.subtitle,
+    description: row.description,
+    authorsJson: row.authors_json,
+    publisher: row.publisher,
+    publishedDate: row.published_date,
+    isbn10: row.isbn_10,
+    isbn13: row.isbn_13,
+    journal: row.journal,
+    doi: row.doi,
+    language: row.language,
+    metadataStatus: row.metadata_status,
+    originalFileName: row.original_file_name,
+    originalFilePath: row.original_file_path,
+    contentHash: row.content_hash,
+    coverImagePath: row.cover_image_path,
+    importedAt: row.imported_at,
+    updatedAt: row.updated_at,
+  }));
+  await writeJson(join(rootPath, projectId, "documents.json"), { schemaVersion: 1, documents });
 }
 
 async function importProject(rootPath: string, projectId: string) {
@@ -366,11 +425,41 @@ async function importProject(rootPath: string, projectId: string) {
     )
     .run(projectId, title, description, rootPath, learningLevel, createdAt, updatedAt, archivedAt);
 
+  await importDocuments(projectDir, projectId);
   await importSources(projectDir, projectId);
   await importMaterials(projectDir, projectId);
   await importMaterialAnnotations(projectDir, projectId);
   await importSessions(projectDir, projectId);
   return true;
+}
+
+async function importDocuments(projectDir: string, projectId: string) {
+  const stored = await readJson<{ schemaVersion?: number; documents?: ProjectDocumentBundle[] }>(join(projectDir, "documents.json"));
+  for (const document of stored?.documents || []) {
+    if (!document?.id || document.projectId !== projectId) continue;
+    getDb().query(`
+      INSERT INTO project_documents
+      (id, project_id, document_type, title, subtitle, description, authors_json, publisher, published_date,
+       isbn_10, isbn_13, journal, doi, language, metadata_status, original_file_name, original_file_path,
+       content_hash, cover_image_path, imported_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        project_id = excluded.project_id, document_type = excluded.document_type, title = excluded.title,
+        subtitle = excluded.subtitle, description = excluded.description, authors_json = excluded.authors_json,
+        publisher = excluded.publisher, published_date = excluded.published_date, isbn_10 = excluded.isbn_10,
+        isbn_13 = excluded.isbn_13, journal = excluded.journal, doi = excluded.doi, language = excluded.language,
+        metadata_status = excluded.metadata_status, original_file_name = excluded.original_file_name,
+        original_file_path = excluded.original_file_path, content_hash = excluded.content_hash,
+        cover_image_path = excluded.cover_image_path, updated_at = excluded.updated_at
+    `).run(
+      document.id, projectId, documentType(document.documentType), document.title || titleFromFile(document.originalFileName),
+      document.subtitle, document.description, document.authorsJson || "[]", document.publisher, document.publishedDate,
+      document.isbn10, document.isbn13, document.journal, document.doi, document.language,
+      ["found", "not_found", "manual", "failed"].includes(document.metadataStatus) ? document.metadataStatus : "pending",
+      document.originalFileName || document.title, document.originalFilePath, document.contentHash,
+      document.coverImagePath, timestamp(document.importedAt), timestamp(document.updatedAt || document.importedAt),
+    );
+  }
 }
 
 async function importSources(projectDir: string, projectId: string) {
@@ -388,18 +477,27 @@ async function importSources(projectDir: string, projectId: string) {
     const createdAt = timestamp(manifest.importedAt);
     const updatedAt = timestamp(manifest.updatedAt || manifest.importedAt);
     const contentHash = await hashProjectFile(importedPath, [manifestPath, chunksPath]);
+    const documentId = manifest.documentId || `document-${(new Bun.CryptoHasher("sha256").update(`${projectId}\u0000${manifest.id}`).digest("hex")).slice(0, 32)}`;
+    getDb().query(`
+      INSERT OR IGNORE INTO project_documents
+      (id, project_id, document_type, title, original_file_name, original_file_path, content_hash, imported_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(documentId, projectId, sourceDocumentType, manifest.title || titleFromFile(originalFileName), originalFileName, manifest.originalPath || null, contentHash, createdAt, updatedAt);
 
     getDb()
       .query(
         `INSERT INTO project_sources
          (id, project_id, title, source_type, original_file_name, original_file_path, imported_file_path,
-          document_type, content_hash, manifest_path, chunks_path, quality_status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          document_type, document_id, source_ordinal, source_kind, content_hash, manifest_path, chunks_path, quality_status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(id) DO UPDATE SET
            project_id = excluded.project_id,
            title = excluded.title,
            source_type = excluded.source_type,
            document_type = excluded.document_type,
+           document_id = excluded.document_id,
+           source_ordinal = excluded.source_ordinal,
+           source_kind = excluded.source_kind,
            original_file_name = excluded.original_file_name,
            original_file_path = excluded.original_file_path,
            imported_file_path = excluded.imported_file_path,
@@ -418,6 +516,9 @@ async function importSources(projectDir: string, projectId: string) {
         manifest.originalPath || null,
         importedPath || manifestPath,
         sourceDocumentType,
+        documentId,
+        0,
+        sourceDocumentType === "article" ? "article" : "chapter",
         contentHash,
         manifestPath,
         existsSync(chunksPath) ? chunksPath : null,

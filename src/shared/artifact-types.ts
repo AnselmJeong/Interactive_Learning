@@ -6,6 +6,7 @@ export type MaterialStatus = "draft" | "generating" | "ready" | "failed";
 export type SourceManifest = {
   id: string;
   projectId: string;
+  documentId?: string;
   title: string;
   updatedAt?: string;
   sourceType: SourceType;

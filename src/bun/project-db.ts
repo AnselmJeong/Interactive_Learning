@@ -1,4 +1,6 @@
 import { Database } from "bun:sqlite";
+import { createHash } from "node:crypto";
+import { basename } from "node:path";
 import { databasePath } from "./paths";
 
 let db: Database | null = null;
@@ -28,6 +30,9 @@ export function getDb() {
       title TEXT NOT NULL,
       source_type TEXT NOT NULL CHECK (source_type IN ('markdown', 'pdf', 'text')),
       document_type TEXT NOT NULL DEFAULT 'book' CHECK (document_type IN ('book', 'article')),
+      document_id TEXT REFERENCES project_documents(id) ON DELETE CASCADE,
+      source_ordinal INTEGER,
+      source_kind TEXT,
       original_file_name TEXT NOT NULL,
       original_file_path TEXT,
       imported_file_path TEXT NOT NULL,
@@ -41,6 +46,38 @@ export function getDb() {
 
     CREATE UNIQUE INDEX IF NOT EXISTS idx_project_sources_hash
       ON project_sources(project_id, content_hash);
+
+    CREATE TABLE IF NOT EXISTS project_documents (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      document_type TEXT NOT NULL CHECK (document_type IN ('book', 'article')),
+      title TEXT NOT NULL,
+      subtitle TEXT,
+      description TEXT,
+      authors_json TEXT NOT NULL DEFAULT '[]',
+      publisher TEXT,
+      published_date TEXT,
+      isbn_10 TEXT,
+      isbn_13 TEXT,
+      journal TEXT,
+      doi TEXT,
+      language TEXT,
+      provider TEXT,
+      provider_volume_id TEXT,
+      metadata_status TEXT NOT NULL DEFAULT 'pending'
+        CHECK (metadata_status IN ('pending', 'found', 'not_found', 'manual', 'failed')),
+      metadata_fetched_at INTEGER,
+      metadata_overrides_json TEXT NOT NULL DEFAULT '{}',
+      original_file_name TEXT NOT NULL,
+      original_file_path TEXT,
+      content_hash TEXT,
+      cover_image_path TEXT,
+      imported_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_project_documents_project_imported
+      ON project_documents(project_id, imported_at ASC);
 
     CREATE TABLE IF NOT EXISTS learning_materials (
       id TEXT PRIMARY KEY,
@@ -311,6 +348,17 @@ export function getDb() {
   if (!sourceColumns.includes("document_type")) {
     db.exec("ALTER TABLE project_sources ADD COLUMN document_type TEXT NOT NULL DEFAULT 'book' CHECK (document_type IN ('book', 'article'));");
   }
+  if (!sourceColumns.includes("document_id")) {
+    db.exec("ALTER TABLE project_sources ADD COLUMN document_id TEXT REFERENCES project_documents(id) ON DELETE CASCADE;");
+  }
+  if (!sourceColumns.includes("source_ordinal")) {
+    db.exec("ALTER TABLE project_sources ADD COLUMN source_ordinal INTEGER;");
+  }
+  if (!sourceColumns.includes("source_kind")) {
+    db.exec("ALTER TABLE project_sources ADD COLUMN source_kind TEXT;");
+  }
+  db.exec("CREATE INDEX IF NOT EXISTS idx_project_sources_document_ordinal ON project_sources(document_id, source_ordinal ASC, created_at ASC);");
+  migrateProjectDocuments(db);
   const messageColumns = db.query<{ name: string }, []>("PRAGMA table_info(learning_messages)").all().map((column) => column.name);
   if (!messageColumns.includes("choices_json")) {
     db.exec("ALTER TABLE learning_messages ADD COLUMN choices_json TEXT NOT NULL DEFAULT '[]';");
@@ -452,6 +500,99 @@ export function getDb() {
   `);
 
   return db;
+}
+
+type LegacySourceForDocumentMigration = {
+  id: string;
+  project_id: string;
+  title: string;
+  document_type: "book" | "article" | null;
+  original_file_name: string;
+  original_file_path: string | null;
+  imported_file_path: string;
+  content_hash: string;
+  created_at: number;
+};
+
+function documentIdForLegacyGroup(projectId: string, documentType: string, origin: string, sourceIds: string[]) {
+  const digest = createHash("sha256")
+    .update([projectId, documentType, origin, ...sourceIds].join("\u0000"))
+    .digest("hex")
+    .slice(0, 32);
+  return `document-${digest}`;
+}
+
+function legacyDocumentOrigin(row: LegacySourceForDocumentMigration) {
+  const raw = (row.original_file_path || "").replaceAll("\\", "/").trim();
+  if (raw) return raw.split("#", 1)[0]!.replace(/\/+$/, "").toLocaleLowerCase();
+  return `source:${row.id}`;
+}
+
+function legacyDocumentTitle(rows: LegacySourceForDocumentMigration[]) {
+  const first = rows[0]!;
+  const origin = first.original_file_path?.split("#", 1)[0];
+  const candidate = origin ? basename(origin) : first.original_file_name;
+  return candidate.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ").trim() || first.title;
+}
+
+/**
+ * Add the document layer without changing any legacy IDs.  A source keeps its
+ * existing identity; only its new parent is inferred from its original input.
+ */
+function migrateProjectDocuments(database: Database) {
+  const rows = database
+    .query<LegacySourceForDocumentMigration, []>(`
+      SELECT id, project_id, title, document_type, original_file_name, original_file_path,
+             imported_file_path, content_hash, created_at
+      FROM project_sources
+      WHERE document_id IS NULL
+      ORDER BY project_id, created_at, id
+    `)
+    .all();
+  if (!rows.length) return;
+
+  const groups = new Map<string, LegacySourceForDocumentMigration[]>();
+  for (const row of rows) {
+    const type = row.document_type === "article" ? "article" : "book";
+    // Each article is intentionally its own user-visible document, even when
+    // two imports happened to originate from the same path.
+    const origin = type === "article" ? `article:${row.id}` : legacyDocumentOrigin(row);
+    const key = `${row.project_id}\u0000${type}\u0000${origin}`;
+    const group = groups.get(key) || [];
+    group.push(row);
+    groups.set(key, group);
+  }
+
+  database.transaction(() => {
+    for (const [key, group] of groups) {
+      const [projectId = "", documentType = "book", origin = ""] = key.split("\u0000");
+      const documentId = documentIdForLegacyGroup(projectId, documentType, origin, group.map((row) => row.id));
+      const now = Math.max(...group.map((row) => row.created_at));
+      const first = group[0]!;
+      database
+        .query(`
+          INSERT OR IGNORE INTO project_documents
+          (id, project_id, document_type, title, original_file_name, original_file_path, content_hash, imported_at, updated_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `)
+        .run(
+          documentId,
+          projectId,
+          documentType,
+          legacyDocumentTitle(group),
+          first.original_file_name,
+          documentType === "article" ? first.original_file_path : origin,
+          group.length === 1 ? first.content_hash : null,
+          now,
+          now,
+        );
+      group.forEach((row, ordinal) => {
+        database
+          .query("UPDATE project_sources SET document_id = ?, source_ordinal = ?, source_kind = COALESCE(source_kind, ?) WHERE id = ?")
+          .run(documentId, ordinal, documentType === "article" ? "article" : "chapter", row.id);
+      });
+    }
+  })();
 }
 
 function createPreparedMessageStore(database: Database) {

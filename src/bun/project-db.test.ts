@@ -75,6 +75,12 @@ describe("project database migrations", () => {
     await mkdir(appData, { recursive: true });
     const legacyDb = new Database(join(appData, "projects.sqlite"), { create: true });
     legacyDb.exec(`
+      CREATE TABLE projects (
+        id TEXT PRIMARY KEY,
+        title TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
       CREATE TABLE project_sources (
         id TEXT PRIMARY KEY,
         project_id TEXT NOT NULL,
@@ -93,12 +99,18 @@ describe("project database migrations", () => {
       INSERT INTO project_sources
       (id, project_id, title, source_type, original_file_name, imported_file_path, content_hash, created_at, updated_at)
       VALUES ('legacy-source', 'legacy-project', 'Legacy Book', 'markdown', 'book.md', 'book.md', 'hash', 1, 1);
+      INSERT INTO projects (id, title, created_at, updated_at)
+      VALUES ('legacy-project', 'Legacy Project', 1, 1);
     `);
     legacyDb.close();
 
-    const row = getDb().query<{ document_type: string }, []>("SELECT document_type FROM project_sources WHERE id = 'legacy-source'").get();
+    const row = getDb().query<{ document_type: string; document_id: string | null; source_ordinal: number | null }, []>("SELECT document_type, document_id, source_ordinal FROM project_sources WHERE id = 'legacy-source'").get();
+    const document = getDb().query<{ id: string; title: string; document_type: string }, []>("SELECT id, title, document_type FROM project_documents WHERE project_id = 'legacy-project'").get();
 
     expect(row?.document_type).toBe("book");
+    expect(row?.document_id).toBe(document?.id);
+    expect(row?.source_ordinal).toBe(0);
+    expect(document).toMatchObject({ title: "book", document_type: "book" });
   });
 
   test("moves legacy prepared batch rows into immutable message sets and binds the session", () => {

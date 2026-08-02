@@ -5,12 +5,15 @@ import { getDb } from "./project-db";
 import { dataPath, sourceDirAt } from "./paths";
 import { buildPreppySourcePack } from "./preppy-service";
 import { SettingsService } from "./settings-service";
+import { writeProjectDocumentIndex } from "./project-bundle-sync";
 import type { DocumentType, SourceChunk, SourceFigure, SourceManifest, SourceType } from "../shared/artifact-types";
 import type { PreparedSourceImport, PreparedSourceImportItem, SourceSummary } from "../shared/rpc-types";
 
 type SourceRow = {
   id: string;
   project_id: string;
+  document_id: string | null;
+  source_ordinal: number | null;
   title: string;
   source_type: SourceType;
   document_type: DocumentType;
@@ -91,6 +94,7 @@ function toSource(row: SourceRow, learningStatus: SourceLearningStatus = "not_st
   return {
     id: row.id,
     projectId: row.project_id,
+    documentId: row.document_id,
     title: row.title,
     sourceType: row.source_type,
     documentType: row.document_type || "book",
@@ -547,16 +551,16 @@ export class SourceService {
         throw new Error("Article import currently supports PDF files only.");
       }
       if (info.isDirectory()) {
-        imported.push(...(await this.importFolder(projectId, path)));
+        imported.push(...(await this.importFolder(projectId, path, path, undefined, documentType)));
       } else if (info.isFile() && isPreppyInputFile(path)) {
         const sourcePack = await buildPreppySourcePack(path, documentType);
         try {
-          imported.push(...(await this.importFolder(projectId, sourcePack.outputPath, path)));
+          imported.push(...(await this.importFolder(projectId, sourcePack.outputPath, path, undefined, documentType)));
         } finally {
           await sourcePack.cleanup();
         }
       } else if (info.isFile() && isImportableFile(path)) {
-        imported.push(await this.importFile(projectId, path));
+        imported.push(await this.importFile(projectId, path, documentType));
       }
     }
     return imported;
@@ -610,7 +614,7 @@ export class SourceService {
         const itemIds = [...entry.itemRefs.entries()]
           .filter(([, ref]) => ref.kind === "file" && ref.fileIndex === index)
           .map(([itemId]) => itemId);
-        if (itemIds.some((itemId) => selected.has(itemId))) imported.push(await this.importFile(projectId, entry.files[index]!.path));
+        if (itemIds.some((itemId) => selected.has(itemId))) imported.push(await this.importFile(projectId, entry.files[index]!.path, entry.documentType));
       }
 
       for (let index = 0; index < entry.folders.length; index += 1) {
@@ -619,7 +623,7 @@ export class SourceService {
           .map(([, ref]) => (ref.kind === "folder" ? ref.relativePath : ""));
         if (!selectedRelativePaths.length) continue;
         const folder = entry.folders[index]!;
-        imported.push(...(await this.importFolder(projectId, folder.path, folder.originalSourcePath, selectedRelativePaths)));
+        imported.push(...(await this.importFolder(projectId, folder.path, folder.originalSourcePath, selectedRelativePaths, entry.documentType)));
       }
       return imported;
     } finally {
@@ -703,7 +707,18 @@ export class SourceService {
     await Promise.all(entry.folders.map((folder) => folder.cleanup?.().catch(() => undefined)));
   }
 
-  private async importFile(projectId: string, path: string) {
+  private createDocument(projectId: string, documentType: DocumentType, title: string, originalPath: string, originalFileName: string, contentHash: string) {
+    const id = crypto.randomUUID();
+    const now = Date.now();
+    getDb().query(`
+      INSERT INTO project_documents
+      (id, project_id, document_type, title, original_file_name, original_file_path, content_hash, imported_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(id, projectId, documentType, title, originalFileName, originalPath, contentHash, now, now);
+    return id;
+  }
+
+  private async importFile(projectId: string, path: string, documentType: DocumentType = "book") {
     const { digest, bytes } = await hashFile(path);
     const existing = getDb()
       .query<SourceRow, [string, string]>("SELECT * FROM project_sources WHERE project_id = ? AND content_hash = ?")
@@ -712,6 +727,8 @@ export class SourceService {
 
     const id = crypto.randomUUID();
     const type = sourceTypeForPath(path);
+    const title = titleForPath(path);
+    const documentId = this.createDocument(projectId, documentType, title, path, basename(path), digest);
     const dir = sourceDirAt(this.projectRoot(projectId), projectId, id);
     await mkdir(dir, { recursive: true });
     const originalFileName = basename(path);
@@ -723,8 +740,10 @@ export class SourceService {
     return this.persistSource({
       id,
       projectId,
-      title: titleForPath(path),
+      title,
       type,
+      documentId,
+      sourceOrdinal: 0,
       originalPath: path,
       originalFileName,
       importedPath,
@@ -736,7 +755,7 @@ export class SourceService {
     });
   }
 
-  private async importFolder(projectId: string, path: string, originalSourcePath = path, selectedRelativePaths?: string[]) {
+  private async importFolder(projectId: string, path: string, originalSourcePath = path, selectedRelativePaths?: string[], requestedDocumentType?: DocumentType) {
     await this.removeLegacyFolderAggregate(projectId, originalSourcePath);
     const folderImportId = crypto.randomUUID();
     const folderDir = join(this.projectRoot(projectId), projectId, "source_folders", folderImportId);
@@ -747,6 +766,7 @@ export class SourceService {
     const folderDigest = await hashDirectory(path);
     const allCopiedFiles = await walkFiles(importedRoot);
     const preppyManifest = await readPreppyManifest(importedRoot);
+    const documentType = requestedDocumentType === "article" ? "article" : preppyManifest.documentType;
     const preppyFigures = await readPreppyFigures(importedRoot);
     const chaptersDir = join(importedRoot, preppyManifest.chaptersDir);
     const textRoot = (await existingDir(chaptersDir)) ? chaptersDir : importedRoot;
@@ -785,7 +805,16 @@ export class SourceService {
 
     const imported: SourceSummary[] = [];
     let createdCount = 0;
-    for (const copiedFile of textFiles) {
+    const documentId = this.createDocument(
+      projectId,
+      documentType,
+      titleForPath(originalSourcePath),
+      originalSourcePath,
+      basename(originalSourcePath),
+      folderDigest,
+    );
+    for (let ordinal = 0; ordinal < textFiles.length; ordinal += 1) {
+      const copiedFile = textFiles[ordinal]!;
       const manifestPath = relativePortable(importedRoot, copiedFile);
       const originalPath = await sourceChildPath(originalSourcePath, manifestPath);
       const title = preppyManifest.chapterTitleByPath.get(manifestPath) || titleForPath(copiedFile);
@@ -794,12 +823,17 @@ export class SourceService {
         manifestPath,
         chapterIndex: preppyManifest.chapterIndexByPath.get(manifestPath),
         figures: preppyFigures,
-        documentType: preppyManifest.documentType,
+        documentType,
+        documentId,
+        sourceOrdinal: ordinal,
       });
       imported.push(result.source);
       if (result.created) createdCount += 1;
     }
-    if (createdCount === 0) await rm(folderDir, { recursive: true, force: true });
+    if (createdCount === 0) {
+      getDb().query("DELETE FROM project_documents WHERE id = ?").run(documentId);
+      await rm(folderDir, { recursive: true, force: true });
+    }
     return imported;
   }
 
@@ -839,6 +873,8 @@ export class SourceService {
       chapterIndex: number | undefined;
       figures: PreppyFigure[];
       documentType: DocumentType;
+      documentId: string;
+      sourceOrdinal: number;
     }
   ) {
     const { digest, bytes } = await hashFile(importedPath);
@@ -866,6 +902,8 @@ export class SourceService {
       title,
       type,
       documentType: preppy?.documentType || "book",
+      documentId: preppy?.documentId,
+      sourceOrdinal: preppy?.sourceOrdinal,
       originalPath,
       originalFileName: basename(importedPath),
       importedPath,
@@ -885,6 +923,8 @@ export class SourceService {
     title: string;
     type: SourceType;
     documentType?: DocumentType;
+    documentId?: string;
+    sourceOrdinal?: number;
     originalPath: string;
     originalFileName: string;
     importedPath: string;
@@ -900,6 +940,7 @@ export class SourceService {
     const manifest: SourceManifest = {
       id: input.id,
       projectId: input.projectId,
+      documentId: input.documentId,
       title: input.title,
       updatedAt: new Date().toISOString(),
       sourceType: input.type,
@@ -921,8 +962,8 @@ export class SourceService {
       .query(
         `INSERT INTO project_sources
          (id, project_id, title, source_type, original_file_name, original_file_path, imported_file_path,
-          document_type, content_hash, manifest_path, chunks_path, quality_status, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          document_type, document_id, source_ordinal, source_kind, content_hash, manifest_path, chunks_path, quality_status, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         input.id,
@@ -933,6 +974,9 @@ export class SourceService {
         input.originalPath,
         input.importedPath,
         input.documentType || "book",
+        input.documentId || null,
+        input.sourceOrdinal ?? null,
+        input.documentType === "article" ? "article" : "chapter",
         input.digest,
         manifestPath,
         chunksPath,
@@ -940,6 +984,7 @@ export class SourceService {
         now,
         now
       );
+    await writeProjectDocumentIndex(input.projectId, this.projectRoot(input.projectId));
     return toSource(this.getRow(input.id));
   }
 

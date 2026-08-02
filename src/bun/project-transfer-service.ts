@@ -17,7 +17,7 @@ import { dataPath } from "./paths";
 import { getDb } from "./project-db";
 import { SettingsService } from "./settings-service";
 
-const TRANSFER_SCHEMA_VERSION = 1;
+const TRANSFER_SCHEMA_VERSION = 2;
 const MAX_ARCHIVE_BYTES = 2_000_000_000;
 const MAX_FILE_COUNT = 10_000;
 const MAX_FILE_BYTES = 500_000_000;
@@ -25,6 +25,7 @@ const MAX_TOTAL_BYTES = 4_000_000_000;
 
 const TABLE_QUERIES = {
   projects: "SELECT * FROM projects WHERE id = ?",
+  project_documents: "SELECT * FROM project_documents WHERE project_id = ? ORDER BY imported_at, id",
   project_sources: "SELECT * FROM project_sources WHERE project_id = ? ORDER BY id",
   learning_materials: "SELECT * FROM learning_materials WHERE project_id = ? ORDER BY id",
   material_sources: "SELECT ms.* FROM material_sources ms JOIN learning_materials m ON m.id = ms.material_id WHERE m.project_id = ? ORDER BY ms.material_id, ms.ordinal",
@@ -44,7 +45,7 @@ type PreparedTransfer = { dir: string; manifest: ProjectTransferManifest; state:
 
 const preparedTransfers = new Map<string, PreparedTransfer>();
 const INSERT_ORDER: TransferTable[] = [
-  "projects", "project_sources", "learning_materials", "material_sources", "learning_message_sets",
+  "projects", "project_documents", "project_sources", "learning_materials", "material_sources", "learning_message_sets",
   "prepared_learning_messages", "learning_sessions", "learning_messages", "session_module_progress",
   "learner_signals", "module_progress", "material_annotations",
 ];
@@ -206,7 +207,7 @@ function validateManifest(value: unknown): ProjectTransferManifest {
   if (manifest.format !== "learnie-project-transfer") {
     throw new Error("This is a readable learning archive, not a project transfer. Open its Markdown files to read it, or export a project transfer from the source computer.");
   }
-  if (manifest.schemaVersion !== TRANSFER_SCHEMA_VERSION || manifest.minimumReaderSchemaVersion > TRANSFER_SCHEMA_VERSION) throw new Error("This project transfer schema is not supported by this Learnie version");
+  if (![1, TRANSFER_SCHEMA_VERSION].includes(manifest.schemaVersion) || manifest.minimumReaderSchemaVersion > TRANSFER_SCHEMA_VERSION) throw new Error("This project transfer schema is not supported by this Learnie version");
   if (![manifest.projectId, manifest.projectTitle, manifest.exportId, manifest.deviceId, manifest.projectStateHash].every((item) => typeof item === "string" && item.length > 0)) throw new Error("Project transfer identity is incomplete");
   if (!Array.isArray(manifest.files) || !manifest.counts || !Number.isFinite(Date.parse(manifest.exportedAt))) throw new Error("Project transfer manifest is incomplete");
   return manifest;
@@ -219,19 +220,66 @@ function safeArchivePath(path: string) {
   return normalized;
 }
 
-function validateState(value: unknown, projectId: string): TransferState {
+function validateState(value: unknown, projectId: string, schemaVersion: number): TransferState {
   if (!value || typeof value !== "object") throw new Error("Project transfer state is invalid");
   const state = value as TransferState;
-  if (state.schemaVersion !== TRANSFER_SCHEMA_VERSION || !state.tables || typeof state.tables !== "object") throw new Error("Project transfer state schema is invalid");
+  if (![1, TRANSFER_SCHEMA_VERSION].includes(state.schemaVersion) || !state.tables || typeof state.tables !== "object") throw new Error("Project transfer state schema is invalid");
   const allowed = new Set(Object.keys(TABLE_QUERIES));
   for (const key of Object.keys(state.tables)) if (!allowed.has(key)) throw new Error(`Unsupported data table in transfer: ${key}`);
-  for (const table of Object.keys(TABLE_QUERIES) as TransferTable[]) if (!Array.isArray(state.tables[table])) throw new Error(`Missing transfer data table: ${table}`);
+  for (const table of Object.keys(TABLE_QUERIES) as TransferTable[]) {
+    if (table === "project_documents" && schemaVersion === 1 && !Array.isArray(state.tables[table])) continue;
+    if (!Array.isArray(state.tables[table])) throw new Error(`Missing transfer data table: ${table}`);
+  }
   if (state.tables.projects.length !== 1 || state.tables.projects[0]?.id !== projectId) throw new Error("Project transfer state does not match its manifest");
+  return state;
+}
+
+function materializeLegacyDocuments(state: TransferState) {
+  if (Array.isArray(state.tables.project_documents)) return state;
+  const project = state.tables.projects[0];
+  if (!project) return state;
+  const sources = state.tables.project_sources;
+  const documents = sources.map((source, ordinal) => {
+    const id = `legacy-document-${sha256(`${project.id}\u0000${source.id}`).slice(0, 32)}`;
+    source.document_id = id;
+    source.source_ordinal = 0;
+    source.source_kind = source.document_type === "article" ? "article" : "chapter";
+    return {
+      id,
+      project_id: project.id,
+      document_type: source.document_type === "article" ? "article" : "book",
+      title: String(source.title || source.original_file_name || `Imported document ${ordinal + 1}`),
+      subtitle: null,
+      description: null,
+      authors_json: "[]",
+      publisher: null,
+      published_date: null,
+      isbn_10: null,
+      isbn_13: null,
+      journal: null,
+      doi: null,
+      language: null,
+      provider: null,
+      provider_volume_id: null,
+      metadata_status: "pending",
+      metadata_fetched_at: null,
+      metadata_overrides_json: "{}",
+      original_file_name: String(source.original_file_name || source.title || "document"),
+      original_file_path: null,
+      content_hash: source.content_hash || null,
+      cover_image_path: null,
+      imported_at: Number(source.created_at || Date.now()),
+      updated_at: Number(source.updated_at || source.created_at || Date.now()),
+    };
+  });
+  (state.tables as Record<string, Array<Record<string, unknown>>>).project_documents = documents;
+  state.schemaVersion = TRANSFER_SCHEMA_VERSION;
   return state;
 }
 
 function tableCounts(state: TransferState) {
   return {
+    documents: state.tables.project_documents.length,
     sources: state.tables.project_sources.length,
     materials: state.tables.learning_materials.length,
     sessions: state.tables.learning_sessions.length,
@@ -352,9 +400,15 @@ export class ProjectTransferService {
     }
     const stateBytes = files.get("project/state.json");
     if (!stateBytes) throw new Error("Project transfer state is missing");
-    const state = validateState(JSON.parse(new TextDecoder().decode(stateBytes)), manifest.projectId);
+    const state = validateState(JSON.parse(new TextDecoder().decode(stateBytes)), manifest.projectId, manifest.schemaVersion);
     if (sha256(stableStringify(state)) !== manifest.projectStateHash) throw new Error("Project transfer state hash does not match its manifest");
-    if (stableStringify(tableCounts(state)) !== stableStringify(manifest.counts)) throw new Error("Project transfer counts do not match its payload");
+    if (manifest.schemaVersion === 1) {
+      const { documents: _documents, ...legacyCounts } = tableCounts(state);
+      if (stableStringify(legacyCounts) !== stableStringify(manifest.counts)) throw new Error("Project transfer counts do not match its payload");
+    } else if (stableStringify(tableCounts(state)) !== stableStringify(manifest.counts)) {
+      throw new Error("Project transfer counts do not match its payload");
+    }
+    materializeLegacyDocuments(state);
 
     const dir = await mkdtemp(join(tmpdir(), "learnie-project-transfer-import-"));
     for (const [name, bytes] of files) {

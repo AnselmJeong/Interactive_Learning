@@ -36,12 +36,55 @@ export type ProjectSummary = {
 export type SourceSummary = {
   id: string;
   projectId: string;
+  documentId?: string | null;
   title: string;
   sourceType: SourceType;
   documentType: DocumentType;
   originalFileName: string;
   qualityStatus: QualityStatus;
   learningStatus: "not_started" | "in_progress" | "completed";
+  createdAt: number;
+  updatedAt: number;
+};
+
+export type LearningProgressSummary = {
+  status: "not_started" | "in_progress" | "completed";
+  coveredChunks: number;
+  totalChunks: number;
+  percent: number;
+  currentSourceId: string | null;
+  activeSessionId: string | null;
+};
+
+export type PreparationProgressSummary = {
+  completedMessages: number;
+  totalMessages: number;
+  percent: number;
+};
+
+export type DocumentSummary = {
+  id: string;
+  projectId: string;
+  documentType: DocumentType;
+  title: string;
+  subtitle: string | null;
+  description: string | null;
+  authors: string[];
+  publisher: string | null;
+  publishedDate: string | null;
+  isbn10: string | null;
+  isbn13: string | null;
+  journal: string | null;
+  doi: string | null;
+  language: string | null;
+  coverUrl: string | null;
+  metadataStatus: "pending" | "found" | "not_found" | "manual" | "failed";
+  sourceCount: number;
+  learning: LearningProgressSummary;
+  preparation: PreparationProgressSummary;
+  annotationCount: number;
+  lastStudiedAt: number | null;
+  originalFileName: string;
   createdAt: number;
   updatedAt: number;
 };
@@ -139,6 +182,9 @@ export type AppRPC = {
       "sources.list": { params: { projectId: string }; response: SourceSummary[] };
       "sources.rename": { params: { projectId: string; sourceId: string; title: string }; response: SourceSummary };
       "sources.delete": { params: { projectId: string; sourceId: string }; response: boolean };
+      "documents.list": { params: { projectId: string }; response: DocumentSummary[] };
+      "documents.get": { params: { projectId: string; documentId: string }; response: DocumentSummary };
+      "documents.listSources": { params: { projectId: string; documentId: string }; response: SourceSummary[] };
       "materials.generate": { params: { projectId: string; sourceIds: string[] }; response: MaterialSummary };
       "materials.list": { params: { projectId: string }; response: MaterialSummary[] };
       "materials.getArtifacts": { params: { materialId: string }; response: MaterialArtifacts };

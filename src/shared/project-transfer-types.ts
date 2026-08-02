@@ -1,4 +1,5 @@
 export type ProjectTransferCounts = {
+  documents: number;
   sources: number;
   materials: number;
   sessions: number;

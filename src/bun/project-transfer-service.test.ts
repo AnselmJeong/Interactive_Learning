@@ -42,12 +42,15 @@ describe("project transfer", () => {
     await writeFile(join(materialDir, "material_manifest.json"), "{}", "utf8");
     await writeFile(join(materialDir, "figures.json"), JSON.stringify([{ assetPath: join(sourceDir, "asset.png"), assetUrl: `file://${join(sourceDir, "asset.png")}` }]), "utf8");
     const now = Date.now();
-    getDb().query(`INSERT INTO project_sources (id, project_id, title, source_type, original_file_name, original_file_path, imported_file_path, content_hash, manifest_path, chunks_path, quality_status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-      .run("source-1", project.id, "Source", "markdown", "book.md", "/Users/private/book.md", join(sourceDir, "original.md"), "hash-1", join(sourceDir, "source_manifest.json"), join(sourceDir, "source_chunks.json"), "good", now, now);
+    getDb().query(`INSERT INTO project_documents (id, project_id, document_type, title, original_file_name, imported_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
+      .run("document-1", project.id, "book", "Book", "book.md", now, now);
+    getDb().query(`INSERT INTO project_sources (id, project_id, title, source_type, original_file_name, original_file_path, imported_file_path, document_id, source_ordinal, source_kind, content_hash, manifest_path, chunks_path, quality_status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run("source-1", project.id, "Source", "markdown", "book.md", "/Users/private/book.md", join(sourceDir, "original.md"), "document-1", 0, "chapter", "hash-1", join(sourceDir, "source_manifest.json"), join(sourceDir, "source_chunks.json"), "good", now, now);
     getDb().query(`INSERT INTO learning_materials (id, project_id, title, material_type, status, manifest_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
       .run("material-1", project.id, "Material", "source_course", "ready", join(materialDir, "material_manifest.json"), now, now);
     getDb().query("INSERT INTO material_sources (material_id, source_id, ordinal) VALUES (?, ?, ?)").run("material-1", "source-1", 0);
     const exported = await new ProjectTransferService().exportTransfer(project.id);
+    expect(exported.counts.documents).toBe(1);
 
     const files = readZipEntries(await Bun.file(exported.zipPath).bytes());
     expect(files.has("transfer.json")).toBe(true);
@@ -70,6 +73,7 @@ describe("project transfer", () => {
     const importedSource = getDb().query<{ imported_file_path: string; manifest_path: string }, []>("SELECT imported_file_path, manifest_path FROM project_sources").get();
     expect(importedSource?.imported_file_path.startsWith(join(targetProjects, project.id))).toBe(true);
     expect(importedSource?.manifest_path.startsWith(join(targetProjects, project.id))).toBe(true);
+    expect(getDb().query<{ document_id: string }, []>("SELECT document_id FROM project_sources").get()?.document_id).toBe("document-1");
     const importedFigures = JSON.parse(await readFile(join(targetProjects, project.id, "materials", "material-1", "figures.json"), "utf8")) as Array<{ assetPath: string; assetUrl: string }>;
     expect(importedFigures[0]?.assetPath.startsWith(join(targetProjects, project.id))).toBe(true);
     expect(importedFigures[0]?.assetUrl.startsWith("file:")).toBe(true);

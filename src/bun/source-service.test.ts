@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { closeDbForTests, getDb } from "./project-db";
 import { ProjectService } from "./project-service";
+import { DocumentService } from "./document-service";
 import { normalizeMarkdownChunks, sanitizeHeadingPath, SourceService } from "./source-service";
 
 describe("markdown chunk heading paths", () => {
@@ -121,6 +122,13 @@ describe("article source packs", () => {
     expect(prepared.items).toHaveLength(1);
     expect(imported).toHaveLength(1);
     expect(imported[0]?.documentType).toBe("article");
+    expect(imported[0]?.documentId).toBeTruthy();
     expect(service.list(project.id)[0]?.documentType).toBe("article");
+    const documents = new DocumentService().list(project.id);
+    expect(documents).toHaveLength(1);
+    expect(documents[0]).toMatchObject({ documentType: "article", sourceCount: 1 });
+    expect(new DocumentService().listSources(project.id, documents[0]!.id)[0]?.id).toBe(imported[0]?.id);
+    const persistedDocuments = JSON.parse(await readFile(join(project.rootPath, project.id, "documents.json"), "utf8"));
+    expect(persistedDocuments.documents[0]).toMatchObject({ id: documents[0]?.id, documentType: "article" });
   });
 });

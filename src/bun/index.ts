@@ -2,6 +2,7 @@ import Electrobun, { BrowserView, Utils } from "electrobun/bun";
 import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { ProjectService } from "./project-service";
+import { DocumentService } from "./document-service";
 import { ProjectTransferService } from "./project-transfer-service";
 import { SessionExportService } from "./session-export-service";
 import { SettingsService } from "./settings-service";
@@ -28,6 +29,7 @@ configureAppDataBase(Utils.paths.userData);
 configureDatabaseBase(stableDatabaseBase(Utils.paths.userData));
 
 const projects = new ProjectService();
+const documents = new DocumentService();
 const projectTransfers = new ProjectTransferService();
 const sessionExports = new SessionExportService();
 const settings = new SettingsService();
@@ -337,6 +339,9 @@ const rpc = BrowserView.defineRPC<AppRPC>({
       "sources.list": ({ projectId }) => sources.list(projectId),
       "sources.rename": ({ projectId, sourceId, title }) => sources.rename(projectId, sourceId, title),
       "sources.delete": ({ projectId, sourceId }) => sources.delete(projectId, sourceId),
+      "documents.list": ({ projectId }) => documents.list(projectId),
+      "documents.get": ({ projectId, documentId }) => documents.get(projectId, documentId),
+      "documents.listSources": ({ projectId, documentId }) => documents.listSources(projectId, documentId),
       "materials.generate": async ({ projectId, sourceIds }) => {
         sendToView("materials.generationProgress", { projectId, stage: "concepts", message: "Building source-grounded material", progress: 20 });
         const result = await materials.generate(projectId, sourceIds);
