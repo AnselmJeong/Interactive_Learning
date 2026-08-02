@@ -1,4 +1,5 @@
 import { getDb } from "./project-db";
+import { BookMetadataService } from "./book-metadata-service";
 import type {
   DocumentSummary,
   LearningProgressSummary,
@@ -156,6 +157,7 @@ function aggregateFor(documentId: string): AggregateRow {
 }
 
 export class DocumentService {
+  private readonly metadata = new BookMetadataService();
   list(projectId: string) {
     const documents = getDb()
       .query<DocumentRow, [string]>("SELECT * FROM project_documents WHERE project_id = ? ORDER BY imported_at ASC, id ASC")
@@ -183,5 +185,28 @@ export class DocumentService {
       `)
       .all(documentId)
       .map(toSource);
+  }
+
+  async refreshMetadata(projectId: string, documentId: string) {
+    const current = this.get(projectId, documentId);
+    if (current.documentType !== "book") return current;
+    const isbn = current.isbn13 || current.isbn10 || this.metadata.isbnFromFilename(current.originalFileName)?.value;
+    if (!isbn) {
+      getDb().query("UPDATE project_documents SET metadata_status = 'not_found', updated_at = ? WHERE id = ?").run(Date.now(), documentId);
+      return this.get(projectId, documentId);
+    }
+    try {
+      const metadata = await this.metadata.lookup(isbn);
+      if (!metadata) {
+        getDb().query("UPDATE project_documents SET metadata_status = 'not_found', metadata_fetched_at = ?, updated_at = ? WHERE id = ?").run(Date.now(), Date.now(), documentId);
+        return this.get(projectId, documentId);
+      }
+      const now = Date.now();
+      getDb().query(`UPDATE project_documents SET title = ?, subtitle = ?, description = ?, authors_json = ?, publisher = ?, published_date = ?, isbn_10 = ?, isbn_13 = ?, language = ?, provider = 'google_books', provider_volume_id = ?, metadata_status = 'found', metadata_fetched_at = ?, updated_at = ? WHERE id = ?`)
+        .run(metadata.title, metadata.subtitle, metadata.description, JSON.stringify(metadata.authors), metadata.publisher, metadata.publishedDate, metadata.isbn10, metadata.isbn13, metadata.language, metadata.providerVolumeId, now, now, documentId);
+    } catch {
+      getDb().query("UPDATE project_documents SET metadata_status = 'failed', metadata_fetched_at = ?, updated_at = ? WHERE id = ?").run(Date.now(), Date.now(), documentId);
+    }
+    return this.get(projectId, documentId);
   }
 }

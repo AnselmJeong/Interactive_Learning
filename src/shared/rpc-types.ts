@@ -186,6 +186,7 @@ export type AppRPC = {
       "documents.list": { params: { projectId: string }; response: DocumentSummary[] };
       "documents.get": { params: { projectId: string; documentId: string }; response: DocumentSummary };
       "documents.listSources": { params: { projectId: string; documentId: string }; response: SourceSummary[] };
+      "documents.refreshMetadata": { params: { projectId: string; documentId: string }; response: DocumentSummary };
       "documents.previewTransfer": { params: { projectId: string; documentId: string }; response: DocumentTransferPreview };
       "documents.exportTransfer": { params: { projectId: string; documentId: string; destinationFolder?: string }; response: DocumentTransferExport };
       "documents.exportLegacyTransfers": { params: { projectId: string; destinationFolder?: string }; response: DocumentTransferExport[] };

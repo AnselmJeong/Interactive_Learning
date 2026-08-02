@@ -344,6 +344,7 @@ const rpc = BrowserView.defineRPC<AppRPC>({
       "documents.list": ({ projectId }) => documents.list(projectId),
       "documents.get": ({ projectId, documentId }) => documents.get(projectId, documentId),
       "documents.listSources": ({ projectId, documentId }) => documents.listSources(projectId, documentId),
+      "documents.refreshMetadata": ({ projectId, documentId }) => documents.refreshMetadata(projectId, documentId),
       "documents.previewTransfer": ({ projectId, documentId }) => documentTransfers.preview(projectId, documentId),
       "documents.exportTransfer": ({ projectId, documentId, destinationFolder }) => documentTransfers.export(projectId, documentId, destinationFolder),
       "documents.exportLegacyTransfers": ({ projectId, destinationFolder }) => documentTransfers.exportAll(projectId, destinationFolder),
