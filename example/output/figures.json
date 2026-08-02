@@ -1,0 +1,154 @@
+{
+  "figures": [
+    {
+      "id": "fig-0001",
+      "asset_path": "assets/fig-0001.png",
+      "source_type": "pdf",
+      "chapter_index": 1,
+      "caption": null,
+      "caption_status": "missing",
+      "source_locator": {
+        "page_start": null,
+        "page_end": null,
+        "page": 1,
+        "bbox": [
+          430.2765197753906,
+          655.0468444824219,
+          440.8556823730469,
+          644.2891693115234
+        ],
+        "epub_href": null,
+        "anchor": null,
+        "docling_ref": "#/pictures/0"
+      },
+      "width": 21,
+      "height": 21,
+      "sha256": "8649cd29be612e793e7214d9485352d3804ea4d0e64148c0e661f16794f7c5d9"
+    },
+    {
+      "id": "fig-0002",
+      "asset_path": "assets/fig-0002.png",
+      "source_type": "pdf",
+      "chapter_index": 1,
+      "caption": null,
+      "caption_status": "missing",
+      "source_locator": {
+        "page_start": null,
+        "page_end": null,
+        "page": 1,
+        "bbox": [
+          430.3500061035156,
+          639.2781524658203,
+          441.29254150390625,
+          628.3806915283203
+        ],
+        "epub_href": null,
+        "anchor": null,
+        "docling_ref": "#/pictures/1"
+      },
+      "width": 22,
+      "height": 22,
+      "sha256": "f9a52906bb4271881e489864772e6f2e62734db74159ff116ee68a0acc324f11"
+    },
+    {
+      "id": "fig-0003",
+      "asset_path": "assets/fig-0003.png",
+      "source_type": "pdf",
+      "chapter_index": 1,
+      "caption": null,
+      "caption_status": "missing",
+      "source_locator": {
+        "page_start": null,
+        "page_end": null,
+        "page": 1,
+        "bbox": [
+          430.5144348144531,
+          623.4800872802734,
+          440.6984558105469,
+          612.3583374023438
+        ],
+        "epub_href": null,
+        "anchor": null,
+        "docling_ref": "#/pictures/2"
+      },
+      "width": 20,
+      "height": 22,
+      "sha256": "dc0a2bfec6ae5997f36341ec92076446908231287c374ccb65a1b9469a68f5cb"
+    },
+    {
+      "id": "fig-0004",
+      "asset_path": "assets/fig-0004.png",
+      "source_type": "pdf",
+      "chapter_index": 1,
+      "caption": "Figure 1. Schematic Showing Data Collection and Processing Pipeline",
+      "caption_status": "docling_caption",
+      "source_locator": {
+        "page_start": null,
+        "page_end": null,
+        "page": 3,
+        "bbox": [
+          130.82725524902344,
+          704.6656951904297,
+          476.77166748046875,
+          458.21435546875
+        ],
+        "epub_href": null,
+        "anchor": null,
+        "docling_ref": "#/pictures/3"
+      },
+      "width": 692,
+      "height": 493,
+      "sha256": "74a1e68de93d1fad3713eddd3e5fbb9623667c13a4647abf5e0f0e517cc5d365"
+    },
+    {
+      "id": "fig-0005",
+      "asset_path": "assets/fig-0005.png",
+      "source_type": "pdf",
+      "chapter_index": 1,
+      "caption": "ment1).Again,therewassubstantialheterogeneity(Figure2I). Participantsinthisdatasetalsoreportedwhethertheyhadbeen diagnosedwithdepressionbyaphysician.Moderationbythis diagnostic measure was directionally consistent but not significant (eTable 4 in Supplement 1), suggesting continuous measuresofsymptomseveritymaybemoresensitive.Insum, depression was associated with a greater tendency to be rein-",
+      "caption_status": "docling_caption",
+      "source_locator": {
+        "page_start": null,
+        "page_end": null,
+        "page": 5,
+        "bbox": [
+          70.86091613769531,
+          723.4981689453125,
+          422.4938659667969,
+          154.14776611328125
+        ],
+        "epub_href": null,
+        "anchor": null,
+        "docling_ref": "#/pictures/4"
+      },
+      "width": 703,
+      "height": 1139,
+      "sha256": "f426440cd5a1621d2efebd91c8edc8a5f05d5cf0d37b0e747397037113c7441f"
+    },
+    {
+      "id": "fig-0006",
+      "asset_path": "assets/fig-0006.png",
+      "source_type": "pdf",
+      "chapter_index": 1,
+      "caption": null,
+      "caption_status": "missing",
+      "source_locator": {
+        "page_start": null,
+        "page_end": null,
+        "page": 6,
+        "bbox": [
+          70.92471313476562,
+          723.2056274414062,
+          540.1565551757812,
+          513.6536560058594
+        ],
+        "epub_href": null,
+        "anchor": null,
+        "docling_ref": "#/pictures/5"
+      },
+      "width": 938,
+      "height": 419,
+      "sha256": "639f7e13ca86a9313494422ed8cb5127e31fc599eb90696738ebcd49b57a0e02"
+    }
+  ]
+}

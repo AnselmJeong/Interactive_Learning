@@ -1,0 +1,389 @@
+{
+  "source_type": "pdf",
+  "items": [
+    {
+      "kind": "section_header",
+      "level": 1,
+      "text": "JAMAPsychiatry | Original Investigation",
+      "source_locator": {
+        "page_start": null,
+        "page_end": null,
+        "page": 1,
+        "bbox": [
+          72.3118,
+          728.2197142,
+          231.67712326000006,
+          720.5697502226257
+        ],
+        "epub_href": null,
+        "anchor": null,
+        "docling_ref": "#/texts/1"
+      }
+    },
+    {
+      "kind": "section_header",
+      "level": 1,
+      "text": "The Reinforcement Effect of Social Media Likes in Depression",
+      "source_locator": {
+        "page_start": null,
+        "page_end": null,
+        "page": 1,
+        "bbox": [
+          72.3118,
+          712.2808899,
+          455.0378833499999,
+          699.5450613675978
+        ],
+        "epub_href": null,
+        "anchor": null,
+        "docling_ref": "#/texts/2"
+      }
+    },
+    {
+      "kind": "section_header",
+      "level": 1,
+      "text": "KeyPoints",
+      "source_locator": {
+        "page_start": null,
+        "page_end": null,
+        "page": 2,
+        "bbox": [
+          323.7562,
+          714.5000142,
+          364.9618477,
+          706.8500502226257
+        ],
+        "epub_href": null,
+        "anchor": null,
+        "docling_ref": "#/texts/28"
+      }
+    },
+    {
+      "kind": "section_header",
+      "level": 1,
+      "text": "Methods",
+      "source_locator": {
+        "page_start": null,
+        "page_end": null,
+        "page": 2,
+        "bbox": [
+          311.7826,
+          252.36309470000003,
+          352.01841863000004,
+          243.02350980111737
+        ],
+        "epub_href": null,
+        "anchor": null,
+        "docling_ref": "#/texts/34"
+      }
+    },
+    {
+      "kind": "section_header",
+      "level": 1,
+      "text": "Datasets",
+      "source_locator": {
+        "page_start": null,
+        "page_end": null,
+        "page": 2,
+        "bbox": [
+          311.7826,
+          233.56271420000007,
+          344.97252118,
+          225.921166024581
+        ],
+        "epub_href": null,
+        "anchor": null,
+        "docling_ref": "#/texts/35"
+      }
+    },
+    {
+      "kind": "section_header",
+      "level": 1,
+      "text": "Data Preprocessing",
+      "source_locator": {
+        "page_start": null,
+        "page_end": null,
+        "page": 3,
+        "bbox": [
+          72.3118,
+          95.8329142,
+          145.67284984,
+          88.19136602458104
+        ],
+        "epub_href": null,
+        "anchor": null,
+        "docling_ref": "#/texts/95"
+      }
+    },
+    {
+      "kind": "section_header",
+      "level": 1,
+      "text": "Depression Measures",
+      "source_locator": {
+        "page_start": null,
+        "page_end": null,
+        "page": 3,
+        "bbox": [
+          311.7826,
+          279.42731419999996,
+          392.99414067999993,
+          271.785766024581
+        ],
+        "epub_href": null,
+        "anchor": null,
+        "docling_ref": "#/texts/99"
+      }
+    },
+    {
+      "kind": "section_header",
+      "level": 1,
+      "text": "Factor Analysis",
+      "source_locator": {
+        "page_start": null,
+        "page_end": null,
+        "page": 3,
+        "bbox": [
+          311.7826,
+          199.10481419999996,
+          368.7197620599998,
+          191.463266024581
+        ],
+        "epub_href": null,
+        "anchor": null,
+        "docling_ref": "#/texts/101"
+      }
+    },
+    {
+      "kind": "section_header",
+      "level": 1,
+      "text": "Statistical Analyses",
+      "source_locator": {
+        "page_start": null,
+        "page_end": null,
+        "page": 4,
+        "bbox": [
+          72.3118,
+          669.5992142,
+          144.65808724,
+          661.9576660245809
+        ],
+        "epub_href": null,
+        "anchor": null,
+        "docling_ref": "#/texts/111"
+      }
+    },
+    {
+      "kind": "section_header",
+      "level": 1,
+      "text": "Code Availability",
+      "source_locator": {
+        "page_start": null,
+        "page_end": null,
+        "page": 4,
+        "bbox": [
+          72.3118,
+          371.2585142,
+          135.13368711999996,
+          363.616966024581
+        ],
+        "epub_href": null,
+        "anchor": null,
+        "docling_ref": "#/texts/114"
+      }
+    },
+    {
+      "kind": "section_header",
+      "level": 1,
+      "text": "Results",
+      "source_locator": {
+        "page_start": null,
+        "page_end": null,
+        "page": 4,
+        "bbox": [
+          72.3118,
+          321.21099469999996,
+          104.91950713000001,
+          311.8714098011173
+        ],
+        "epub_href": null,
+        "anchor": null,
+        "docling_ref": "#/texts/116"
+      }
+    },
+    {
+      "kind": "section_header",
+      "level": 1,
+      "text": "Participant Characteristics",
+      "source_locator": {
+        "page_start": null,
+        "page_end": null,
+        "page": 4,
+        "bbox": [
+          72.3118,
+          302.4106142,
+          171.45320800000005,
+          294.76906602458104
+        ],
+        "epub_href": null,
+        "anchor": null,
+        "docling_ref": "#/texts/117"
+      }
+    },
+    {
+      "kind": "section_header",
+      "level": 1,
+      "text": "Social Media Likes Reinforce Posting Behavior MoreStrongly in People With Depression",
+      "source_locator": {
+        "page_start": null,
+        "page_end": null,
+        "page": 4,
+        "bbox": [
+          72.3118,
+          187.66411419999997,
+          244.58077264000002,
+          168.54766646458097
+        ],
+        "epub_href": null,
+        "anchor": null,
+        "docling_ref": "#/texts/119"
+      }
+    },
+    {
+      "kind": "section_header",
+      "level": 1,
+      "text": "Heightened Reinforcement Tendency in Depression Replicates Across Datasets",
+      "source_locator": {
+        "page_start": null,
+        "page_end": null,
+        "page": 4,
+        "bbox": [
+          311.7826,
+          612.2260142,
+          506.5828944399997,
+          593.1095664645809
+        ],
+        "epub_href": null,
+        "anchor": null,
+        "docling_ref": "#/texts/124"
+      }
+    },
+    {
+      "kind": "section_header",
+      "level": 1,
+      "text": "Reinforcement Tendency and Behavioral Persistence Map onto Different Transdiagnostic Factors",
+      "source_locator": {
+        "page_start": null,
+        "page_end": null,
+        "page": 6,
+        "bbox": [
+          72.3118,
+          336.8005142,
+          289.34796766000005,
+          317.68406646458106
+        ],
+        "epub_href": null,
+        "anchor": null,
+        "docling_ref": "#/texts/324"
+      }
+    },
+    {
+      "kind": "section_header",
+      "level": 1,
+      "text": "Discussion",
+      "source_locator": {
+        "page_start": null,
+        "page_end": null,
+        "page": 6,
+        "bbox": [
+          311.7826,
+          367.0754947,
+          359.5598221,
+          357.7359098011173
+        ],
+        "epub_href": null,
+        "anchor": null,
+        "docling_ref": "#/texts/332"
+      }
+    },
+    {
+      "kind": "section_header",
+      "level": 1,
+      "text": "Limitations",
+      "source_locator": {
+        "page_start": null,
+        "page_end": null,
+        "page": 7,
+        "bbox": [
+          311.7826,
+          600.7513142,
+          354.4475301999999,
+          593.109766024581
+        ],
+        "epub_href": null,
+        "anchor": null,
+        "docling_ref": "#/texts/345"
+      }
+    },
+    {
+      "kind": "section_header",
+      "level": 1,
+      "text": "Conclusions",
+      "source_locator": {
+        "page_start": null,
+        "page_end": null,
+        "page": 8,
+        "bbox": [
+          72.3118,
+          715.8389947,
+          126.34517110000002,
+          706.4994098011173
+        ],
+        "epub_href": null,
+        "anchor": null,
+        "docling_ref": "#/texts/355"
+      }
+    },
+    {
+      "kind": "section_header",
+      "level": 1,
+      "text": "ARTICLE INFORMATION",
+      "source_locator": {
+        "page_start": null,
+        "page_end": null,
+        "page": 8,
+        "bbox": [
+          72.3118,
+          652.7943666,
+          143.59453221999996,
+          646.8509402413408
+        ],
+        "epub_href": null,
+        "anchor": null,
+        "docling_ref": "#/texts/357"
+      }
+    },
+    {
+      "kind": "section_header",
+      "level": 1,
+      "text": "REFERENCES",
+      "source_locator": {
+        "page_start": null,
+        "page_end": null,
+        "page": 8,
+        "bbox": [
+          72.31180000000003,
+          215.7609599999996,
+          112.13100460000004,
+          209.81753364134045
+        ],
+        "epub_href": null,
+        "anchor": null,
+        "docling_ref": "#/texts/370"
+      }
+    }
+  ],
+  "meta": {
+    "num_pages": 9,
+    "item_count": 200
+  }
+}

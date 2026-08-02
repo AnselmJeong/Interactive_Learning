@@ -8,6 +8,7 @@ type AiProviderSecretSettings = {
   anthropicApiKey?: string;
   geminiApiKey?: string;
   braveSearchApiKey?: string;
+  googleBooksApiKey?: string;
 };
 
 const PROVIDER_KEY_FIELDS: Record<AiProviderId, keyof AiProviderSecretSettings> = {
@@ -23,6 +24,9 @@ const PROVIDER_ENV_KEYS: Record<AiProviderId, string[]> = {
   gemini: ["GEMINI_API_KEY", "GOOGLE_API_KEY"],
 };
 const AI_PROVIDERS: AiProviderId[] = ["ollama", "openai", "anthropic", "gemini"];
+const ALL_KEY_FIELDS: Array<keyof AiProviderSecretSettings> = [
+  "ollamaApiKey", "openaiApiKey", "anthropicApiKey", "geminiApiKey", "braveSearchApiKey", "googleBooksApiKey",
+];
 
 function secretPath() {
   return dataPath("ai-provider-settings.json");
@@ -40,6 +44,20 @@ export class AiProviderSettingsService {
 
   async braveSearchKeyState(): Promise<AiProviderKeyState> {
     const key = await this.getBraveSearchApiKey();
+    return { hasApiKey: Boolean(key.value), apiKeySource: key.source };
+  }
+
+  async getGoogleBooksApiKey() {
+    const fromEnv = firstEnvValue(["GOOGLE_BOOKS_API_KEY"]);
+    if (fromEnv) return { value: fromEnv, source: "env" as const };
+    const saved = await readJsonFile<AiProviderSecretSettings>(secretPath(), {});
+    return saved.googleBooksApiKey
+      ? { value: saved.googleBooksApiKey, source: "settings" as const }
+      : { value: "", source: null };
+  }
+
+  async googleBooksKeyState(): Promise<AiProviderKeyState> {
+    const key = await this.getGoogleBooksApiKey();
     return { hasApiKey: Boolean(key.value), apiKeySource: key.source };
   }
 
@@ -70,19 +88,13 @@ export class AiProviderSettingsService {
     ollamaApiKey?: string;
     apiKeys?: Partial<Record<AiProviderId, string>>;
     braveSearchApiKey?: string;
-    clearApiKey?: boolean;
-    clearApiKeyFor?: AiProviderId;
-    clearBraveSearchApiKey?: boolean;
+    googleBooksApiKey?: string;
+    clearAllApiKeys?: boolean;
   }) {
     const current = await readJsonFile<AiProviderSecretSettings>(secretPath(), {});
     const next = { ...current };
 
-    if (input.clearApiKeyFor) {
-      delete next[PROVIDER_KEY_FIELDS[input.clearApiKeyFor]];
-    } else if (input.clearApiKey) {
-      delete next[PROVIDER_KEY_FIELDS[input.provider || "ollama"]];
-    }
-    if (input.clearBraveSearchApiKey) delete next.braveSearchApiKey;
+    if (input.clearAllApiKeys) for (const key of ALL_KEY_FIELDS) delete next[key];
 
     if (typeof input.ollamaApiKey === "string" && input.ollamaApiKey.trim()) {
       next.ollamaApiKey = input.ollamaApiKey.trim();
@@ -95,6 +107,9 @@ export class AiProviderSettingsService {
     }
     if (typeof input.braveSearchApiKey === "string" && input.braveSearchApiKey.trim()) {
       next.braveSearchApiKey = input.braveSearchApiKey.trim();
+    }
+    if (typeof input.googleBooksApiKey === "string" && input.googleBooksApiKey.trim()) {
+      next.googleBooksApiKey = input.googleBooksApiKey.trim();
     }
     await writeJsonFile(secretPath(), next);
   }

@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { getDb } from "./project-db";
+import { recordChunkViews } from "./progress-service";
 import { CourseArtifactService } from "./course-artifact-service";
 import { SettingsService } from "./settings-service";
 import { AiProviderSettingsService } from "./ai-provider-settings";
@@ -1697,6 +1698,14 @@ export class TutorService {
     };
   }
 
+  getMessage(messageId: string): TutorMessage {
+    const row = getDb()
+      .query<MessageRow, [string]>("SELECT * FROM learning_messages WHERE id = ? AND delivery_state = 'visible'")
+      .get(messageId);
+    if (!row) throw new Error("학습 자료 대목을 찾을 수 없습니다.");
+    return toMessage(row);
+  }
+
   private snapshotHeader(sessionId: string): SessionSnapshot {
     const row = this.getSessionRow(sessionId);
     return {
@@ -2355,16 +2364,19 @@ export class TutorService {
   // Persist the source-chunk cursor: the current chunk, the covered set, and the derived
   // current/completed module ids (kept in sync so the module outline and snapshot stay valid).
   private persistCursor(sessionId: string, artifacts: MaterialArtifacts, currentChunkId: string, coveredIds: string[]) {
+    const before = this.snapshotHeader(sessionId);
     const covered = new Set(coveredIds);
     const moduleId = this.ownerModuleOf(artifacts, currentChunkId).id;
     const completedModuleIds = this.completedModuleIdsFromChunks(artifacts, covered);
+    const now = Date.now();
     getDb()
       .query(
         `UPDATE learning_sessions
          SET current_module_id = ?, current_chunk_id = ?, covered_chunk_ids_json = ?, completed_module_ids_json = ?, status = 'active', updated_at = ?
          WHERE id = ?`
       )
-      .run(moduleId, currentChunkId, JSON.stringify([...covered]), JSON.stringify(completedModuleIds), Date.now(), sessionId);
+      .run(moduleId, currentChunkId, JSON.stringify([...covered]), JSON.stringify(completedModuleIds), now, sessionId);
+    recordChunkViews(sessionId, before.coveredChunkIds, covered, currentChunkId, now);
   }
 
   private projectLearningLevel(projectId: string): LearningLevel {
@@ -2993,6 +3005,7 @@ export class TutorService {
              updated_at = excluded.updated_at`
         )
         .run(sessionId, row.module_id, row.module_index, visibleMessageId, now);
+      recordChunkViews(sessionId, session.coveredChunkIds, cursorAfter.coveredChunkIds, cursorAfter.currentChunkId, now);
     }).immediate();
     return output;
   }
@@ -3108,6 +3121,7 @@ export class TutorService {
           Date.now(),
           sessionId
         );
+      recordChunkViews(sessionId, session.coveredChunkIds, cursorAfter.coveredChunkIds, cursorAfter.currentChunkId);
     })();
     this.emitBatch(sessionId, run.material_id);
     return output;
@@ -3353,6 +3367,7 @@ export class TutorService {
         Date.now(),
         sessionId
       );
+      recordChunkViews(sessionId, current.coveredChunkIds, plan.cursorAfter.coveredChunkIds, plan.cursorAfter.currentChunkId);
       this.insertMessageRow({
         sessionId,
         role: "assistant",

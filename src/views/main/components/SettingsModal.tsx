@@ -60,13 +60,14 @@ export function SettingsModal({
   models: ProviderModel[];
   setModels: (models: ProviderModel[]) => void;
   onClose: () => void;
-  onUpdated: () => Promise<void>;
+  onUpdated: (options?: { refreshBookMetadata?: boolean }) => Promise<void>;
 }) {
   const [draft, setDraft] = useState(settings);
   const draftRef = useRef(settings);
   const [activeSection, setActiveSection] = useState<SettingsSectionId>("models");
   const [apiKeys, setApiKeys] = useState<Record<AiProviderId, string>>(EMPTY_KEYS);
   const [braveSearchApiKey, setBraveSearchApiKey] = useState("");
+  const [googleBooksApiKey, setGoogleBooksApiKey] = useState("");
   const [statusText, setStatusText] = useState(providerStatus.error || "Ready");
   const [busy, setBusy] = useState(false);
   const [visionModels, setVisionModels] = useState<ProviderModel[]>([]);
@@ -118,26 +119,21 @@ export function SettingsModal({
       const saved = (await request("settings.updatePublic", draftRef.current)) as AppSettings;
       draftRef.current = saved;
       setDraft(saved);
-      await request("aiProvider.updateSettings", { provider: saved.aiProvider, apiKeys, braveSearchApiKey });
+      await request("aiProvider.updateSettings", { provider: saved.aiProvider, apiKeys, braveSearchApiKey, googleBooksApiKey });
       setApiKeys(EMPTY_KEYS);
       setBraveSearchApiKey("");
-      await onUpdated();
+      setGoogleBooksApiKey("");
+      await onUpdated({ refreshBookMetadata: Boolean(googleBooksApiKey.trim()) });
       setStatusText("Saved");
     } finally {
       setBusy(false);
     }
   }
 
-  async function clearLearningKey() {
-    await request("aiProvider.updateSettings", { clearApiKeyFor: draftRef.current.aiProvider });
+  async function clearAllSavedKeys() {
+    await request("aiProvider.updateSettings", { clearAllApiKeys: true });
     await onUpdated();
-    setStatusText(`${providerLabel(draftRef.current.aiProvider)} key cleared`);
-  }
-
-  async function clearBraveSearchKey() {
-    await request("aiProvider.updateSettings", { clearBraveSearchApiKey: true });
-    await onUpdated();
-    setStatusText("Brave Search key cleared");
+    setStatusText("Saved API keys cleared");
   }
 
   async function refreshModels(target: ModelTarget) {
@@ -256,6 +252,12 @@ export function SettingsModal({
     ? keySummary(draft.aiProvider)
     : `${keySummary(draft.aiProvider)} · ${keySummary(draft.visionProvider)}`;
   const braveKeySaved = providerStatus.braveSearchKeyState.hasApiKey;
+  const googleBooksKeySaved = providerStatus.googleBooksKeyState.hasApiKey;
+  const hasSavedKey = [
+    ...Object.values(providerStatus.keyStates),
+    providerStatus.braveSearchKeyState,
+    providerStatus.googleBooksKeyState,
+  ].some((state) => state.apiKeySource === "settings");
   const activeNavTitle = SETTINGS_NAV.find((item) => item.id === activeSection)?.title || "Settings";
 
   function renderModelRouting() {
@@ -365,12 +367,26 @@ export function SettingsModal({
               placeholder="Blank keeps existing key"
             />
           </label>
+          <label>
+            <span>
+              Google Books API key (optional)
+              <small>
+                {googleBooksKeySaved ? `Saved via ${providerStatus.googleBooksKeyState.apiKeySource}` : "Not saved · imported books keep bibliography blank"}
+              </small>
+            </span>
+            <input
+              type="password"
+              value={googleBooksApiKey}
+              onChange={(event) => setGoogleBooksApiKey(event.target.value)}
+              placeholder="Blank keeps existing key"
+            />
+          </label>
         </div>
-        {braveKeySaved ? (
-          <button className="wide-button danger compact" type="button" onClick={() => void clearBraveSearchKey()}>
-            <Trash2 size={15} /> Clear Brave Search key
+        {hasSavedKey ? <div className="settings-access-clear-actions">
+          <button className="wide-button danger compact" type="button" onClick={() => void clearAllSavedKeys()}>
+            <Trash2 size={15} /> Clear all saved keys
           </button>
-        ) : null}
+        </div> : null}
       </section>
     );
   }
@@ -533,9 +549,6 @@ export function SettingsModal({
           <span>
             <KeyRound size={15} /> {accessSummary} · {statusText}
           </span>
-          <button className="wide-button danger" type="button" onClick={() => void clearLearningKey()}>
-            <Trash2 size={16} /> Clear learning key
-          </button>
           <button className="wide-button primary" type="button" onClick={() => void save()} disabled={busy}>
             <Save size={16} /> Save
           </button>

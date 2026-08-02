@@ -95,7 +95,7 @@ export async function loadDirectImage(
       redirect: "manual",
       headers: {
         accept: "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
-        "user-agent": "Learnie/0.7.6 desktop learning app",
+        "user-agent": "Learnie/0.8.0 desktop learning app",
       },
       signal: AbortSignal.timeout(15_000),
     });

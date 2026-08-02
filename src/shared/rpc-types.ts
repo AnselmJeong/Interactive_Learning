@@ -17,7 +17,7 @@ import type {
   TextSelectionAnchor,
 } from "./artifact-types";
 import type { AiProviderId, AiProviderStatus, AppSettings, ProviderModel, PublicAiProviderUpdate } from "./settings-types";
-import type { LearningMessageSetSummary, SessionSnapshot, SessionSummary, TutorContext, TutorPrefetchStatus, TutorTurnOutput } from "./tutor-types";
+import type { LearningMessageSetSummary, SessionSnapshot, SessionSummary, TutorContext, TutorMessage, TutorPrefetchStatus, TutorTurnOutput } from "./tutor-types";
 import type { LearningLevel } from "./learning-levels";
 import type { ProjectTransferExport, ProjectTransferImportResult, ProjectTransferPreview, SessionReadableExport } from "./project-transfer-types";
 import type { DocumentTransferExport, DocumentTransferImportPreview, DocumentTransferImportResult, DocumentTransferPreview } from "./document-transfer-types";
@@ -90,6 +90,25 @@ export type DocumentSummary = {
   updatedAt: number;
 };
 
+export type BookMetadataSearchInput = {
+  title?: string;
+  isbn?: string;
+};
+
+export type BookMetadataCandidate = {
+  title: string;
+  subtitle: string | null;
+  description: string | null;
+  authors: string[];
+  publisher: string | null;
+  publishedDate: string | null;
+  isbn10: string | null;
+  isbn13: string | null;
+  language: string | null;
+  coverUrl: string | null;
+  providerVolumeId: string;
+};
+
 export type SourceProgressSnapshot = {
   sourceId: string;
   documentId: string;
@@ -116,13 +135,10 @@ export type DocumentProgressSnapshot = {
   sources: SourceProgressSnapshot[];
 };
 
-export type LearningActivity = {
-  id: string;
-  kind: "session" | "highlight" | "note" | "question" | "lookup" | "image";
-  title: string;
-  documentId: string | null;
-  sourceId: string | null;
-  occurredAt: number;
+export type LearningActivityDay = {
+  /** Local calendar day in YYYY-MM-DD form. Each count is distinct material passages first opened that day. */
+  date: string;
+  viewedChunks: number;
 };
 
 export type ProjectProgressSnapshot = {
@@ -135,7 +151,7 @@ export type ProjectProgressSnapshot = {
   currentSourceId: string | null;
   activeSessionId: string | null;
   documents: DocumentProgressSnapshot[];
-  recentActivity: LearningActivity[];
+  activityDays: LearningActivityDay[];
   orphanCoveredChunkCount: number;
 };
 
@@ -258,6 +274,9 @@ export type AppRPC = {
       "documents.get": { params: { projectId: string; documentId: string }; response: DocumentSummary };
       "documents.listSources": { params: { projectId: string; documentId: string }; response: SourceSummary[] };
       "documents.refreshMetadata": { params: { projectId: string; documentId: string }; response: DocumentSummary };
+      "documents.refreshProjectMetadata": { params: { projectId: string }; response: DocumentSummary[] };
+      "documents.searchMetadata": { params: { projectId: string; documentId: string; input: BookMetadataSearchInput }; response: BookMetadataCandidate[] };
+      "documents.applyMetadata": { params: { projectId: string; documentId: string; metadata: BookMetadataCandidate }; response: DocumentSummary };
       "documents.previewSourceRemoval": { params: { projectId: string; documentId: string; sourceId: string }; response: SourceRemovalImpact };
       "documents.removeSource": { params: { projectId: string; documentId: string; sourceId: string; impactToken: string }; response: { removed: boolean; documentId: string } };
       "documents.previewTransfer": { params: { projectId: string; documentId: string }; response: DocumentTransferPreview };
@@ -317,6 +336,7 @@ export type AppRPC = {
       "sessions.list": { params: { materialId: string }; response: SessionSummary[] };
       "sessions.start": { params: { materialId: string; mode: "new" | "continue"; sessionId?: string }; response: { session: SessionSnapshot; context: TutorContext; messageSet: LearningMessageSetSummary; firstTurn?: TutorTurnOutput } };
       "sessions.load": { params: { sessionId: string }; response: { session: SessionSnapshot; context: TutorContext } };
+      "sessions.getMessage": { params: { messageId: string }; response: TutorMessage };
       "sessions.advance": { params: { sessionId: string; mode: "chunk" | "paragraph" | "module" }; response: { session: SessionSnapshot; context: TutorContext; output: TutorTurnOutput } };
       "sessions.continue": { params: { sessionId: string }; response: { session: SessionSnapshot; context: TutorContext; output: TutorTurnOutput } };
       "sessions.returnToProgress": { params: { sessionId: string }; response: { session: SessionSnapshot; context: TutorContext; output: TutorTurnOutput } };

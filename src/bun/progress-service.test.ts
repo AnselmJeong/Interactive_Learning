@@ -3,7 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { closeDbForTests, getDb } from "./project-db";
-import { ProgressService } from "./progress-service";
+import { ProgressService, recordChunkViews } from "./progress-service";
 
 describe("progress service", () => {
   let tempRoot = "";
@@ -53,5 +53,12 @@ describe("progress service", () => {
     expect(snapshot.documents[0]?.sources[1]?.percent).toBe(25);
     expect(snapshot.currentSourceId).toBe("b");
     expect(snapshot.activeSessionId).toBe("active");
+
+    recordChunkViews("active", ["b1"], ["b1", "b2"], "b3", now);
+    const activity = new ProgressService().getProjectSnapshot("p1").activityDays;
+    expect(activity).toEqual([{ date: new Date(now).toLocaleDateString("en-CA"), viewedChunks: 2 }]);
+    // Revisiting a passage must not make the activity square darker.
+    recordChunkViews("active", ["b1", "b2", "b3"], ["b1", "b2", "b3"], "b2", now + 1000);
+    expect(getDb().query<{ count: number }, []>("SELECT COUNT(*) AS count FROM learning_chunk_activity").get()?.count).toBe(2);
   });
 });

@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import { BarChart3, BookOpen, Check, Download, Highlighter, Info, LibraryBig, Loader2, LocateFixed, MessageSquare, Moon, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Pencil, Play, Send, Settings, Sparkles, Sun, Trash2, Upload, X } from "lucide-react";
-import type { AnnotationReadableExport, DocumentSummary, MaterialSummary, PreparedSourceImport, ProjectProgressSnapshot, ProjectSummary, SourceRemovalImpact, SourceSummary } from "../../shared/rpc-types";
+import type { AnnotationReadableExport, BookMetadataCandidate, BookMetadataSearchInput, DocumentSummary, MaterialSummary, PreparedSourceImport, ProjectProgressSnapshot, ProjectSummary, SourceRemovalImpact, SourceSummary } from "../../shared/rpc-types";
 import type { ProjectTransferExport, ProjectTransferPreview, SessionReadableExport } from "../../shared/project-transfer-types";
 import type { DocumentTransferExport, DocumentTransferImportPreview, DocumentTransferImportResult } from "../../shared/document-transfer-types";
 import type { AppSettings, AiProviderStatus, ChatSubmitShortcut, ProviderModel } from "../../shared/settings-types";
@@ -15,6 +15,9 @@ import { ImmersiveSourceView } from "./components/ImmersiveSourceView";
 import { LearningSelectionLookup } from "./components/LearningSelectionLookup";
 import { NewProjectModal } from "./components/NewProjectModal";
 import { ProjectDropdown } from "./components/ProjectDropdown";
+import { DocumentDropdown } from "./components/DocumentDropdown";
+import { BookMetadataModal } from "./components/BookMetadataModal";
+import { SourceDropdown } from "./components/SourceDropdown";
 import { ProjectTransferImportModal } from "./components/ProjectTransferImportModal";
 import { SourceImportModal } from "./components/SourceImportModal";
 import { SourceDocumentTypeModal } from "./components/SourceDocumentTypeModal";
@@ -837,6 +840,12 @@ export function App({ request }: { request: RpcRequest }) {
   const [selectedProjectAnnotationId, setSelectedProjectAnnotationId] = useState<string | null>(null);
   const [projectProgress, setProjectProgress] = useState<ProjectProgressSnapshot | null>(null);
   const [annotationExportBusy, setAnnotationExportBusy] = useState(false);
+  const [metadataDocument, setMetadataDocument] = useState<DocumentSummary | null>(null);
+  const [metadataBusy, setMetadataBusy] = useState(false);
+  const loadLearningMessage = useCallback(
+    async (messageId: string) => (await request("sessions.getMessage", { messageId })) as TutorMessage,
+    [request],
+  );
   const tutorSurfaceRef = useRef<HTMLElement | null>(null);
   const continueButtonRef = useRef<HTMLButtonElement | null>(null);
   const lastFocusedReadyActionKeyRef = useRef<string | null>(null);
@@ -1143,6 +1152,54 @@ export function App({ request }: { request: RpcRequest }) {
     }
   }
 
+  async function exportDocumentTransfer(document: DocumentSummary) {
+    if (!activeProject) return;
+    setBusy(true);
+    setStatus("이 책의 transfer를 만드는 중");
+    try {
+      const result = (await request("documents.exportTransfer", { projectId: activeProject.id, documentId: document.id })) as DocumentTransferExport;
+      setStatus(`${document.title}: ${result.fileName} 내보내기 완료`);
+    } catch (error) {
+      setStatus(`책 내보내기 실패: ${(error as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function searchBookMetadata(document: DocumentSummary, input: BookMetadataSearchInput) {
+    if (!activeProject) return [];
+    setMetadataBusy(true);
+    try {
+      return (await request("documents.searchMetadata", {
+        projectId: activeProject.id,
+        documentId: document.id,
+        input,
+      })) as BookMetadataCandidate[];
+    } finally {
+      setMetadataBusy(false);
+    }
+  }
+
+  async function applyBookMetadata(document: DocumentSummary, metadata: BookMetadataCandidate) {
+    if (!activeProject) return;
+    setMetadataBusy(true);
+    try {
+      const updated = (await request("documents.applyMetadata", {
+        projectId: activeProject.id,
+        documentId: document.id,
+        metadata,
+      })) as DocumentSummary;
+      setDocuments((current) => current.map((item) => item.id === updated.id ? updated : item));
+      setMetadataDocument(null);
+      setStatus(`${updated.title}의 서지 정보를 적용했습니다.`);
+    } catch (error) {
+      setStatus(`서지 정보 적용 실패: ${(error as Error).message}`);
+      throw error;
+    } finally {
+      setMetadataBusy(false);
+    }
+  }
+
   async function exportAnnotations(annotationIds: string[]) {
     if (!activeProject || !annotationIds.length || annotationExportBusy) return;
     setAnnotationExportBusy(true);
@@ -1364,6 +1421,8 @@ export function App({ request }: { request: RpcRequest }) {
   // starts the prepared material from the topbar.
   async function learnFromSource(sourceId: string) {
     if (!activeProject) return;
+    const sourceDocumentId = state.sources.find((source) => source.id === sourceId)?.documentId || null;
+    if (sourceDocumentId) setSelectedDocumentId(sourceDocumentId);
     setWorkspaceRoute("learning");
     setBusy(true);
     setStatus("학습 자료 준비 중");
@@ -1378,6 +1437,13 @@ export function App({ request }: { request: RpcRequest }) {
     } finally {
       setBusy(false);
     }
+  }
+
+  function learnFromDocument(documentId: string) {
+    setSelectedDocumentId(documentId);
+    const candidates = state.sources.filter((source) => source.documentId === documentId);
+    const source = candidates.find((item) => item.learningStatus === "in_progress") || candidates[0];
+    if (source) void learnFromSource(source.id);
   }
 
   async function openAnnotationLocation(annotation: MaterialAnnotation) {
@@ -2303,7 +2369,9 @@ export function App({ request }: { request: RpcRequest }) {
     : activeMessageSet?.status === "ready"
       ? `${activeMessageSet.completedMessages}개 준비됨`
       : activeMessageSet?.status === "paused" || activeMessageSet?.status === "partial"
-        ? "이어서 만들기"
+        ? activeMessageSet.completedMessages > 0
+          ? `${activeMessageSet.completedMessages}개 준비됨 · 이어서 만들기`
+          : "이어서 만들기"
         : "전체 메시지 일괄 제작";
   const batchButtonDisabled = Boolean(
     !activeMaterial ||
@@ -2316,6 +2384,8 @@ export function App({ request }: { request: RpcRequest }) {
     ? "현재 준비 작업을 일시 중지합니다. 다음 실행에서도 자동 재개하지 않습니다."
     : !learningModelReady
     ? "Settings에서 learning model과 API key를 먼저 설정하세요."
+    : activeMessageSet?.status === "partial" || activeMessageSet?.status === "paused"
+      ? activeMessageSet.error || "이미 준비된 메시지는 유지하고, 남은 메시지 생성을 이어갑니다."
     : "학습 session을 만들거나 workspace를 전환하지 않고 이 material의 메시지를 준비합니다.";
 
   const importedSourceLabel = `${state.sources.length} source${state.sources.length === 1 ? "" : "s"} imported`;
@@ -2379,21 +2449,42 @@ export function App({ request }: { request: RpcRequest }) {
 
           <section className="pane-section">
             <div className="section-heading">
-              <h2>Project</h2>
+              <h2>{workspaceRoute === "learning" ? "Book" : "Project"}</h2>
             </div>
-            <ProjectDropdown
-              projects={state.projects}
-              activeProject={activeProject}
-              busy={busy}
-              onSelect={(project) => void openProject(project)}
-              onCreate={() => setNewProjectOpen(true)}
-              onImport={() => void chooseProjectTransfer()}
-              onImportDocument={(project) => void importDocumentTransfer(project)}
-              onExport={(project) => void exportProjectTransfer(project)}
-              onExportDocuments={(project) => void exportAllDocumentTransfers(project)}
-              onDelete={(project) => void deleteProject(project)}
-            />
+            {workspaceRoute === "learning" ? (
+              <DocumentDropdown
+                documents={documents}
+                activeDocumentId={selectedDocumentId}
+                busy={busy}
+                onSelect={(document) => learnFromDocument(document.id)}
+                onImport={() => { if (activeProject) void importDocumentTransfer(activeProject); }}
+                onExport={(document) => void exportDocumentTransfer(document)}
+                onFindMetadata={setMetadataDocument}
+              />
+            ) : (
+              <ProjectDropdown
+                projects={state.projects}
+                activeProject={activeProject}
+                busy={busy}
+                onSelect={(project) => void openProject(project)}
+                onCreate={() => setNewProjectOpen(true)}
+                onImport={() => void chooseProjectTransfer()}
+                onExport={(project) => void exportProjectTransfer(project)}
+                onDelete={(project) => void deleteProject(project)}
+              />
+            )}
           </section>
+          {workspaceRoute === "learning" ? (
+            <section className="pane-section learning-source-picker">
+              <div className="section-heading"><h2>Source</h2></div>
+              <SourceDropdown
+                sources={selectedDocumentId ? state.sources.filter((source) => source.documentId === selectedDocumentId) : []}
+                activeSourceId={activeSourceId || null}
+                busy={busy}
+                onSelect={(source) => void learnFromSource(source.id)}
+              />
+            </section>
+          ) : null}
 
           <nav className="workspace-navigation" aria-label="Workspace">
             <p>Workspace</p>
@@ -2562,11 +2653,9 @@ export function App({ request }: { request: RpcRequest }) {
             sources={state.sources}
             selectedDocumentId={selectedDocumentId}
             progress={projectProgress}
-            onSelectDocument={setSelectedDocumentId}
             onImport={() => void chooseAndImportSources()}
-            onOpenSource={(sourceId) => void learnFromSource(sourceId)}
-            onRemoveSource={(source) => void deleteSource(source)}
-            onContinue={continueWorkspaceLearning}
+            onOpenDocument={learnFromDocument}
+            onFindMetadata={setMetadataDocument}
           />
         ) : workspaceRoute === "annotations" ? (
           <AnnotationPage
@@ -2576,6 +2665,7 @@ export function App({ request }: { request: RpcRequest }) {
             sources={state.sources}
             selectedAnnotationId={selectedProjectAnnotationId}
             onSelectAnnotation={setSelectedProjectAnnotationId}
+            onLoadLearningMessage={loadLearningMessage}
             onOpenAnnotation={(annotation) => void openAnnotationLocation(annotation)}
             onExport={(annotationIds) => void exportAnnotations(annotationIds)}
             exporting={annotationExportBusy}
@@ -2587,8 +2677,6 @@ export function App({ request }: { request: RpcRequest }) {
             project={activeProject}
             documents={documents}
             sources={state.sources}
-            annotations={projectAnnotations}
-            currentProgress={progressPercent}
             progress={projectProgress}
             onContinue={continueWorkspaceLearning}
           />
@@ -2597,8 +2685,13 @@ export function App({ request }: { request: RpcRequest }) {
         <header className="topbar">
           <div>
             <p className="project-title">
-              {[activeProject?.title || "Learning Workspace", activeDocument?.title, activeDocument?.documentType === "article" ? null : activeSource ? displayableSourceName(activeSource) : null]
-                .filter(Boolean).join(" / ")}
+              <span className="project-title-project">{activeProject?.title || "Learning Workspace"}</span>
+              {activeDocument && (activeDocument.documentType !== "book" || activeDocument.metadataStatus === "found" || activeDocument.metadataStatus === "manual")
+                ? <span className="project-title-document">{activeDocument?.title}</span>
+                : null}
+              {activeDocument?.documentType === "article" ? null : activeSource
+                ? <span className="project-title-source">{displayableSourceName(activeSource)}</span>
+                : null}
             </p>
           </div>
           <div className="topbar-actions">
@@ -2997,13 +3090,26 @@ export function App({ request }: { request: RpcRequest }) {
           models={models}
           setModels={setModels}
           onClose={() => setSettingsOpen(false)}
-          onUpdated={async () => {
+          onUpdated={async (options) => {
             await refreshSettings();
+            if (options?.refreshBookMetadata && activeProject) {
+              await request("documents.refreshProjectMetadata", { projectId: activeProject.id });
+              await refreshSources(activeProject.id);
+            }
             await refreshProjects();
           }}
         />
       ) : null}
       {aboutOpen ? <AboutModal onClose={() => setAboutOpen(false)} /> : null}
+      {metadataDocument ? (
+        <BookMetadataModal
+          document={metadataDocument}
+          busy={metadataBusy}
+          onClose={() => setMetadataDocument(null)}
+          onSearch={(input) => searchBookMetadata(metadataDocument, input)}
+          onApply={(metadata) => applyBookMetadata(metadataDocument, metadata)}
+        />
+      ) : null}
       {destructiveConfirmation ? (
         <DestructiveConfirmationModal
           confirmation={destructiveConfirmation}

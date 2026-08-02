@@ -139,6 +139,21 @@ export function getDb() {
     CREATE INDEX IF NOT EXISTS idx_learning_sessions_material_updated
       ON learning_sessions(material_id, updated_at DESC);
 
+    -- A project-level, append-only record of the first time a source passage is
+    -- opened.  Progress snapshots use this rather than noisy annotation events
+    -- for their calendar activity overview.
+    CREATE TABLE IF NOT EXISTS learning_chunk_activity (
+      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+      session_id TEXT NOT NULL REFERENCES learning_sessions(id) ON DELETE CASCADE,
+      material_id TEXT NOT NULL REFERENCES learning_materials(id) ON DELETE CASCADE,
+      chunk_id TEXT NOT NULL,
+      occurred_at INTEGER NOT NULL,
+      PRIMARY KEY (project_id, chunk_id)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_learning_chunk_activity_project_date
+      ON learning_chunk_activity(project_id, occurred_at DESC);
+
     CREATE TABLE IF NOT EXISTS learning_messages (
       id TEXT PRIMARY KEY,
       session_id TEXT NOT NULL REFERENCES learning_sessions(id) ON DELETE CASCADE,
@@ -529,6 +544,7 @@ export function getDb() {
       ON learning_messages(session_id, origin_prepared_message_id)
       WHERE origin_prepared_message_id IS NOT NULL;
   `);
+  backfillLearningChunkActivity(db);
 
   return db;
 }
@@ -829,4 +845,26 @@ function normalizeMessageOrdinals(database: Database) {
     });
   });
   for (const row of sessionIds) normalize(row.session_id);
+}
+
+/**
+ * Earlier versions tracked source references on visible tutor messages but not
+ * a first-open timestamp.  Preserve the usable portion of that history so an
+ * existing project does not begin with a blank activity calendar.  New rows
+ * are recorded at the moment the passage is opened by TutorService.
+ */
+function backfillLearningChunkActivity(database: Database) {
+  database.exec(`
+    INSERT OR IGNORE INTO learning_chunk_activity
+      (project_id, session_id, material_id, chunk_id, occurred_at)
+    SELECT s.project_id, s.id, s.material_id, ref.value, MIN(m.created_at)
+    FROM learning_messages m
+    JOIN learning_sessions s ON s.id = m.session_id
+    JOIN json_each(CASE WHEN json_valid(m.source_refs_json) THEN m.source_refs_json ELSE '[]' END) ref
+    WHERE m.role = 'assistant'
+      AND m.delivery_state = 'visible'
+      AND typeof(ref.value) = 'text'
+      AND ref.value != ''
+    GROUP BY s.project_id, ref.value;
+  `);
 }

@@ -1,9 +1,14 @@
+import { mkdir, writeFile } from "node:fs/promises";
+import { basename, extname, join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { getDb } from "./project-db";
-import { BookMetadataService } from "./book-metadata-service";
+import { BookMetadataService, type BookMetadata } from "./book-metadata-service";
+import { AiProviderSettingsService } from "./ai-provider-settings";
 import { writeProjectDocumentIndex } from "./project-bundle-sync";
 import { dataPath } from "./paths";
 import type {
   DocumentSummary,
+  BookMetadataSearchInput,
   LearningProgressSummary,
   PreparationProgressSummary,
   SourceSummary,
@@ -25,8 +30,10 @@ type DocumentRow = {
   journal: string | null;
   doi: string | null;
   language: string | null;
+  cover_image_path: string | null;
   metadata_status: DocumentSummary["metadataStatus"];
   original_file_name: string;
+  original_file_path: string | null;
   imported_at: number;
   updated_at: number;
 };
@@ -91,6 +98,11 @@ function jsonStringList(value: string) {
   }
 }
 
+function metadataFilename(row: DocumentRow) {
+  const originalPath = row.original_file_path?.split("#", 1)[0] || "";
+  return originalPath ? basename(originalPath) : row.original_file_name;
+}
+
 function toSource(row: SourceRow): SourceSummary {
   return {
     id: row.id,
@@ -119,7 +131,7 @@ function emptyLearning(activeSessionId: string | null): LearningProgressSummary 
   };
 }
 
-function toSummary(row: DocumentRow, aggregate: AggregateRow): DocumentSummary {
+function toSummary(row: DocumentRow, aggregate: AggregateRow, coverUrl: string | null): DocumentSummary {
   const preparation: PreparationProgressSummary = {
     completedMessages: aggregate.completed_messages || 0,
     totalMessages: aggregate.total_messages || 0,
@@ -140,7 +152,7 @@ function toSummary(row: DocumentRow, aggregate: AggregateRow): DocumentSummary {
     journal: row.journal,
     doi: row.doi,
     language: row.language,
-    coverUrl: null,
+    coverUrl,
     metadataStatus: row.metadata_status,
     sourceCount: aggregate.source_count || 0,
     learning: emptyLearning(aggregate.active_session_id),
@@ -190,16 +202,54 @@ function aggregateFor(documentId: string): AggregateRow {
 
 export class DocumentService {
   private readonly metadata = new BookMetadataService();
+  private readonly secrets = new AiProviderSettingsService();
+  private coverUrlFor: (path: string, documentId?: string) => string = (path) => pathToFileURL(path).href;
+
+  setCoverUrlFor(urlFor: (documentId: string) => string) {
+    this.coverUrlFor = (_path, documentId?: string) => documentId ? urlFor(documentId) : _path;
+  }
+
+  private summary(row: DocumentRow, aggregate: AggregateRow) {
+    return toSummary(row, aggregate, row.cover_image_path ? this.coverUrlFor(row.cover_image_path, row.id) : null);
+  }
+
+  coverAsset(documentId: string) {
+    const row = getDb().query<{ cover_image_path: string | null }, [string]>("SELECT cover_image_path FROM project_documents WHERE id = ?").get(documentId);
+    if (!row?.cover_image_path) return null;
+    const extension = extname(row.cover_image_path).toLowerCase();
+    const mimeType = extension === ".png" ? "image/png" : extension === ".webp" ? "image/webp" : "image/jpeg";
+    return { path: row.cover_image_path, mimeType };
+  }
+
+  private projectRoot(projectId: string) {
+    return getDb().query<{ root_path: string | null }, [string]>("SELECT root_path FROM projects WHERE id = ?").get(projectId)?.root_path || dataPath("projects");
+  }
   private async persistDocumentIndex(projectId: string) {
-    const root = getDb().query<{ root_path: string | null }, [string]>("SELECT root_path FROM projects WHERE id = ?").get(projectId)?.root_path || dataPath("projects");
-    await writeProjectDocumentIndex(projectId, root);
+    await writeProjectDocumentIndex(projectId, this.projectRoot(projectId));
+  }
+
+  private async saveCover(projectId: string, documentId: string, coverUrl: string | null) {
+    if (!coverUrl) return null;
+    const response = await fetch(coverUrl, {
+      headers: { accept: "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8", "user-agent": "Learnie book metadata" },
+      signal: AbortSignal.timeout(8_000),
+    });
+    const contentType = response.headers.get("content-type") || "";
+    if (!response.ok || !contentType.startsWith("image/")) return null;
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    if (!bytes.length || bytes.length > 6_000_000) return null;
+    const path = join(this.projectRoot(projectId), projectId, "documents", documentId, "cover");
+    await mkdir(path, { recursive: true });
+    const file = join(path, contentType.includes("png") ? "cover.png" : contentType.includes("webp") ? "cover.webp" : "cover.jpg");
+    await writeFile(file, bytes);
+    return file;
   }
   list(projectId: string) {
     const documents = getDb()
       .query<DocumentRow, [string]>("SELECT * FROM project_documents WHERE project_id = ? ORDER BY imported_at ASC, id ASC")
       .all(projectId);
     const aggregates = aggregatesForProject(projectId);
-    return documents.map((row) => toSummary(row, aggregates.get(row.id) || {
+    return documents.map((row) => this.summary(row, aggregates.get(row.id) || {
       source_count: 0,
       annotation_count: 0,
       active_session_id: null,
@@ -214,7 +264,7 @@ export class DocumentService {
       .query<DocumentRow, [string, string]>("SELECT * FROM project_documents WHERE project_id = ? AND id = ?")
       .get(projectId, documentId);
     if (!row) throw new Error("Document not found");
-    return toSummary(row, aggregateFor(row.id));
+    return this.summary(row, aggregateFor(row.id));
   }
 
   listSources(projectId: string, documentId: string) {
@@ -234,25 +284,62 @@ export class DocumentService {
   async refreshMetadata(projectId: string, documentId: string) {
     const current = this.get(projectId, documentId);
     if (current.documentType !== "book") return current;
-    const isbn = current.isbn13 || current.isbn10 || this.metadata.isbnFromFilename(current.originalFileName)?.value;
-    if (!isbn) {
-      getDb().query("UPDATE project_documents SET metadata_status = 'not_found', updated_at = ? WHERE id = ?").run(Date.now(), documentId);
-      await this.persistDocumentIndex(projectId);
-      return this.get(projectId, documentId);
-    }
+    const apiKey = await this.secrets.getGoogleBooksApiKey();
+    // A filename is useful only as a private lookup hint. Until the optional key
+    // is supplied, do not turn that hint into learner-facing bibliography.
+    if (!apiKey.value) return current;
     try {
-      const metadata = await this.metadata.lookup(isbn);
+      const row = getDb().query<DocumentRow, [string, string]>("SELECT * FROM project_documents WHERE project_id = ? AND id = ?").get(projectId, documentId);
+      if (!row) throw new Error("Document not found");
+      const metadata = await this.metadata.lookupByFilename(metadataFilename(row), apiKey.value);
       if (!metadata) {
         getDb().query("UPDATE project_documents SET metadata_status = 'not_found', metadata_fetched_at = ?, updated_at = ? WHERE id = ?").run(Date.now(), Date.now(), documentId);
         await this.persistDocumentIndex(projectId);
         return this.get(projectId, documentId);
       }
       const now = Date.now();
-      getDb().query(`UPDATE project_documents SET title = ?, subtitle = ?, description = ?, authors_json = ?, publisher = ?, published_date = ?, isbn_10 = ?, isbn_13 = ?, language = ?, provider = 'google_books', provider_volume_id = ?, metadata_status = 'found', metadata_fetched_at = ?, updated_at = ? WHERE id = ?`)
-        .run(metadata.title, metadata.subtitle, metadata.description, JSON.stringify(metadata.authors), metadata.publisher, metadata.publishedDate, metadata.isbn10, metadata.isbn13, metadata.language, metadata.providerVolumeId, now, now, documentId);
+      const coverImagePath = await this.saveCover(projectId, documentId, metadata.coverUrl).catch(() => null);
+      getDb().query(`UPDATE project_documents SET title = ?, subtitle = ?, description = ?, authors_json = ?, publisher = ?, published_date = ?, isbn_10 = ?, isbn_13 = ?, language = ?, cover_image_path = COALESCE(?, cover_image_path), provider = 'google_books', provider_volume_id = ?, metadata_status = 'found', metadata_fetched_at = ?, updated_at = ? WHERE id = ?`)
+        .run(metadata.title, metadata.subtitle, metadata.description, JSON.stringify(metadata.authors), metadata.publisher, metadata.publishedDate, metadata.isbn10, metadata.isbn13, metadata.language, coverImagePath, metadata.providerVolumeId, now, now, documentId);
     } catch {
       getDb().query("UPDATE project_documents SET metadata_status = 'failed', metadata_fetched_at = ?, updated_at = ? WHERE id = ?").run(Date.now(), Date.now(), documentId);
     }
+    await this.persistDocumentIndex(projectId);
+    return this.get(projectId, documentId);
+  }
+
+  async refreshProjectMetadata(projectId: string) {
+    const apiKey = await this.secrets.getGoogleBooksApiKey();
+    if (!apiKey.value) return this.list(projectId);
+    const books = this.list(projectId).filter((document) => document.documentType === "book" && document.metadataStatus !== "manual");
+    await Promise.all(books.map((document) => this.refreshMetadata(projectId, document.id)));
+    return this.list(projectId);
+  }
+
+  async searchMetadata(projectId: string, documentId: string, input: BookMetadataSearchInput) {
+    const current = this.get(projectId, documentId);
+    if (current.documentType !== "book") throw new Error("책에만 서지 정보를 적용할 수 있습니다.");
+    const apiKey = await this.secrets.getGoogleBooksApiKey();
+    if (!apiKey.value) throw new Error("Settings에서 Google Books API key를 먼저 입력하세요.");
+    return this.metadata.searchManually(input, apiKey.value);
+  }
+
+  async applyMetadata(projectId: string, documentId: string, metadata: BookMetadata) {
+    const current = this.get(projectId, documentId);
+    if (current.documentType !== "book") throw new Error("책에만 서지 정보를 적용할 수 있습니다.");
+    if (!metadata.providerVolumeId || !metadata.title.trim()) throw new Error("Google Books 검색 결과를 다시 선택하세요.");
+    const now = Date.now();
+    const coverImagePath = await this.saveCover(projectId, documentId, metadata.coverUrl).catch(() => null);
+    getDb().query(`UPDATE project_documents
+      SET title = ?, subtitle = ?, description = ?, authors_json = ?, publisher = ?, published_date = ?,
+          isbn_10 = ?, isbn_13 = ?, language = ?, cover_image_path = COALESCE(?, cover_image_path),
+          provider = 'google_books', provider_volume_id = ?, metadata_status = 'manual', metadata_fetched_at = ?, updated_at = ?
+      WHERE id = ? AND project_id = ?`)
+      .run(
+        metadata.title.trim(), metadata.subtitle, metadata.description, JSON.stringify(metadata.authors), metadata.publisher,
+        metadata.publishedDate, metadata.isbn10, metadata.isbn13, metadata.language, coverImagePath,
+        metadata.providerVolumeId, now, now, documentId, projectId,
+      );
     await this.persistDocumentIndex(projectId);
     return this.get(projectId, documentId);
   }

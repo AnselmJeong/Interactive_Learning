@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { BookOpen, ChevronDown, Download, FolderInput, Plus, Trash2 } from "lucide-react";
+import { ChevronDown, Download, FolderInput, Plus, Trash2 } from "lucide-react";
 import type { ProjectSummary } from "../../../shared/rpc-types";
 
 export function ProjectDropdown({
@@ -9,9 +9,7 @@ export function ProjectDropdown({
   onSelect,
   onCreate,
   onImport,
-  onImportDocument,
   onExport,
-  onExportDocuments,
   onDelete,
 }: {
   projects: ProjectSummary[];
@@ -20,9 +18,7 @@ export function ProjectDropdown({
   onSelect: (project: ProjectSummary) => void;
   onCreate: () => void;
   onImport: () => void;
-  onImportDocument: (project: ProjectSummary) => void;
   onExport: (project: ProjectSummary) => void;
-  onExportDocuments: (project: ProjectSummary) => void;
   onDelete: (project: ProjectSummary) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -106,30 +102,6 @@ export function ProjectDropdown({
                 <FolderInput size={17} aria-hidden="true" />
                 <span className="pd-action-tooltip" role="tooltip">프로젝트 불러오기</span>
               </button>
-              {activeProject ? (
-                <button
-                  type="button"
-                  className="pd-transfer-action"
-                  aria-label="Learnie 책·논문 가져오기"
-                  disabled={busy}
-                  onClick={() => { onImportDocument(activeProject); setOpen(false); }}
-                >
-                  <FolderInput size={17} aria-hidden="true" />
-                  <span className="pd-action-tooltip" role="tooltip">책·논문 가져오기</span>
-                </button>
-              ) : null}
-              {activeProject ? (
-                <button
-                  type="button"
-                  className="pd-transfer-action"
-                  aria-label="모든 자료 개별 내보내기"
-                  disabled={busy}
-                  onClick={() => { onExportDocuments(activeProject); setOpen(false); }}
-                >
-                  <BookOpen size={17} aria-hidden="true" />
-                  <span className="pd-action-tooltip" role="tooltip">모든 자료 개별 내보내기</span>
-                </button>
-              ) : null}
               {activeProject ? (
                 <button
                   type="button"

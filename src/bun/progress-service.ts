@@ -3,10 +3,15 @@ import { getDb } from "./project-db";
 import type { SourceChunk } from "../shared/artifact-types";
 import type {
   DocumentProgressSnapshot,
-  LearningActivity,
+  LearningActivityDay,
   ProjectProgressSnapshot,
   SourceProgressSnapshot,
 } from "../shared/rpc-types";
+
+type SessionActivityOwner = {
+  project_id: string;
+  material_id: string;
+};
 
 type SourceProgressRow = {
   id: string;
@@ -24,18 +29,6 @@ type SessionProgressRow = {
   current_chunk_id: string | null;
   covered_chunk_ids_json: string;
   status: "active" | "completed" | "archived";
-  title: string;
-  updated_at: number;
-};
-
-type AnnotationActivityRow = {
-  id: string;
-  kind: "define" | "lookup" | "question" | "image" | "note" | "highlight";
-  selected_text: string;
-  result_json: string;
-  source_id: string | null;
-  document_id: string | null;
-  updated_at: number;
 };
 
 function jsonStringList(raw: string) {
@@ -67,21 +60,34 @@ function percent(covered: number, total: number) {
   return total ? Math.round((covered / total) * 100) : 0;
 }
 
-function annotationActivityTitle(row: AnnotationActivityRow) {
-  try {
-    const result = JSON.parse(row.result_json) as Record<string, unknown>;
-    const candidate = [result.title, result.note, result.question, result.body]
-      .find((value): value is string => typeof value === "string" && Boolean(value.trim()));
-    if (candidate) return candidate.replace(/\s+/g, " ").trim().slice(0, 120);
-  } catch {
-    // Selected text is the stable fallback for old rows.
-  }
-  return row.selected_text.replace(/\s+/g, " ").trim().slice(0, 120) || "학습 기록";
-}
+/**
+ * Records only newly opened source passages.  The project/chunk primary key
+ * deliberately makes revisits free: a calendar square answers "how many
+ * distinct passages did I open today?", not "how many clicks did I make?".
+ */
+export function recordChunkViews(
+  sessionId: string,
+  previouslyViewed: Iterable<string>,
+  coveredAfter: Iterable<string>,
+  currentChunkId: string | null,
+  occurredAt = Date.now(),
+) {
+  const known = new Set(previouslyViewed);
+  const next = new Set(coveredAfter);
+  if (currentChunkId) next.add(currentChunkId);
+  const newlyViewed = [...next].filter((chunkId) => chunkId && !known.has(chunkId));
+  if (!newlyViewed.length) return;
 
-function activityKind(kind: AnnotationActivityRow["kind"]): LearningActivity["kind"] {
-  if (kind === "define") return "lookup";
-  return kind;
+  const owner = getDb()
+    .query<SessionActivityOwner, [string]>("SELECT project_id, material_id FROM learning_sessions WHERE id = ?")
+    .get(sessionId);
+  if (!owner) return;
+  const insert = getDb().query(
+    `INSERT OR IGNORE INTO learning_chunk_activity
+     (project_id, session_id, material_id, chunk_id, occurred_at)
+     VALUES (?, ?, ?, ?, ?)`
+  );
+  for (const chunkId of newlyViewed) insert.run(owner.project_id, sessionId, owner.material_id, chunkId, occurredAt);
 }
 
 export class ProgressService {
@@ -98,7 +104,7 @@ export class ProgressService {
       ORDER BY d.imported_at ASC, d.id ASC, COALESCE(s.source_ordinal, 2147483647), s.created_at ASC, s.id ASC
     `).all(projectId);
     const sessions = getDb().query<SessionProgressRow, [string]>(`
-      SELECT DISTINCT s.id, s.current_chunk_id, s.covered_chunk_ids_json, s.status, s.title, s.updated_at
+      SELECT DISTINCT s.id, s.current_chunk_id, s.covered_chunk_ids_json, s.status
       FROM learning_sessions s
       WHERE s.project_id = ?
       ORDER BY s.updated_at DESC
@@ -165,36 +171,15 @@ export class ProgressService {
       });
     }
 
-    const annotationRows = getDb().query<AnnotationActivityRow, [string]>(`
-      SELECT a.id, a.kind, a.selected_text, a.result_json, a.source_id, s.document_id, a.updated_at
-      FROM material_annotations a
-      LEFT JOIN project_sources s ON s.id = a.source_id
-      WHERE a.project_id = ?
-      ORDER BY a.updated_at DESC
-      LIMIT 30
+    const activityDays = getDb().query<LearningActivityDay, [string]>(`
+      SELECT strftime('%Y-%m-%d', occurred_at / 1000, 'unixepoch', 'localtime') AS date,
+             COUNT(*) AS viewedChunks
+      FROM learning_chunk_activity
+      WHERE project_id = ?
+        AND occurred_at >= (CAST(strftime('%s', 'now', 'localtime', 'start of day', '-364 days') AS INTEGER) * 1000)
+      GROUP BY date
+      ORDER BY date ASC
     `).all(projectId);
-    const activities: LearningActivity[] = [
-      ...sessions.slice(0, 20).map((session): LearningActivity => {
-        const source = sourceSnapshots.find((item) => item.currentChunkId === session.current_chunk_id) || null;
-        return {
-          id: `session:${session.id}`,
-          kind: "session",
-          title: session.title,
-          documentId: source?.documentId || null,
-          sourceId: source?.sourceId || null,
-          occurredAt: session.updated_at,
-        };
-      }),
-      ...annotationRows.map((row): LearningActivity => ({
-        id: `annotation:${row.id}`,
-        kind: activityKind(row.kind),
-        title: annotationActivityTitle(row),
-        documentId: row.document_id,
-        sourceId: row.source_id,
-        occurredAt: row.updated_at,
-      })),
-    ].sort((a, b) => b.occurredAt - a.occurredAt).slice(0, 20);
-
     const covered = sourceSnapshots.reduce((sum, item) => sum + item.coveredChunks, 0);
     const total = sourceSnapshots.reduce((sum, item) => sum + item.totalChunks, 0);
     const currentSource = sourceSnapshots.find((item) => item.currentChunkId) || null;
@@ -208,7 +193,7 @@ export class ProgressService {
       currentSourceId: currentSource?.sourceId || null,
       activeSessionId: currentSource?.activeSessionId || mostRecentActive?.id || null,
       documents,
-      recentActivity: activities,
+      activityDays,
       orphanCoveredChunkCount,
     };
   }

@@ -1,8 +1,11 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ArrowRight, BookOpen, Download, Search, Upload } from "lucide-react";
-import type { DocumentSummary, ProjectProgressSnapshot, ProjectSummary, SourceSummary } from "../../../shared/rpc-types";
+import type { DocumentProgressSnapshot, DocumentSummary, LearningActivityDay, ProjectProgressSnapshot, ProjectSummary, SourceSummary } from "../../../shared/rpc-types";
 import type { MaterialAnnotation } from "../../../shared/artifact-types";
+import type { TutorMessage } from "../../../shared/tutor-types";
+import { AnnotationInlineScope } from "./AnnotationInlineScope";
 import { MarkdownContent } from "./MarkdownContent";
+import { TutorBlockRenderer } from "./TutorBlockRenderer";
 
 type LibraryPageProps = {
   project: ProjectSummary | null;
@@ -10,11 +13,9 @@ type LibraryPageProps = {
   sources: SourceSummary[];
   selectedDocumentId: string | null;
   progress: ProjectProgressSnapshot | null;
-  onSelectDocument: (documentId: string) => void;
   onImport: () => void;
-  onOpenSource: (sourceId: string) => void;
-  onRemoveSource: (source: SourceSummary) => void;
-  onContinue: () => void;
+  onOpenDocument: (documentId: string) => void;
+  onFindMetadata: (document: DocumentSummary) => void;
 };
 
 function formatRelativeTime(timestamp: number | null) {
@@ -43,7 +44,7 @@ function withoutLeadingIndex(title: string) {
   return title.replace(/^\s*\d+[.)]?\s+/, "").trim() || title;
 }
 
-export function LibraryPage({ project, documents, sources, selectedDocumentId, progress, onSelectDocument, onImport, onOpenSource, onRemoveSource, onContinue }: LibraryPageProps) {
+export function LibraryPage({ project, documents, sources, selectedDocumentId, progress, onImport, onOpenDocument, onFindMetadata }: LibraryPageProps) {
   const [query, setQuery] = useState("");
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const filteredDocuments = documents.filter((document) => {
@@ -60,8 +61,7 @@ export function LibraryPage({ project, documents, sources, selectedDocumentId, p
     || documents[0]
     || null;
   const activeProgress = activeDocument ? documentProgress(activeDocument, sources, progress) : 0;
-  const heroTitle = project?.title || activeDocument?.title || "새로운 배움의 시작";
-  const heroDescription = activeDocument?.description || activeDocument?.subtitle || project?.description || "자료를 가져오면 읽을 지점을 정리하고 AI 튜터와 함께 학습할 수 있습니다.";
+  const heroTitle = project?.title || "새로운 프로젝트";
 
   return (
     <div className="renovation-page library-page">
@@ -79,18 +79,7 @@ export function LibraryPage({ project, documents, sources, selectedDocumentId, p
 
       <div className="renovation-scroll">
         <section className="library-hero">
-          <p>계속 학습하기</p>
           <h3>{heroTitle}</h3>
-          <span>{heroDescription}</span>
-          <div className="library-hero-actions">
-            <button type="button" className="renovation-primary" onClick={onContinue} disabled={!sources.length}>
-              학습 계속하기 <ArrowRight size={17} />
-            </button>
-            <div className="hero-progress" aria-label={`학습 진도 ${activeProgress}%`}>
-              <i><b style={{ width: `${activeProgress}%` }} /></i>
-              <strong>{activeProgress}% learned</strong>
-            </div>
-          </div>
         </section>
 
         <section className="library-collection">
@@ -105,18 +94,34 @@ export function LibraryPage({ project, documents, sources, selectedDocumentId, p
             <div className="document-grid">
               {filteredDocuments.map((document, index) => {
                 const progressValue = documentProgress(document, sources, progress);
-                const documentSources = sources.filter((source) => source.documentId === document.id);
+                const hasBibliography = document.documentType !== "book" || document.metadataStatus === "found" || document.metadataStatus === "manual";
+                const title = hasBibliography ? document.title : "서지 정보 없음";
+                const bibliographicLine = document.documentType === "book"
+                  ? [document.authors.join(", "), document.publisher, document.publishedDate?.slice(0, 4)].filter(Boolean).join(" · ")
+                  : [document.authors.join(", "), document.journal, document.publishedDate?.slice(0, 4)].filter(Boolean).join(" · ");
                 return (
-                  <button key={document.id} type="button" className={`document-tile ${selectedDocumentId === document.id ? "selected" : ""}`} onClick={() => onSelectDocument(document.id)}>
-                    <span className={`book-cover ${coverTone(index)}`}>
-                      {document.coverUrl ? <img src={document.coverUrl} alt="" /> : <em>{document.title}</em>}
-                    </span>
-                    <span className="document-copy">
-                      <strong>{document.title}</strong>
-                      <small>{document.authors.join(", ") || document.subtitle || document.originalFileName}</small>
-                      <b>{progressValue ? `${progressValue}% learned` : document.preparation.percent >= 100 ? "학습 준비 완료" : "아직 시작하지 않음"} · {document.documentType === "article" ? "논문" : `${documentSources.length} source`}</b>
-                    </span>
-                  </button>
+                  <article key={document.id} className={`document-tile ${selectedDocumentId === document.id ? "selected" : ""}`}>
+                    <button type="button" className="document-tile-open" onClick={() => onOpenDocument(document.id)} aria-label={`${title} 학습 열기`}>
+                      <span className={`book-cover ${coverTone(index)}`}>
+                        {document.coverUrl ? <img src={document.coverUrl} alt={`${title} 표지`} /> : hasBibliography ? <em>{title}</em> : null}
+                      </span>
+                      <span className="document-copy">
+                        <strong>{title}</strong>
+                        {hasBibliography && document.subtitle ? <span className="document-subtitle">{document.subtitle}</span> : null}
+                        <small>{bibliographicLine || "서지 정보 없음"}</small>
+                        <b>{progressValue ? `${progressValue}% learned` : document.preparation.percent >= 100 ? "학습 준비 완료" : "아직 시작하지 않음"}</b>
+                      </span>
+                    </button>
+                    {document.documentType === "book" ? (
+                      <button
+                        type="button"
+                        className="document-metadata-action"
+                        onClick={() => onFindMetadata(document)}
+                        aria-label={`${title} 서지 정보 찾기`}
+                        title="서지 정보 찾기"
+                      ><Search size={16} aria-hidden="true" /></button>
+                    ) : null}
+                  </article>
                 );
               })}
             </div>
@@ -136,26 +141,8 @@ export function LibraryPage({ project, documents, sources, selectedDocumentId, p
             <h3>{activeDocument.title}</h3>
             <p>{activeDocument.description || activeDocument.subtitle || [activeDocument.authors.join(", "), activeDocument.journal, activeDocument.publishedDate].filter(Boolean).join(" · ") || "이 논문은 하위 source 단계 없이 바로 학습할 수 있습니다."}</p>
             <button type="button" className="renovation-primary" onClick={() => {
-              const source = sources.find((item) => item.documentId === activeDocument.id);
-              if (source) onOpenSource(source.id);
+              onOpenDocument(activeDocument.id);
             }}>논문 {activeProgress ? "계속 학습하기" : "학습 시작"} <ArrowRight size={16} /></button>
-          </section>
-        ) : activeDocument ? (
-          <section className="library-source-list">
-            <div className="renovation-section-heading">
-              <div><h3>{activeDocument.title}</h3><p>이 자료에 포함된 학습 소스</p></div>
-            </div>
-            {sources.filter((source) => source.documentId === activeDocument.id).map((source, index) => (
-              <div className="library-source-row" key={source.id}>
-                <button type="button" className="library-source-open" onClick={() => onOpenSource(source.id)}>
-                  <span>{String(index + 1).padStart(2, "0")}</span>
-                  <strong>{withoutLeadingIndex(source.title)}</strong>
-                  <small>{source.learningStatus === "completed" ? "학습 완료" : source.learningStatus === "in_progress" ? "학습 중" : "학습 시작"}</small>
-                  <ArrowRight size={16} />
-                </button>
-                <button type="button" className="library-source-remove" onClick={() => onRemoveSource(source)} aria-label={`${source.title} Source 제거`}>제거</button>
-              </div>
-            ))}
           </section>
         ) : null}
       </div>
@@ -170,6 +157,7 @@ type AnnotationPageProps = {
   sources: SourceSummary[];
   selectedAnnotationId: string | null;
   onSelectAnnotation: (annotationId: string) => void;
+  onLoadLearningMessage: (messageId: string) => Promise<TutorMessage>;
   onOpenAnnotation: (annotation: MaterialAnnotation) => void;
   onExport: (annotationIds: string[]) => void;
   exporting: boolean;
@@ -179,30 +167,74 @@ type AnnotationPageProps = {
 
 type AnnotationFilter = "all" | "highlight" | "note" | "question" | "lookup" | "image";
 
-function annotationTitle(annotation: MaterialAnnotation) {
+function isQuestionAnnotation(annotation: MaterialAnnotation) {
+  return annotation.kind === "question" || annotation.result.kind === "question_thread";
+}
+
+function isLookupAnnotation(annotation: MaterialAnnotation) {
+  return annotation.kind === "lookup" || annotation.kind === "define" || annotation.result.kind === "lookup" || annotation.result.kind === "define";
+}
+
+export function lookupKeyword(annotation: MaterialAnnotation): string {
   const result = annotation.result;
+  if (result.kind === "lookup" || result.kind === "define") return result.query || annotation.selectedText;
+  return annotation.selectedText;
+}
+
+export function questionPrompt(annotation: MaterialAnnotation): string {
+  const result = annotation.result;
+  if (result.kind === "question_thread") {
+    return result.messages.find((message) => message.role === "user")?.content || result.title || "질문";
+  }
+  if (result.kind === "question") return result.question || result.query || result.title || "질문";
+  return annotation.selectedText || "질문";
+}
+
+export function questionAnswer(annotation: MaterialAnnotation): string {
+  const result = annotation.result;
+  if (result.kind === "question_thread") {
+    return result.messages.filter((message) => message.role === "assistant").map((message) => message.content).join("\n\n").trim();
+  }
+  if (result.kind === "question") return result.body;
+  return "";
+}
+
+function annotationTitle(annotation: MaterialAnnotation): string {
+  const result = annotation.result;
+  if (isQuestionAnnotation(annotation)) return questionPrompt(annotation);
+  if (isLookupAnnotation(annotation)) return lookupKeyword(annotation);
   if (result.kind === "note") return result.note.split("\n")[0]?.slice(0, 72) || "내 노트";
-  if (result.kind === "question_thread") return result.title || "AI 대화";
-  if (result.kind === "define" || result.kind === "lookup" || result.kind === "question") return result.title;
+  if (result.kind === "define" || result.kind === "lookup") return result.title;
   return annotation.selectedText.slice(0, 72) || "하이라이트";
 }
 
-function annotationBody(annotation: MaterialAnnotation) {
+function annotationBody(annotation: MaterialAnnotation): string {
   const result = annotation.result;
   if (result.kind === "note") return result.note;
-  if (result.kind === "question_thread") return result.messages.map((message) => message.content).join("\n\n");
-  if (result.kind === "define" || result.kind === "lookup" || result.kind === "question") return result.body;
+  if (isQuestionAnnotation(annotation)) return questionAnswer(annotation);
+  if (result.kind === "define" || result.kind === "lookup") return result.body;
   if (result.kind === "image") return result.body || result.warning || result.query;
   return annotation.selectedText;
 }
 
-export function AnnotationPage({ project, annotations, documents, sources, selectedAnnotationId, onSelectAnnotation, onOpenAnnotation, onExport, exporting, onDelete, onUpdateNote }: AnnotationPageProps) {
+export function annotationListPreview(annotation: MaterialAnnotation) {
+  // A highlight is already represented by its selected text as the list title.
+  // Rendering it again as a preview creates a visually identical second line.
+  if (annotation.kind === "highlight") return null;
+  if (isQuestionAnnotation(annotation)) return annotation.selectedText.replace(/\s+/g, " ").slice(0, 120);
+  if (isLookupAnnotation(annotation)) return null;
+  return annotationBody(annotation).replace(/\s+/g, " ").slice(0, 120);
+}
+
+export function AnnotationPage({ project, annotations, documents, sources, selectedAnnotationId, onSelectAnnotation, onLoadLearningMessage, onOpenAnnotation, onExport, exporting, onDelete, onUpdateNote }: AnnotationPageProps) {
   const [filter, setFilter] = useState<AnnotationFilter>("all");
   const [query, setQuery] = useState("");
   const [documentId, setDocumentId] = useState("all");
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
   const [noteDraft, setNoteDraft] = useState("");
   const [noteBusy, setNoteBusy] = useState(false);
+  const [learningMessage, setLearningMessage] = useState<TutorMessage | null>(null);
+  const [learningMessageStatus, setLearningMessageStatus] = useState<"idle" | "loading" | "ready" | "unavailable">("idle");
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const filtered = annotations.filter((annotation) => {
     if (filter !== "all") {
@@ -217,6 +249,37 @@ export function AnnotationPage({ project, annotations, documents, sources, selec
   });
   const selected = annotations.find((annotation) => annotation.id === selectedAnnotationId) || filtered[0] || null;
   const selectedSource = selected?.sourceId ? sources.find((source) => source.id === selected.sourceId) : null;
+
+  useEffect(() => {
+    let cancelled = false;
+    setLearningMessage(null);
+    if (!selected || selected.kind !== "highlight" || !selected.anchorMessageId) {
+      setLearningMessageStatus("idle");
+      return () => { cancelled = true; };
+    }
+    setLearningMessageStatus("loading");
+    void onLoadLearningMessage(selected.anchorMessageId)
+      .then((message) => {
+        if (cancelled) return;
+        setLearningMessage(message);
+        setLearningMessageStatus("ready");
+      })
+      .catch(() => {
+        if (!cancelled) setLearningMessageStatus("unavailable");
+      });
+    return () => { cancelled = true; };
+  }, [onLoadLearningMessage, selected?.anchorMessageId, selected?.id, selected?.kind]);
+
+  const inlineAnnotationsByBlockId = useMemo(() => {
+    const blocks = new Map<string, MaterialAnnotation[]>();
+    if (!selected || selected.kind !== "highlight" || !learningMessage?.blocks?.length) return blocks;
+    if (selected.anchorBlockId) {
+      blocks.set(selected.anchorBlockId, [selected]);
+      return blocks;
+    }
+    learningMessage.blocks.forEach((_, index) => blocks.set(`${learningMessage.id}:block-${index}`, [selected]));
+    return blocks;
+  }, [learningMessage?.blocks, learningMessage?.id, selected]);
 
   return (
     <div className="renovation-page annotation-page">
@@ -241,11 +304,13 @@ export function AnnotationPage({ project, annotations, documents, sources, selec
           <div className="annotation-list">
             {filtered.map((annotation) => {
               const source = annotation.sourceId ? sources.find((item) => item.id === annotation.sourceId) : null;
+              const question = isQuestionAnnotation(annotation);
+              const lookup = isLookupAnnotation(annotation);
               return (
                 <button key={annotation.id} type="button" className={selected?.id === annotation.id ? "active" : ""} onClick={() => onSelectAnnotation(annotation.id)}>
-                  <small>{new Date(annotation.updatedAt).toLocaleDateString("ko-KR")} · {source?.title || "학습 기록"}</small>
-                  <strong>{annotationTitle(annotation)}</strong>
-                  <span>{annotationBody(annotation).replace(/\s+/g, " ").slice(0, 120)}</span>
+                  {!lookup ? <small>{new Date(annotation.updatedAt).toLocaleDateString("ko-KR")} · {source?.title || "학습 기록"}</small> : null}
+                  <strong className={question ? "annotation-list-question-title" : undefined}>{annotationTitle(annotation)}</strong>
+                  {annotationListPreview(annotation) ? <span className={question ? "annotation-list-selected-text" : undefined}>{annotationListPreview(annotation)}</span> : null}
                 </button>
               );
             })}
@@ -255,9 +320,50 @@ export function AnnotationPage({ project, annotations, documents, sources, selec
         <article className="annotation-detail">
           {selected ? (
             <div>
-              <p className="renovation-kicker">{selected.kind === "note" ? "내 노트" : selected.kind === "highlight" ? "하이라이트" : "AI 대화"} · {new Date(selected.updatedAt).toLocaleString("ko-KR")}</p>
-              <h3>{annotationTitle(selected)}</h3>
-              <blockquote>“{selected.selectedText}”</blockquote>
+              {!isLookupAnnotation(selected) ? <p className="renovation-kicker">{selected.kind === "note" ? "내 노트" : selected.kind === "highlight" ? "하이라이트" : isQuestionAnnotation(selected) ? "질문" : "AI 대화"} · {new Date(selected.updatedAt).toLocaleString("ko-KR")}</p> : null}
+              {selected.kind === "highlight" ? (
+                <div className="annotation-learning-context">
+                  {learningMessageStatus === "loading" ? <p className="annotation-source-context-status">학습 자료를 불러오는 중입니다.</p> : null}
+                  {learningMessage?.blocks?.length ? (
+                    <TutorBlockRenderer
+                      blocks={learningMessage.blocks}
+                      messageId={learningMessage.id}
+                      inlineAnnotationsByBlockId={inlineAnnotationsByBlockId}
+                      activeAnnotationId={selected.id}
+                    />
+                  ) : learningMessage ? (
+                    <AnnotationInlineScope annotations={[selected]} activeAnnotationId={selected.id}>
+                      <MarkdownContent content={learningMessage.content} />
+                    </AnnotationInlineScope>
+                  ) : null}
+                  {learningMessageStatus === "unavailable" ? <p className="annotation-source-context-status">이 하이라이트가 속한 학습 자료를 찾을 수 없습니다.</p> : null}
+                </div>
+              ) : isLookupAnnotation(selected) ? (
+                <div className="annotation-lookup-detail">
+                  <p className="annotation-lookup-keyword">{lookupKeyword(selected)}</p>
+                  <div className="annotation-body"><MarkdownContent content={annotationBody(selected)} /></div>
+                </div>
+              ) : isQuestionAnnotation(selected) ? (
+                <div className="annotation-question-detail">
+                  <section>
+                    <p className="annotation-detail-label">질문</p>
+                    <p className="annotation-question-prompt">{questionPrompt(selected)}</p>
+                  </section>
+                  <section>
+                    <p className="annotation-detail-label">선택한 문장</p>
+                    <p className="annotation-question-selected-text">{selected.selectedText}</p>
+                  </section>
+                  <section>
+                    <p className="annotation-detail-label">답변</p>
+                    <div className="annotation-body"><MarkdownContent content={questionAnswer(selected) || "아직 답변이 없습니다."} /></div>
+                  </section>
+                </div>
+              ) : (
+                <>
+                  <h3>{annotationTitle(selected)}</h3>
+                  <blockquote>“{selected.selectedText}”</blockquote>
+                </>
+              )}
               {editingNoteId === selected.id && selected.result.kind === "note" ? (
                 <div className="annotation-note-editor">
                   <textarea value={noteDraft} onChange={(event) => setNoteDraft(event.currentTarget.value)} aria-label="노트 편집" autoFocus />
@@ -266,7 +372,7 @@ export function AnnotationPage({ project, annotations, documents, sources, selec
                     void onUpdateNote(selected.id, noteDraft).then(() => setEditingNoteId(null)).catch(() => undefined).finally(() => setNoteBusy(false));
                   }}>저장</button></div>
                 </div>
-              ) : <div className="annotation-body"><MarkdownContent content={annotationBody(selected)} /></div>}
+              ) : isQuestionAnnotation(selected) || isLookupAnnotation(selected) ? null : <div className="annotation-body"><MarkdownContent content={annotationBody(selected)} /></div>}
               <div className="annotation-detail-actions">
                 {selectedSource ? <button type="button" className="renovation-primary" onClick={() => onOpenAnnotation(selected)}>본문에서 보기 <ArrowRight size={16} /></button> : null}
                 {selected.result.kind === "note" ? <button type="button" className="renovation-secondary" onClick={() => { setEditingNoteId(selected.id); setNoteDraft(selected.result.kind === "note" ? selected.result.note : ""); }}>편집</button> : null}
@@ -284,35 +390,87 @@ type ProgressPageProps = {
   project: ProjectSummary | null;
   documents: DocumentSummary[];
   sources: SourceSummary[];
-  annotations: MaterialAnnotation[];
-  currentProgress: number;
   progress: ProjectProgressSnapshot | null;
   onContinue: () => void;
 };
 
-export function ProgressPage({ project, documents, sources, annotations, currentProgress, progress, onContinue }: ProgressPageProps) {
-  const overall = useMemo(() => {
-    if (progress) return progress.percent;
-    const documentValues = documents.map((document) => documentProgress(document, sources, progress));
-    const calculated = documentValues.length ? Math.round(documentValues.reduce((sum, value) => sum + value, 0) / documentValues.length) : 0;
-    return Math.max(calculated, currentProgress);
-  }, [currentProgress, documents, progress, sources]);
-  const completed = progress?.documents.reduce((sum, document) => sum + document.sources.filter((source) => source.status === "completed").length, 0)
-    ?? sources.filter((source) => source.learningStatus === "completed").length;
-  const [courseDocumentId, setCourseDocumentId] = useState<string | null>(progress?.currentDocumentId || progress?.documents[0]?.documentId || null);
-  const courseDocument = progress?.documents.find((document) => document.documentId === courseDocumentId) || progress?.documents[0] || null;
-  const courseSources = courseDocument?.sources || sources.map((source, index) => ({
-    sourceId: source.id,
-    documentId: source.documentId || "",
-    title: source.title,
-    ordinal: index,
-    status: source.learningStatus,
-    coveredChunks: 0,
-    totalChunks: 0,
-    percent: source.learningStatus === "completed" ? 100 : 0,
-    currentChunkId: null,
-    activeSessionId: null,
+type ActivityCalendarCell = {
+  date: string;
+  count: number;
+  level: number;
+};
+
+type ActivityCalendar = {
+  weeks: Array<{ start: Date; monthLabel: string | null }>;
+  cells: ActivityCalendarCell[][];
+};
+
+const KOREAN_WEEKDAYS = ["월", "화", "수", "목", "금", "토", "일"];
+
+function calendarDateKey(date: Date) {
+  const year = date.getFullYear();
+  const month = `${date.getMonth() + 1}`.padStart(2, "0");
+  const day = `${date.getDate()}`.padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function mondayOf(date: Date) {
+  const value = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  value.setDate(value.getDate() - ((value.getDay() + 6) % 7));
+  return value;
+}
+
+export function activityCalendar(days: LearningActivityDay[], today = new Date()): ActivityCalendar {
+  const counts = new Map(days.map((day) => [day.date, day.viewedChunks]));
+  const end = mondayOf(today);
+  const start = new Date(end);
+  start.setDate(start.getDate() - (51 * 7));
+  const nonzeroCounts = days.map((day) => day.viewedChunks).filter((count) => count > 0);
+  const max = Math.max(...nonzeroCounts, 1);
+  const weeks: ActivityCalendar["weeks"] = [];
+  const cells: ActivityCalendarCell[][] = [];
+  let previousMonth = -1;
+  for (let weekIndex = 0; weekIndex < 52; weekIndex += 1) {
+    const weekStart = new Date(start);
+    weekStart.setDate(start.getDate() + weekIndex * 7);
+    const monthDate = Array.from({ length: 7 }, (_, dayIndex) => {
+      const date = new Date(weekStart);
+      date.setDate(weekStart.getDate() + dayIndex);
+      return date;
+    }).find((date) => date.getMonth() !== previousMonth) || weekStart;
+    const monthLabel = monthDate.getMonth() !== previousMonth ? `${monthDate.getMonth() + 1}월` : null;
+    previousMonth = monthDate.getMonth();
+    weeks.push({ start: weekStart, monthLabel });
+    cells.push(Array.from({ length: 7 }, (_, dayIndex) => {
+      const date = new Date(weekStart);
+      date.setDate(weekStart.getDate() + dayIndex);
+      const count = counts.get(calendarDateKey(date)) || 0;
+      const level = count === 0 ? 0 : Math.min(4, Math.max(1, Math.ceil((count / max) * 4)));
+      return { date: calendarDateKey(date), count, level };
+    }));
+  }
+  return { weeks, cells };
+}
+
+function fallbackDocumentProgress(documents: DocumentSummary[]) {
+  return documents.map((document): DocumentProgressSnapshot => ({
+    documentId: document.id,
+    title: document.title,
+    documentType: document.documentType,
+    status: document.learning.status,
+    coveredChunks: document.learning.coveredChunks,
+    totalChunks: document.learning.totalChunks,
+    percent: document.learning.percent,
+    currentSourceId: document.learning.currentSourceId,
+    activeSessionId: document.learning.activeSessionId,
+    sources: [],
   }));
+}
+
+export function ProgressPage({ project, documents, sources, progress, onContinue }: ProgressPageProps) {
+  const calendar = useMemo(() => activityCalendar(progress?.activityDays || []), [progress?.activityDays]);
+  const documentProgressRows = progress?.documents || fallbackDocumentProgress(documents);
+  const materialLabel = documentProgressRows.every((document) => document.documentType === "book") ? "책별 진도" : "자료별 진도";
 
   return (
     <div className="renovation-page progress-page">
@@ -323,39 +481,44 @@ export function ProgressPage({ project, documents, sources, annotations, current
       <div className="progress-layout renovation-scroll">
         <section className="progress-main">
           <p className="renovation-kicker">{project?.title || "Learning project"}</p>
-          <h3>학습의 궤적</h3>
-          <div className="progress-hero-number"><strong>{overall}</strong><span>% learned</span></div>
-          <p>현재 {sources.length}개 학습 소스 중 {completed}개를 마쳤습니다. 준비 진도와 실제 학습 진도는 별도로 기록됩니다.</p>
-          <div className="progress-recent">
-            <h3>최근 학습 기록</h3>
-            <span>질문, 노트, 완료한 소스가 한 타임라인에 모입니다.</span>
-            {progress?.recentActivity.slice(0, 5).map((activity) => (
-              <div key={activity.id}><small>{formatRelativeTime(activity.occurredAt)}</small><strong>{activity.title}</strong><em>{activity.kind === "session" ? "학습" : activity.kind === "note" ? "노트" : activity.kind === "highlight" ? "하이라이트" : "AI 대화"}</em></div>
-            )) || annotations.slice(0, 5).map((annotation) => (
-              <div key={annotation.id}><small>{formatRelativeTime(annotation.updatedAt)}</small><strong>{annotationTitle(annotation)}</strong><em>{annotation.kind === "note" ? "노트" : annotation.kind === "highlight" ? "하이라이트" : "AI 대화"}</em></div>
-            ))}
-            {!progress?.recentActivity.length && !annotations.length ? sources.slice(0, 4).map((source) => (
-              <div key={source.id}><small>{formatRelativeTime(source.updatedAt)}</small><strong>{source.title}</strong><em>{sourceLearningLabel(source)}</em></div>
-            )) : null}
+          <h3>학습 활동</h3>
+          <p>지난 1년 동안 새로 연 학습 대목입니다. 같은 대목을 다시 읽어도 한 번만 셉니다.</p>
+          <div className="activity-overview" aria-label="최근 1년 학습 활동">
+            <div className="activity-calendar-grid" role="grid" aria-label="요일과 주별 학습 대목 열람 기록">
+              {calendar.weeks.map((week, index) => week.monthLabel ? (
+                <span key={`${week.monthLabel}-${index}`} className="activity-month" style={{ gridColumn: index + 2, gridRow: 1 }}>{week.monthLabel}</span>
+              ) : null)}
+              {KOREAN_WEEKDAYS.map((weekday, dayIndex) => (
+                <span key={weekday} className="activity-weekday" style={{ gridColumn: 1, gridRow: dayIndex + 2 }}>{dayIndex % 2 === 0 ? weekday : ""}</span>
+              ))}
+              {calendar.cells.map((week, weekIndex) => week.map((cell, dayIndex) => (
+                <span
+                  key={cell.date}
+                  className={`activity-cell level-${cell.level}`}
+                  style={{ gridColumn: weekIndex + 2, gridRow: dayIndex + 2 }}
+                  role="gridcell"
+                  aria-label={`${cell.date}: 새로 연 학습 대목 ${cell.count}개`}
+                  title={`${cell.date} · ${cell.count}개 대목`}
+                />
+              )))}
+            </div>
+            <div className="activity-legend" aria-label="활동량 범례"><span>적음</span>{[0, 1, 2, 3, 4].map((level) => <i key={level} className={`level-${level}`} />)}<span>많음</span></div>
           </div>
         </section>
-        <aside className="course-map">
-          <p className="renovation-kicker">Course map</p>
-          <h3>이 프로젝트에서 어디까지 왔나요?</h3>
-          {progress && progress.documents.length > 1 ? (
-            <select className="course-map-document" value={courseDocument?.documentId || ""} onChange={(event) => setCourseDocumentId(event.currentTarget.value)} aria-label="Course map 자료 선택">
-              {progress.documents.map((document) => <option key={document.documentId} value={document.documentId}>{document.title}</option>)}
-            </select>
-          ) : null}
+        <aside className="document-progress-list">
+          <p className="renovation-kicker">Progress</p>
+          <h3>{materialLabel}</h3>
+          <p>각 자료의 실제 학습 대목 기준</p>
           <ol>
-            {courseSources.map((source, index) => (
-              <li key={source.sourceId} className={`${source.status} ${source.currentChunkId ? "current" : ""}`}>
-                <i aria-hidden="true" />
-                <strong>{index + 1}. {withoutLeadingIndex(source.title)}</strong>
-                <span>{source.status === "completed" ? "완료" : source.status === "in_progress" ? `진행 중 · ${source.coveredChunks}/${source.totalChunks} 대목` : source.totalChunks ? `학습 준비 · ${source.totalChunks} 대목` : "학습 준비"}</span>
+            {documentProgressRows.map((document) => (
+              <li key={document.documentId} className={document.status}>
+                <div><strong>{document.title}</strong><b>{document.percent}%</b></div>
+                <span>{document.totalChunks ? `${document.coveredChunks} / ${document.totalChunks} 대목` : "학습 자료 준비 중"}</span>
+                <i aria-hidden="true"><em style={{ width: `${document.percent}%` }} /></i>
               </li>
             ))}
           </ol>
+          {!documentProgressRows.length ? <div className="progress-empty">학습 자료를 가져오면 여기에서 자료별 진도를 확인할 수 있습니다.</div> : null}
         </aside>
       </div>
     </div>

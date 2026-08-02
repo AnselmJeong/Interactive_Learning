@@ -28,12 +28,15 @@ import { buildBuddyPromptMessages, cleanBuddyMessage } from "./buddy-message";
 import { searchOllamaWeb } from "./ollama-web-search-service";
 import { searchBraveImages } from "./brave-image-search-service";
 import { createFigureAssetServer } from "./figure-asset-server";
+import { createBookCoverAssetServer } from "./book-cover-asset-server";
 
 configureAppDataBase(Utils.paths.userData);
 configureDatabaseBase(stableDatabaseBase(Utils.paths.userData));
 
 const projects = new ProjectService();
 const documents = new DocumentService();
+const bookCoverAssetServer = createBookCoverAssetServer((documentId) => documents.coverAsset(documentId));
+documents.setCoverUrlFor((documentId) => bookCoverAssetServer.urlFor(documentId));
 const progress = new ProgressService();
 const annotationExports = new AnnotationExportService();
 const documentTransfers = new DocumentTransferService();
@@ -85,6 +88,13 @@ void tutor.recoverInterruptedMessageSets().then((count) => {
 function sendToView(message: string, payload: unknown) {
   const viewRpc = mainWindow?.webview.rpc as { proxy?: { send?: (message: string, payload: unknown) => void } } | undefined;
   viewRpc?.proxy?.send?.(message, payload);
+}
+
+async function refreshImportedBookMetadata(projectId: string, imported: Array<{ documentId?: string | null; documentType: string }>) {
+  const documentIds = [...new Set(imported
+    .filter((source) => source.documentType === "book" && source.documentId)
+    .map((source) => source.documentId!))];
+  await Promise.all(documentIds.map((documentId) => documents.refreshMetadata(projectId, documentId)));
 }
 
 function firstSelectedPath(selection: unknown) {
@@ -145,6 +155,7 @@ async function providerStatus(reachable = false, error?: string, input: AiProvid
   const apiKey = overrideKey ? { value: overrideKey, source: "settings" as const } : await secrets.getApiKey(provider);
   const keyStates = await secrets.keyStates();
   const braveSearchKeyState = await secrets.braveSearchKeyState();
+  const googleBooksKeyState = await secrets.googleBooksKeyState();
   if (overrideKey) {
     keyStates[provider] = { hasApiKey: true, apiKeySource: "settings" } satisfies AiProviderKeyState;
   }
@@ -155,6 +166,7 @@ async function providerStatus(reachable = false, error?: string, input: AiProvid
     hasApiKey: Boolean(apiKey.value),
     apiKeySource: apiKey.source,
     braveSearchKeyState,
+    googleBooksKeyState,
     keyStates,
     selectedModel: input.modelPurpose === "vision" ? providerSettings.selectedVisionModel : providerSettings.selectedModel,
     reachable,
@@ -320,7 +332,8 @@ const rpc = BrowserView.defineRPC<AppRPC>({
         const paths = await chooseSourcePaths();
         if (!paths.length) return sources.list(projectId);
         sendToView("sources.ingestionProgress", { projectId, stage: "extracting", message: "Importing sources", progress: 20 });
-        await sources.importPaths(projectId, paths);
+        const imported = await sources.importPaths(projectId, paths);
+        await refreshImportedBookMetadata(projectId, imported);
         sendToView("sources.ingestionProgress", { projectId, stage: "complete", message: "Sources imported", progress: 100 });
         return sources.list(projectId);
       },
@@ -333,6 +346,7 @@ const rpc = BrowserView.defineRPC<AppRPC>({
       "sources.commitPreparedImport": async ({ projectId, importId, selectedItemIds }) => {
         sendToView("sources.ingestionProgress", { projectId, stage: "copying", message: "Importing selected sources", progress: 60 });
         const result = await sources.commitPreparedImport(projectId, importId, selectedItemIds);
+        await refreshImportedBookMetadata(projectId, result);
         sendToView("sources.ingestionProgress", { projectId, stage: "complete", message: "Sources imported", progress: 100 });
         return result;
       },
@@ -340,6 +354,7 @@ const rpc = BrowserView.defineRPC<AppRPC>({
       "sources.importPaths": async ({ projectId, paths, documentType }) => {
         sendToView("sources.ingestionProgress", { projectId, stage: "extracting", message: "Importing sources", progress: 20 });
         const result = await sources.importPaths(projectId, paths, documentType || "book");
+        await refreshImportedBookMetadata(projectId, result);
         sendToView("sources.ingestionProgress", { projectId, stage: "complete", message: "Sources imported", progress: 100 });
         return result;
       },
@@ -350,6 +365,9 @@ const rpc = BrowserView.defineRPC<AppRPC>({
       "documents.get": ({ projectId, documentId }) => documents.get(projectId, documentId),
       "documents.listSources": ({ projectId, documentId }) => documents.listSources(projectId, documentId),
       "documents.refreshMetadata": ({ projectId, documentId }) => documents.refreshMetadata(projectId, documentId),
+      "documents.refreshProjectMetadata": ({ projectId }) => documents.refreshProjectMetadata(projectId),
+      "documents.searchMetadata": ({ projectId, documentId, input }) => documents.searchMetadata(projectId, documentId, input),
+      "documents.applyMetadata": ({ projectId, documentId, metadata }) => documents.applyMetadata(projectId, documentId, metadata),
       "documents.previewSourceRemoval": ({ projectId, documentId, sourceId }) => sources.previewRemoval(projectId, documentId, sourceId),
       "documents.removeSource": ({ projectId, documentId, sourceId, impactToken }) => sources.removeSource(projectId, documentId, sourceId, impactToken),
       "documents.previewTransfer": ({ projectId, documentId }) => documentTransfers.preview(projectId, documentId),
@@ -390,6 +408,7 @@ const rpc = BrowserView.defineRPC<AppRPC>({
       "sessions.list": ({ materialId }) => tutor.listSessions(materialId),
       "sessions.start": ({ materialId, mode, sessionId }) => tutor.start(materialId, { mode, sessionId }),
       "sessions.load": ({ sessionId }) => tutor.load(sessionId),
+      "sessions.getMessage": ({ messageId }) => tutor.getMessage(messageId),
       "sessions.advance": ({ sessionId, mode }) => tutor.advance(sessionId, mode),
       "sessions.continue": ({ sessionId }) => tutor.continueSession(sessionId),
       "sessions.returnToProgress": ({ sessionId }) => tutor.returnToProgress(sessionId),
