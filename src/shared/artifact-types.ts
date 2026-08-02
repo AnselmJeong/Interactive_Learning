@@ -122,7 +122,15 @@ export type NoteResult = {
 
 export type HighlightResult = {
   kind: "highlight";
-  style?: "yellow" | "green" | "blue" | "pink" | "red-underline";
+  style?:
+    | "yellow"
+    | "green"
+    | "blue"
+    | "pink"
+    | "red-underline"
+    | "marker-yellow"
+    | "marker-green"
+    | "marker-blue";
 };
 
 export type MaterialAnnotationKind = "define" | "lookup" | "question" | "image" | "note" | "highlight";

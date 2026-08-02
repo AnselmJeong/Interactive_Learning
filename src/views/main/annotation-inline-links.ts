@@ -134,7 +134,7 @@ export function inlineClasses(annotation: MaterialAnnotation, activeAnnotationId
     `annotation-kind-${annotation.kind}`,
   ];
   if (annotation.kind === "highlight") {
-    const style = annotation.result.kind === "highlight" ? annotation.result.style || "yellow" : "yellow";
+    const style = annotation.result.kind === "highlight" ? annotation.result.style || "red-underline" : "red-underline";
     classes.push(`annotation-highlight-${style}`);
   }
   if (activeAnnotationId === annotation.id) classes.push("active");
@@ -181,6 +181,7 @@ export function applyAnnotationInlineLinks(input: {
   annotations: MaterialAnnotation[];
   activeAnnotationId?: string | null;
   onActivateAnnotation?: (annotation: MaterialAnnotation) => void;
+  onActivateHighlight?: (annotation: MaterialAnnotation, rect: DOMRect) => void;
 }) {
   unwrapAnnotationInlineLinks(input.root);
   if (!input.annotations.length) return 0;
@@ -217,6 +218,25 @@ export function applyAnnotationInlineLinks(input: {
       wrapper.addEventListener("click", (event) => {
         event.preventDefault();
         input.onActivateAnnotation?.(item.annotation);
+      });
+    } else if (input.onActivateHighlight) {
+      wrapper.tabIndex = 0;
+      wrapper.setAttribute("role", "button");
+      wrapper.setAttribute("aria-label", "표시 삭제 메뉴 열기");
+      const activateHighlight = () => {
+        input.onActivateHighlight?.(item.annotation, wrapper.getBoundingClientRect());
+      };
+      wrapper.addEventListener("click", (event) => {
+        const selection = wrapper.ownerDocument.defaultView?.getSelection();
+        if (selection && !selection.isCollapsed) return;
+        event.preventDefault();
+        activateHighlight();
+      });
+      wrapper.addEventListener("keydown", (event) => {
+        const keyboardEvent = event as KeyboardEvent;
+        if (keyboardEvent.key !== "Enter" && keyboardEvent.key !== " ") return;
+        event.preventDefault();
+        activateHighlight();
       });
     }
 

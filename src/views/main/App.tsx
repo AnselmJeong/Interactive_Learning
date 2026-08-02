@@ -20,9 +20,11 @@ import { SourceDocumentTypeModal } from "./components/SourceDocumentTypeModal";
 import { AboutModal } from "./components/AboutModal";
 import { SourceFigureCard } from "./components/SourceFigureCard";
 import { LearningBuddy } from "./components/LearningBuddy";
+import { MilestoneConfetti } from "./components/MilestoneConfetti";
 import { LEARNING_MILESTONES } from "./learning-milestones";
 import { SourceLearningPreview } from "./components/SourceLearningPreview";
 import { AnnotationInlineScope } from "./components/AnnotationInlineScope";
+import { HighlightRemoveMenu, type HighlightMenuTarget } from "./components/HighlightRemoveMenu";
 import { QuestionThreadAnnotationCard } from "./components/QuestionThreadAnnotationCard";
 import { figureIdForExplanationAnnotation } from "./figure-annotations";
 import { stripFigureMarkdown } from "./figure-text";
@@ -471,6 +473,7 @@ const ChatLog = memo(function ChatLog({
   const annotationPlacement = useMemo(() => placeAnnotationsForMessages(annotations, messages), [annotations, messages]);
   const figureAnnotationsById = useMemo(() => groupFigureExplanationAnnotations(annotations), [annotations]);
   const [activeAnnotationId, setActiveAnnotationId] = useState<string | null>(null);
+  const [highlightMenu, setHighlightMenu] = useState<HighlightMenuTarget | null>(null);
   const [expandedQuestionByGroup, setExpandedQuestionByGroup] = useState<Map<string, string>>(new Map());
   const activeAnnotationTimerRef = useRef<number | null>(null);
   const chatLogRef = useRef<HTMLDivElement | null>(null);
@@ -495,6 +498,7 @@ const ChatLog = memo(function ChatLog({
 
   useEffect(() => {
     setExpandedQuestionByGroup(new Map());
+    setHighlightMenu(null);
   }, [materialId]);
 
   useEffect(() => {
@@ -547,6 +551,10 @@ const ChatLog = memo(function ChatLog({
     return chatLogRef.current ? focusAnnotationInline(chatLogRef.current, annotation.id) : false;
   }
 
+  function openHighlightMenu(annotation: MaterialAnnotation, rect: DOMRect) {
+    setHighlightMenu({ annotation, rect: DOMRect.fromRect(rect) });
+  }
+
   return (
     <div className="chat-log" ref={chatLogRef}>
       {messages.map((message) => {
@@ -573,6 +581,7 @@ const ChatLog = memo(function ChatLog({
                 inlineAnnotationsByBlockId={inlineAnnotations.blockGroups}
                 activeAnnotationId={activeAnnotationId}
                 onActivateAnnotation={scrollToAnnotationCard}
+                onActivateHighlight={openHighlightMenu}
                 figureAnnotationsById={figureAnnotationsById}
                 onAnnotationSaved={onAnnotationSaved}
                 onAnnotationDeleted={onDeleteAnnotation}
@@ -597,6 +606,7 @@ const ChatLog = memo(function ChatLog({
                 annotations={messageInlineAnnotations}
                 activeAnnotationId={activeAnnotationId}
                 onActivateAnnotation={scrollToAnnotationCard}
+                onActivateHighlight={openHighlightMenu}
                 scopeProps={{
                   "data-lookup-chunk-id": lookupChunkId,
                   "data-lookup-message-id": message.id,
@@ -659,6 +669,13 @@ const ChatLog = memo(function ChatLog({
           <span className="typing-spinner" aria-hidden="true" />
           <MarkdownContent content="답변을 준비하고 있습니다." compact />
         </div>
+      ) : null}
+      {highlightMenu ? (
+        <HighlightRemoveMenu
+          target={highlightMenu}
+          onDelete={onDeleteAnnotation}
+          onClose={() => setHighlightMenu(null)}
+        />
       ) : null}
     </div>
   );
@@ -2389,6 +2406,11 @@ export function App({ request }: { request: RpcRequest }) {
         ) : null}
 
         <div className="tutor-shell">
+          <MilestoneConfetti
+            active={Boolean(session)}
+            sessionId={session?.id || null}
+            progressPercent={progressPercent}
+          />
           <section className="tutor-surface" ref={tutorSurfaceRef}>
           {viewMode === "source" && artifacts ? (
             <ImmersiveSourceView
@@ -2562,7 +2584,6 @@ export function App({ request }: { request: RpcRequest }) {
           thinking={tutorThinking}
           prefetchState={continuePrefetchState}
           progressPercent={progressPercent}
-          sessionId={session?.id || null}
           currentModuleTitle={buddyModuleTitle}
           currentModuleContext={buddyModuleContext}
           complete={allModulesCovered || session?.status === "completed"}

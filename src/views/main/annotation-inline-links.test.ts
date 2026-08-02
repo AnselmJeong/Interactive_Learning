@@ -56,6 +56,20 @@ describe("annotation inline links", () => {
     expect(inlineClasses(highlight, null)).not.toContain("annotation-inline-link");
   });
 
+  test("keeps legacy highlights without a style as red underlines", () => {
+    const highlight = annotation("highlight");
+    if (highlight.result.kind === "highlight") highlight.result.style = undefined;
+
+    expect(inlineClasses(highlight, null)).toContain("annotation-highlight-red-underline");
+  });
+
+  test("keeps the legacy yellow shortcut value on the underline rendering path", () => {
+    const highlight = annotation("highlight");
+
+    expect(inlineClasses(highlight, null)).toContain("annotation-highlight-yellow");
+    expect(inlineClasses(highlight, null)).toContain("annotation-kind-highlight");
+  });
+
   test("renders notes as interactive links to their annotation card", () => {
     const note = annotation("note");
 

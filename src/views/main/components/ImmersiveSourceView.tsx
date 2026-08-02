@@ -13,6 +13,9 @@ import { AnnotationInlineScope } from "./AnnotationInlineScope";
 import { MarkdownContent } from "./MarkdownContent";
 import { SourceFigureCard } from "./SourceFigureCard";
 import { QuestionWebSources } from "./QuestionWebSources";
+import { HighlightStylePicker } from "./HighlightStylePicker";
+import { HighlightRemoveMenu, type HighlightMenuTarget } from "./HighlightRemoveMenu";
+import { DEFAULT_SHORTCUT_HIGHLIGHT_STYLE, type HighlightStyle } from "../highlight-styles";
 
 type RpcRequest = (method: string, params: unknown) => Promise<unknown>;
 
@@ -154,6 +157,7 @@ export function ImmersiveSourceView({
   const [annotations, setAnnotations] = useState<MaterialAnnotation[]>(artifacts.annotations || []);
   const [editingMarkId, setEditingMarkId] = useState<string | null>(null);
   const [activeAnnotationId, setActiveAnnotationId] = useState<string | null>(null);
+  const [highlightMenu, setHighlightMenu] = useState<HighlightMenuTarget | null>(null);
   const chunkRefs = useRef(new Map<string, HTMLElement>());
   const sourceDocRef = useRef<HTMLDivElement | null>(null);
   const selectionTimerRef = useRef<number | null>(null);
@@ -245,6 +249,7 @@ export function ImmersiveSourceView({
 
   useEffect(() => {
     setAnnotations(artifacts.annotations || []);
+    setHighlightMenu(null);
   }, [artifacts.annotations, artifacts.manifest.id]);
 
   useEffect(() => {
@@ -411,7 +416,11 @@ export function ImmersiveSourceView({
     setSelection(next);
   }
 
-  async function addMark(kind: SourceMark["kind"], sourceSelection = selection) {
+  async function addMark(
+    kind: SourceMark["kind"],
+    sourceSelection = selection,
+    highlightStyle: HighlightStyle = DEFAULT_SHORTCUT_HIGHLIGHT_STYLE
+  ) {
     if (!sourceSelection?.chunkId || !sourceSelection.text) return;
     const selected = sourceSelection;
     const saved = (await request("annotations.save", {
@@ -421,7 +430,7 @@ export function ImmersiveSourceView({
       kind,
       selectedText: selected.text,
       textAnchor: selected.textAnchor || null,
-      result: kind === "note" ? { kind: "note", note: "" } : { kind: "highlight", style: "yellow" },
+      result: kind === "note" ? { kind: "note", note: "" } : { kind: "highlight", style: highlightStyle },
       sourceMeta: [],
     })) as MaterialAnnotation;
     setAnnotations((current) => [saved, ...current.filter((annotation) => annotation.id !== saved.id)]);
@@ -589,6 +598,10 @@ export function ImmersiveSourceView({
     }
   }
 
+  function openHighlightMenu(annotation: MaterialAnnotation, rect: DOMRect) {
+    setHighlightMenu({ annotation, rect: DOMRect.fromRect(rect) });
+  }
+
   return (
     <div className="source-view immersive-source-view">
       <aside className="source-spine" aria-label="Source progress">
@@ -683,16 +696,7 @@ export function ImmersiveSourceView({
                   <Trash2 size={20} />
                 </button>
               ) : (
-                <button
-                  type="button"
-                  className="mark-action"
-                  onMouseDown={(event) => event.preventDefault()}
-                  onClick={() => void addMark("highlight")}
-                  aria-label="표시"
-                  title="표시 (U)"
-                >
-                  <Highlighter size={20} />
-                </button>
+                <HighlightStylePicker onSelect={(style) => void addMark("highlight", selection, style)} />
               )}
               <button
                 type="button"
@@ -775,6 +779,7 @@ export function ImmersiveSourceView({
                       annotations={chunkInlineAnnotations}
                       activeAnnotationId={activeAnnotationId}
                       onActivateAnnotation={scrollToAnnotationCard}
+                      onActivateHighlight={openHighlightMenu}
                     >
                       <MarkdownContent content={stripFigureMarkdown(text, chunkFigures)} />
                     </AnnotationInlineScope>
@@ -847,6 +852,13 @@ export function ImmersiveSourceView({
               </article>
             );
           })}
+          {highlightMenu ? (
+            <HighlightRemoveMenu
+              target={highlightMenu}
+              onDelete={removeAnnotation}
+              onClose={() => setHighlightMenu(null)}
+            />
+          ) : null}
         </div>
       </div>
     </div>

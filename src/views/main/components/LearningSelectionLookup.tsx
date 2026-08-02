@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type PointerEvent, type RefObject } from "react";
-import { Highlighter, Image as ImageIcon, Loader2, MessageSquare, Save, Search, StickyNote, Trash2, X } from "lucide-react";
+import { Image as ImageIcon, Loader2, MessageSquare, Save, Search, StickyNote, Trash2, X } from "lucide-react";
 import type { ImageLookupResult, LookupResult, MaterialAnnotation, NoteResult, QuestionThreadResult, TextSelectionAnchor } from "../../../shared/artifact-types";
 import type { ChatSubmitShortcut } from "../../../shared/settings-types";
 import { MarkdownContent } from "./MarkdownContent";
@@ -8,6 +8,8 @@ import { shouldHighlightSelection } from "../highlight-shortcut";
 import { buildTextSelectionAnchor, isIgnoredSelectionElement } from "../selection-anchor";
 import { questionThreadFromResult } from "../../../shared/question-thread";
 import { SelectionSideChat, clampSideChatPoint, type SelectionSideChatState } from "./SelectionSideChat";
+import { HighlightStylePicker } from "./HighlightStylePicker";
+import { DEFAULT_SHORTCUT_HIGHLIGHT_STYLE, type HighlightStyle } from "../highlight-styles";
 
 type RpcRequest = (method: string, params: unknown) => Promise<unknown>;
 type LookupAction = "lookup" | "image";
@@ -499,7 +501,10 @@ export function LearningSelectionLookup({
     setSelection(null);
   }
 
-  async function saveHighlight(sourceSelection = selection) {
+  async function saveHighlight(
+    sourceSelection = selection,
+    style: HighlightStyle = DEFAULT_SHORTCUT_HIGHLIGHT_STYLE
+  ) {
     if (!materialId || !sourceSelection?.chunkId || !sourceSelection.text) return;
     try {
       const saved = (await request("annotations.save", {
@@ -511,7 +516,7 @@ export function LearningSelectionLookup({
         textAnchor: sourceSelection.textAnchor || null,
         kind: "highlight",
         selectedText: sourceSelection.text,
-        result: { kind: "highlight", style: "yellow" },
+        result: { kind: "highlight", style },
         sourceMeta: [],
       })) as MaterialAnnotation;
       onAnnotationSaved?.(saved);
@@ -639,16 +644,7 @@ export function LearningSelectionLookup({
               <Trash2 size={20} />
             </button>
           ) : (
-            <button
-              type="button"
-              className="mark-action"
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={() => void saveHighlight()}
-              aria-label="표시"
-              title="표시 (U)"
-            >
-              <Highlighter size={20} />
-            </button>
+            <HighlightStylePicker onSelect={(style) => void saveHighlight(selection, style)} />
           )}
           <button
             type="button"

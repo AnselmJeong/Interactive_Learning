@@ -62,6 +62,18 @@ describe("selection anchor text matching", () => {
     ]);
   });
 
+  test("matches text when a rendered unordered-list marker is included in the selection", () => {
+    const scopeText = "이성으로는 개인을 파악할 수 없다는 결론이다.";
+    const selectedText = "이성으로는 개인을 파악할 수 없다는";
+
+    expect(findTextMatches(scopeText, `• ${selectedText}`)).toEqual([
+      { startOffset: 0, endOffset: selectedText.length },
+    ]);
+    expect(findTextMatches(scopeText, `- ${selectedText}`)).toEqual([
+      { startOffset: 0, endOffset: selectedText.length },
+    ]);
+  });
+
   test("resolves the stored occurrence instead of the first repeated phrase", () => {
     const anchor: TextSelectionAnchor = {
       version: 1,

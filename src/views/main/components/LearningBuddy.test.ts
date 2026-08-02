@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { LEARNING_MILESTONE_ASSET, resolveLearningBuddyLayout } from "./LearningBuddy";
-import { crossedLearningMilestone } from "../learning-milestones";
+import { reachedLearningMilestone } from "../learning-milestones";
 
 const appCss = readFileSync(new URL("../styles/app.css", import.meta.url), "utf8");
 
@@ -63,19 +63,20 @@ describe("LearningBuddy milestones", () => {
     }
   });
 
-  test("detects a crossed milestone instead of requiring an exact percentage", () => {
-    expect(crossedLearningMilestone(24, 33)).toBe(30);
-    expect(crossedLearningMilestone(48, 52)).toBe(50);
-    expect(crossedLearningMilestone(84, 86)).toBe(85);
+  test("keeps the latest reached milestone gesture active between thresholds", () => {
+    expect(reachedLearningMilestone(0)).toBeNull();
+    expect(reachedLearningMilestone(29)).toBeNull();
+    expect(reachedLearningMilestone(30)).toBe(30);
+    expect(reachedLearningMilestone(33)).toBe(30);
+    expect(reachedLearningMilestone(49)).toBe(30);
+    expect(reachedLearningMilestone(50)).toBe(50);
+    expect(reachedLearningMilestone(84)).toBe(50);
+    expect(reachedLearningMilestone(85)).toBe(85);
+    expect(reachedLearningMilestone(99)).toBe(85);
   });
 
-  test("lets completion supersede lower milestones crossed by the same progress update", () => {
-    expect(crossedLearningMilestone(82, 100)).toBe(100);
-    expect(crossedLearningMilestone(20, 90)).toBe(85);
-  });
-
-  test("does not celebrate unchanged or reversed progress", () => {
-    expect(crossedLearningMilestone(50, 50)).toBeNull();
-    expect(crossedLearningMilestone(85, 30)).toBeNull();
+  test("uses the completion gesture at and above 100 percent", () => {
+    expect(reachedLearningMilestone(100)).toBe(100);
+    expect(reachedLearningMilestone(110)).toBe(100);
   });
 });

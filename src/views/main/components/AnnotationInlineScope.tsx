@@ -8,12 +8,14 @@ export function AnnotationInlineScope({
   annotations,
   activeAnnotationId,
   onActivateAnnotation,
+  onActivateHighlight,
   scopeProps,
   children,
 }: {
   annotations: MaterialAnnotation[];
   activeAnnotationId?: string | null;
   onActivateAnnotation?: (annotation: MaterialAnnotation) => void;
+  onActivateHighlight?: (annotation: MaterialAnnotation, rect: DOMRect) => void;
   scopeProps?: AnnotationScopeProps;
   children: ReactNode;
 }) {
@@ -27,11 +29,12 @@ export function AnnotationInlineScope({
       annotations,
       activeAnnotationId,
       onActivateAnnotation,
+      onActivateHighlight,
     });
     return () => {
       unwrapAnnotationInlineLinks(root);
     };
-  }, [annotations, activeAnnotationId, onActivateAnnotation]);
+  }, [annotations, activeAnnotationId, onActivateAnnotation, onActivateHighlight]);
 
   const className = ["annotation-inline-scope", scopeProps?.className].filter(Boolean).join(" ");
 

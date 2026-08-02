@@ -42,7 +42,7 @@ type NormalizedTextMap = {
   rawLengths: number[];
 };
 
-const LEADING_LIST_MARKER_RE = /^\s*(?:(?:0?[1-9]|[1-9]\d)(?:[.)\u3001\uff0e]\s*|\s+)|[\u2460-\u2473]\s*)/u;
+const LEADING_LIST_MARKER_RE = /^\s*(?:(?:0?[1-9]|[1-9]\d)(?:[.)\u3001\uff0e]\s*|\s+)|[\u2460-\u2473]\s*|[-*+\u00b7\u2022\u2043\u2219\u25e6]\s+)/u;
 
 function elementFromNode(node: Node) {
   return node.nodeType === Node.ELEMENT_NODE ? (node as Element) : node.parentElement;

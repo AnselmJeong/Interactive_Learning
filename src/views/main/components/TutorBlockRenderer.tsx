@@ -237,6 +237,7 @@ export const TutorBlockRenderer = memo(function TutorBlockRenderer({
   inlineAnnotationsByBlockId,
   activeAnnotationId,
   onActivateAnnotation,
+  onActivateHighlight,
   figureAnnotationsById,
   onAnnotationSaved,
   onAnnotationDeleted,
@@ -251,6 +252,7 @@ export const TutorBlockRenderer = memo(function TutorBlockRenderer({
   inlineAnnotationsByBlockId?: Map<string, MaterialAnnotation[]>;
   activeAnnotationId?: string | null;
   onActivateAnnotation?: (annotation: MaterialAnnotation) => void;
+  onActivateHighlight?: (annotation: MaterialAnnotation, rect: DOMRect) => void;
   figureAnnotationsById?: Map<string, MaterialAnnotation[]>;
   onAnnotationSaved?: (annotation: MaterialAnnotation) => void;
   onAnnotationDeleted?: (annotationId: string) => void;
@@ -299,6 +301,7 @@ export const TutorBlockRenderer = memo(function TutorBlockRenderer({
               annotations={inlineAnnotations}
               activeAnnotationId={activeAnnotationId}
               onActivateAnnotation={onActivateAnnotation}
+              onActivateHighlight={onActivateHighlight}
               scopeProps={{
                 "data-lookup-chunk-id": lookupChunkId,
                 "data-lookup-message-id": messageId,
