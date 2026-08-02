@@ -20,6 +20,7 @@ import type { AiProviderId, AiProviderStatus, AppSettings, ProviderModel, Public
 import type { LearningMessageSetSummary, SessionSnapshot, SessionSummary, TutorContext, TutorPrefetchStatus, TutorTurnOutput } from "./tutor-types";
 import type { LearningLevel } from "./learning-levels";
 import type { ProjectTransferExport, ProjectTransferImportResult, ProjectTransferPreview, SessionReadableExport } from "./project-transfer-types";
+import type { DocumentTransferExport, DocumentTransferPreview } from "./document-transfer-types";
 
 export type ProjectSummary = {
   id: string;
@@ -185,6 +186,9 @@ export type AppRPC = {
       "documents.list": { params: { projectId: string }; response: DocumentSummary[] };
       "documents.get": { params: { projectId: string; documentId: string }; response: DocumentSummary };
       "documents.listSources": { params: { projectId: string; documentId: string }; response: SourceSummary[] };
+      "documents.previewTransfer": { params: { projectId: string; documentId: string }; response: DocumentTransferPreview };
+      "documents.exportTransfer": { params: { projectId: string; documentId: string; destinationFolder?: string }; response: DocumentTransferExport };
+      "documents.exportLegacyTransfers": { params: { projectId: string; destinationFolder?: string }; response: DocumentTransferExport[] };
       "materials.generate": { params: { projectId: string; sourceIds: string[] }; response: MaterialSummary };
       "materials.list": { params: { projectId: string }; response: MaterialSummary[] };
       "materials.getArtifacts": { params: { materialId: string }; response: MaterialArtifacts };

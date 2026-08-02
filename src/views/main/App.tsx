@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { BookOpen, Check, Download, Info, Loader2, LocateFixed, MessageSquare, Moon, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Pencil, Play, Send, Settings, Sparkles, Sun, Trash2, Upload, X } from "lucide-react";
 import type { MaterialSummary, PreparedSourceImport, ProjectSummary, SourceSummary } from "../../shared/rpc-types";
 import type { ProjectTransferExport, ProjectTransferPreview, SessionReadableExport } from "../../shared/project-transfer-types";
+import type { DocumentTransferExport } from "../../shared/document-transfer-types";
 import type { AppSettings, AiProviderStatus, ChatSubmitShortcut, ProviderModel } from "../../shared/settings-types";
 import type { DocumentType, MaterialAnnotation, MaterialArtifacts, QuestionThreadResult } from "../../shared/artifact-types";
 import type { LearningMessageSetSummary, SessionSnapshot, SessionSummary, SourceRef, TutorContext, TutorMessage, TutorPrefetchStatus } from "../../shared/tutor-types";
@@ -1087,6 +1088,19 @@ export function App({ request }: { request: RpcRequest }) {
       setStatus(`${project.title}: ${result.fileName} 내보내기 완료`);
     } catch (error) {
       setStatus(`프로젝트 내보내기 실패: ${(error as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function exportAllDocumentTransfers(project: ProjectSummary) {
+    setBusy(true);
+    setStatus("자료별 보관용 bundle을 만드는 중");
+    try {
+      const exports = (await request("documents.exportLegacyTransfers", { projectId: project.id })) as DocumentTransferExport[];
+      setStatus(exports.length ? `${exports.length}개 자료를 개별 내보냈습니다.` : "내보낼 자료가 없습니다.");
+    } catch (error) {
+      setStatus(`자료별 내보내기 실패: ${(error as Error).message}`);
     } finally {
       setBusy(false);
     }
@@ -2214,6 +2228,7 @@ export function App({ request }: { request: RpcRequest }) {
               onCreate={() => setNewProjectOpen(true)}
               onImport={() => void chooseProjectTransfer()}
               onExport={(project) => void exportProjectTransfer(project)}
+              onExportDocuments={(project) => void exportAllDocumentTransfers(project)}
               onDelete={(project) => void deleteProject(project)}
             />
           </section>

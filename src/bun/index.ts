@@ -3,6 +3,7 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { ProjectService } from "./project-service";
 import { DocumentService } from "./document-service";
+import { DocumentTransferService } from "./document-transfer-service";
 import { ProjectTransferService } from "./project-transfer-service";
 import { SessionExportService } from "./session-export-service";
 import { SettingsService } from "./settings-service";
@@ -30,6 +31,7 @@ configureDatabaseBase(stableDatabaseBase(Utils.paths.userData));
 
 const projects = new ProjectService();
 const documents = new DocumentService();
+const documentTransfers = new DocumentTransferService();
 const projectTransfers = new ProjectTransferService();
 const sessionExports = new SessionExportService();
 const settings = new SettingsService();
@@ -342,6 +344,9 @@ const rpc = BrowserView.defineRPC<AppRPC>({
       "documents.list": ({ projectId }) => documents.list(projectId),
       "documents.get": ({ projectId, documentId }) => documents.get(projectId, documentId),
       "documents.listSources": ({ projectId, documentId }) => documents.listSources(projectId, documentId),
+      "documents.previewTransfer": ({ projectId, documentId }) => documentTransfers.preview(projectId, documentId),
+      "documents.exportTransfer": ({ projectId, documentId, destinationFolder }) => documentTransfers.export(projectId, documentId, destinationFolder),
+      "documents.exportLegacyTransfers": ({ projectId, destinationFolder }) => documentTransfers.exportAll(projectId, destinationFolder),
       "materials.generate": async ({ projectId, sourceIds }) => {
         sendToView("materials.generationProgress", { projectId, stage: "concepts", message: "Building source-grounded material", progress: 20 });
         const result = await materials.generate(projectId, sourceIds);
