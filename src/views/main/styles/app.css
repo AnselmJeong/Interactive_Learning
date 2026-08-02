@@ -1743,36 +1743,123 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   line-height: 1.55;
   color: var(--muted);
 }
+.additional-exploration {
+  margin-top: 18px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+}
+.additional-exploration-toggle {
+  width: 100%;
+  min-height: 34px;
+  display: grid;
+  grid-template-columns: auto auto auto 1fr;
+  align-items: center;
+  justify-content: start;
+  gap: 7px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  padding: 4px 7px;
+  color: var(--accent-2);
+  cursor: pointer;
+  text-align: left;
+}
+.additional-exploration-toggle:hover { background: color-mix(in oklch, var(--accent) 8%, transparent); }
+.additional-exploration-toggle > span {
+  font-size: 12px;
+  font-weight: 820;
+  letter-spacing: 0.08em;
+}
+.additional-exploration-toggle > small {
+  min-width: 20px;
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--accent) 14%, transparent);
+  padding: 2px 6px;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.2;
+  text-align: center;
+}
+.additional-exploration-toggle > svg:last-child {
+  justify-self: end;
+  color: var(--quiet);
+  transition: transform 160ms ease;
+}
+.additional-exploration.open .additional-exploration-toggle > svg:last-child { transform: rotate(180deg); }
+.additional-exploration-collapse {
+  display: grid;
+  grid-template-rows: 0fr;
+  opacity: 0;
+  visibility: hidden;
+  transition: grid-template-rows 180ms ease, opacity 150ms ease;
+}
+.additional-exploration.open .additional-exploration-collapse {
+  grid-template-rows: 1fr;
+  opacity: 1;
+  visibility: visible;
+}
+.additional-exploration-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+.additional-exploration-inner > p {
+  margin: 5px 7px 9px;
+  color: var(--quiet);
+  font-size: 11px;
+  line-height: 1.35;
+}
+.additional-exploration-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 8px;
+}
+.additional-exploration-grid > button {
+  min-width: 0;
+  min-height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-raised);
+  padding: 11px 12px;
+  color: var(--ink);
+  cursor: pointer;
+  font-family: var(--learning-pane-font);
+  font-size: 14px;
+  line-height: 1.48;
+  text-align: left;
+  transition: border-color 140ms ease, background 140ms ease, transform 140ms ease;
+}
+.additional-exploration-grid > button:hover:not(:disabled) {
+  border-color: color-mix(in oklch, var(--accent) 42%, var(--line));
+  background: var(--surface-hover);
+  transform: translateY(-1px);
+}
+.additional-exploration-grid > button.saved {
+  border-color: color-mix(in oklch, var(--teal) 34%, var(--line));
+  background: color-mix(in oklch, var(--teal) 7%, var(--surface-raised));
+  color: var(--muted);
+}
+.additional-exploration-grid > button:disabled { cursor: default; }
+.additional-exploration-grid > button svg { flex: none; color: var(--teal); }
+.additional-exploration-error {
+  margin: 8px 7px 0 !important;
+  color: var(--danger) !important;
+}
 .answer-options {
   max-width: 980px;
   margin: 20px auto 0;
   border-top: 1px solid var(--line);
   padding-top: 16px;
 }
-.answer-options p {
-  margin: 0 0 10px;
-  color: var(--muted);
-  font-size: 13px;
-  font-weight: 800;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
+.answer-options > .progress-actions:first-child,
+.answer-options > .completion-actions:first-child {
+  margin-top: 0;
+  border-top: 0;
+  padding-top: 0;
 }
-.answer-options .choice-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-  gap: 10px;
-}
-.answer-options .choice-grid button {
-  border: 1px solid var(--line);
-  background: var(--surface-raised);
-  border-radius: 8px;
-  padding: 12px 13px;
-  cursor: pointer;
-  color: var(--ink);
-  line-height: 1.45;
-  text-align: left;
-}
-.answer-options .choice-grid button:hover { border-color: rgba(167, 125, 18, 0.32); background: var(--surface-hover); }
 .progress-actions {
   display: flex;
   align-items: center;
@@ -4995,6 +5082,8 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
 @media (prefers-reduced-motion: reduce) {
   .question-thread-toggle > svg,
   .question-thread-collapse,
+  .additional-exploration-collapse,
+  .additional-exploration-toggle > svg:last-child,
   .selection-side-chat,
   .annotation-card-active {
     transition: none;

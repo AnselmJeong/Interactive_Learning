@@ -251,6 +251,7 @@ function validateDraftThread(value: QuestionThreadResult | undefined) {
   const sourceMeta = normalizeSourceMetaList(value.sourceMeta);
   return {
     ...value,
+    origin: value.origin === "suggested_exploration" ? value.origin : undefined,
     title,
     messages,
     provider: "ai" as const,
@@ -1014,6 +1015,7 @@ export class AnnotationService {
     const thread: QuestionThreadResult = {
       kind: "question_thread",
       version: 1,
+      ...(previousThread?.origin ? { origin: previousThread.origin } : {}),
       title: previousThread?.title || userText,
       messages,
       provider: "ai",

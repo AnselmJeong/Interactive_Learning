@@ -81,6 +81,7 @@ export type QuestionThreadMessage = {
 export type QuestionThreadResult = {
   kind: "question_thread";
   version: 1;
+  origin?: "suggested_exploration";
   title: string;
   messages: QuestionThreadMessage[];
   provider: "ai";

@@ -26,6 +26,7 @@ export function QuestionThreadAnnotationCard({
 }: QuestionThreadAnnotationCardProps) {
   if (annotation.result.kind !== "question" && annotation.result.kind !== "question_thread") return null;
   const result = annotation.result;
+  const isAdditionalExploration = result.kind === "question_thread" && result.origin === "suggested_exploration";
   const messages = questionMessages(result, annotation.createdAt);
   const contentId = `question-thread-content-${annotation.id}`;
   const sources = result.sourceMeta.length ? result.sourceMeta : annotation.sourceMeta;
@@ -45,23 +46,25 @@ export function QuestionThreadAnnotationCard({
           aria-expanded={expanded}
           aria-controls={contentId}
         >
-          <span className="question-thread-label">사이드 대화</span>
-          <strong>{annotation.selectedText}</strong>
+          <span className="question-thread-label">{isAdditionalExploration ? "추가 탐색" : "사이드 대화"}</span>
+          <strong>{isAdditionalExploration ? result.title : annotation.selectedText}</strong>
           <ChevronDown size={16} aria-hidden="true" />
         </button>
         <div className="question-thread-header-actions">
-          <button
-            type="button"
-            className="annotation-card-icon-button"
-            onClick={() => {
-              const located = onLocate(annotation);
-              setLocateFailed(!located);
-            }}
-            title="원문 위치"
-            aria-label="원문 위치"
-          >
-            <LocateFixed size={14} />
-          </button>
+          {isAdditionalExploration ? null : (
+            <button
+              type="button"
+              className="annotation-card-icon-button"
+              onClick={() => {
+                const located = onLocate(annotation);
+                setLocateFailed(!located);
+              }}
+              title="원문 위치"
+              aria-label="원문 위치"
+            >
+              <LocateFixed size={14} />
+            </button>
+          )}
           <button
             type="button"
             className="annotation-card-icon-button danger"
@@ -102,7 +105,7 @@ export function QuestionThreadAnnotationCard({
             </div>
           ) : null}
 
-          {locateFailed ? <p className="question-thread-locate-error">원문 위치를 찾을 수 없음</p> : null}
+          {!isAdditionalExploration && locateFailed ? <p className="question-thread-locate-error">원문 위치를 찾을 수 없음</p> : null}
           <footer>
             <button type="button" className="primary" onClick={() => onContinue(annotation)}>
               <MessageSquare size={14} /> 대화 계속

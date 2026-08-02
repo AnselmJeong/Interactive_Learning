@@ -4,9 +4,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import type { MaterialAnnotation } from "../../../shared/artifact-types";
 import { QuestionThreadAnnotationCard } from "./QuestionThreadAnnotationCard";
 
-describe("QuestionThreadAnnotationCard", () => {
-  test("keeps the accordion header limited to the selected text", () => {
-    const annotation: MaterialAnnotation = {
+function questionAnnotation(): MaterialAnnotation {
+  return {
       id: "annotation-1",
       projectId: "project-1",
       materialId: "material-1",
@@ -38,7 +37,12 @@ describe("QuestionThreadAnnotationCard", () => {
       sourceMeta: [],
       createdAt: 1,
       updatedAt: 2,
-    };
+  };
+}
+
+describe("QuestionThreadAnnotationCard", () => {
+  test("keeps the accordion header limited to the selected text", () => {
+    const annotation = questionAnnotation();
 
     const html = renderToStaticMarkup(createElement(QuestionThreadAnnotationCard, {
       annotation,
@@ -59,5 +63,26 @@ describe("QuestionThreadAnnotationCard", () => {
     expect(header).toContain('aria-label="삭제"');
     expect(html).toContain("example.com");
     expect(html).toContain("S1");
+  });
+
+  test("labels AI suggestion annotations as additional exploration", () => {
+    const annotation = questionAnnotation();
+    if (annotation.result.kind !== "question_thread") throw new Error("Expected question thread");
+    annotation.result.origin = "suggested_exploration";
+    annotation.result.title = "새로운 관점은 무엇인가요?";
+
+    const html = renderToStaticMarkup(createElement(QuestionThreadAnnotationCard, {
+      annotation,
+      active: false,
+      expanded: false,
+      onToggle: () => {},
+      onContinue: () => {},
+      onLocate: () => false,
+      onDelete: () => {},
+    }));
+
+    expect(html).toContain("추가 탐색");
+    expect(html).toContain("새로운 관점은 무엇인가요?");
+    expect(html).not.toContain('aria-label="원문 위치"');
   });
 });

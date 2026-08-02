@@ -382,15 +382,18 @@ describe("annotation side-chat service", () => {
     });
     if (legacy.result.kind !== "question") throw new Error("Expected a legacy question annotation");
 
+    const explorationDraft = questionThreadFromResult(legacy.result, legacy.createdAt);
+    explorationDraft.origin = "suggested_exploration";
     const response = await service.askTurn({
       materialId: "material-1",
       chunkId: "chunk-1",
       selectedText: "selected claim",
       userText: "후속 질문",
-      draftThread: questionThreadFromResult(legacy.result, legacy.createdAt),
+      draftThread: explorationDraft,
     });
 
     expect(response.thread.messages.map((message) => message.content)).toEqual(["첫 질문", "기존 답변", "후속 질문", "첫 답변"]);
+    expect(response.thread.origin).toBe("suggested_exploration");
     expect(getMaterialAnnotation(legacy.id)?.result.kind).toBe("question");
 
     const saved = await service.updateQuestionThread({ annotationId: legacy.id, thread: response.thread });
@@ -400,6 +403,7 @@ describe("annotation side-chat service", () => {
     const snapshot = JSON.parse(await readFile(snapshotPath, "utf8"));
     expect(snapshot[0]?.id).toBe(legacy.id);
     expect(snapshot[0]?.result?.kind).toBe("question_thread");
+    expect(snapshot[0]?.result?.origin).toBe("suggested_exploration");
   });
 
   test("rejects explicit thread updates for non-question annotations", async () => {

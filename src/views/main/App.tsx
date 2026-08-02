@@ -3,7 +3,7 @@ import { BookOpen, Check, Download, Info, Loader2, LocateFixed, MessageSquare, M
 import type { MaterialSummary, PreparedSourceImport, ProjectSummary, SourceSummary } from "../../shared/rpc-types";
 import type { ProjectTransferExport, ProjectTransferPreview, SessionReadableExport } from "../../shared/project-transfer-types";
 import type { AppSettings, AiProviderStatus, ChatSubmitShortcut, ProviderModel } from "../../shared/settings-types";
-import type { DocumentType, MaterialAnnotation, MaterialArtifacts } from "../../shared/artifact-types";
+import type { DocumentType, MaterialAnnotation, MaterialArtifacts, QuestionThreadResult } from "../../shared/artifact-types";
 import type { LearningMessageSetSummary, SessionSnapshot, SessionSummary, SourceRef, TutorContext, TutorMessage, TutorPrefetchStatus } from "../../shared/tutor-types";
 import { displayableCourseTitle, displayableHeadingPath, displayableModuleTitle, displayableOutlineTitle, titleCasedSourceTitle } from "../../shared/display-title";
 import { SettingsModal } from "./components/SettingsModal";
@@ -26,6 +26,7 @@ import { SourceLearningPreview } from "./components/SourceLearningPreview";
 import { AnnotationInlineScope } from "./components/AnnotationInlineScope";
 import { HighlightRemoveMenu, type HighlightMenuTarget } from "./components/HighlightRemoveMenu";
 import { QuestionThreadAnnotationCard } from "./components/QuestionThreadAnnotationCard";
+import { AdditionalExploration } from "./components/AdditionalExploration";
 import { figureIdForExplanationAnnotation } from "./figure-annotations";
 import { stripFigureMarkdown } from "./figure-text";
 import { placeAnnotationsForMessages, shouldRenderInlineAnnotation } from "./annotation-placement";
@@ -34,6 +35,14 @@ import { playAnswerReadySound, primeAnswerReadySound } from "./notification-soun
 import { continuePrefetchStateForPreparedRoute, continueReadyFocusKeyForPreparedRoute, nextPrefetchStatusForSession } from "./prefetch-status";
 import { hasExpandedTextSelection, isReadyActionActiveElementIdle, shouldAutoFocusReadyAction } from "./focus-management";
 import { shouldSubmitTextArea } from "./submit-shortcut";
+import {
+  additionalExplorationChoices,
+  additionalExplorationContext,
+  isAdditionalExplorationAnnotation,
+  isProgressionChoice,
+  isAdditionalExplorationSaved,
+  savedAdditionalExplorationTitles,
+} from "./additional-exploration";
 
 type RpcRequest = (method: string, params: unknown) => Promise<unknown>;
 
@@ -56,9 +65,7 @@ type DestructiveConfirmation = {
   onConfirm: () => Promise<void>;
 };
 
-const PROGRESSION_CHOICES = new Set(["계속해줘", "계속해줘.", "다음 진도로 넘어가주세요.", "다음 대목으로 넘어가주세요.", "다음 문단으로 넘어가주세요.", "다음 모듈로 넘어가주세요.", "진도로 돌아갈게요."]);
 const FINISH_CONFIRMATION_CHOICE = "네, 마칠게요.";
-const FALLBACK_CHOICES = ["힌트를 하나만 더 주세요.", "예시 답변을 하나 보여주세요.", "이 질문을 더 쉽게 다시 물어봐 주세요."];
 const EMPTY_MESSAGES: TutorMessage[] = [];
 const READY_STATUS = "Ready";
 const TUTOR_THINKING_STATUS = "Tutor is thinking";
@@ -82,25 +89,6 @@ function initialLeftPaneWidth() {
 function resolveTheme(mode: AppSettings["theme"] | undefined, systemDark: boolean): AppTheme {
   if (mode === "dark" || mode === "light") return mode;
   return systemDark ? "dark" : "light";
-}
-
-function normalizeChoiceText(choice: string) {
-  if (!choice) return "";
-  if (choice.includes("원래 흐름") || choice.includes("돌아갈게요")) return "이 설명을 원문 흐름과 다시 연결해 주세요.";
-  return choice;
-}
-
-function learnerChoices(choices: string[]) {
-  const seen = new Set<string>();
-  const exploratory = choices
-    .map((choice) => normalizeChoiceText(choice.trim()))
-    .filter((choice) => {
-      if (!choice || PROGRESSION_CHOICES.has(choice) || seen.has(choice)) return false;
-      seen.add(choice);
-      return true;
-    })
-    .slice(0, 3);
-  return exploratory.length ? exploratory : FALLBACK_CHOICES;
 }
 
 function prefetchTargetLabel(status: TutorPrefetchStatus | null) {
@@ -457,6 +445,8 @@ const ChatLog = memo(function ChatLog({
   onAnnotationSaved,
   onDeleteAnnotation,
   onContinueQuestionThread,
+  canAddAdditionalExploration,
+  onAddAdditionalExploration,
 }: {
   messages: TutorMessage[];
   tutorThinking: boolean;
@@ -469,6 +459,8 @@ const ChatLog = memo(function ChatLog({
   onAnnotationSaved?: (annotation: MaterialAnnotation) => void;
   onDeleteAnnotation: (annotationId: string) => void;
   onContinueQuestionThread: (annotation: MaterialAnnotation) => void;
+  canAddAdditionalExploration: boolean;
+  onAddAdditionalExploration: (message: TutorMessage, choice: string) => Promise<void>;
 }) {
   const annotationPlacement = useMemo(() => placeAnnotationsForMessages(annotations, messages), [annotations, messages]);
   const figureAnnotationsById = useMemo(() => groupFigureExplanationAnnotations(annotations), [annotations]);
@@ -476,7 +468,12 @@ const ChatLog = memo(function ChatLog({
   const [highlightMenu, setHighlightMenu] = useState<HighlightMenuTarget | null>(null);
   const [expandedQuestionByGroup, setExpandedQuestionByGroup] = useState<Map<string, string>>(new Map());
   const activeAnnotationTimerRef = useRef<number | null>(null);
+  const knownAnnotationIdsRef = useRef(new Set(annotations.map((annotation) => annotation.id)));
   const chatLogRef = useRef<HTMLDivElement | null>(null);
+  const latestAssistantMessageId = useMemo(
+    () => [...messages].reverse().find((message) => message.role === "assistant")?.id || null,
+    [messages],
+  );
   const inlineAnnotations = useMemo(() => {
     const messageGroups = new Map<string, MaterialAnnotation[]>();
     const blockGroups = new Map<string, MaterialAnnotation[]>();
@@ -499,7 +496,25 @@ const ChatLog = memo(function ChatLog({
   useEffect(() => {
     setExpandedQuestionByGroup(new Map());
     setHighlightMenu(null);
+    knownAnnotationIdsRef.current = new Set(annotations.map((annotation) => annotation.id));
   }, [materialId]);
+
+  useEffect(() => {
+    const known = knownAnnotationIdsRef.current;
+    const addedExploration = annotations.find(
+      (annotation) => !known.has(annotation.id) && isAdditionalExplorationAnnotation(annotation),
+    );
+    knownAnnotationIdsRef.current = new Set(annotations.map((annotation) => annotation.id));
+    if (!addedExploration?.anchorMessageId) return;
+    setExpandedQuestion(`message:${addedExploration.anchorMessageId}`, addedExploration.id);
+    pulseAnnotation(addedExploration.id);
+    const frame = requestAnimationFrame(() => {
+      chatLogRef.current
+        ?.querySelector<HTMLElement>(`#${annotationCardId(addedExploration.id)}`)
+        ?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [annotations]);
 
   useEffect(() => {
     return () => {
@@ -561,6 +576,8 @@ const ChatLog = memo(function ChatLog({
         const lookupChunkId = message.sourceRefs[0] || undefined;
         const savedAnnotations = annotationPlacement.groups.get(message.id) || [];
         const messageInlineAnnotations = inlineAnnotations.messageGroups.get(message.id) || [];
+        const explorationChoices = message.role === "assistant" ? additionalExplorationChoices(message.choices) : [];
+        const savedExplorationTitles = savedAdditionalExplorationTitles(annotations, message.id);
         return (
           <div
             key={message.id}
@@ -617,6 +634,15 @@ const ChatLog = memo(function ChatLog({
                 <MarkdownContent content={message.content} />
               </AnnotationInlineScope>
             )}
+            {explorationChoices.length ? (
+              <AdditionalExploration
+                choices={explorationChoices}
+                savedTitles={savedExplorationTitles}
+                latest={message.id === latestAssistantMessageId}
+                disabled={!canAddAdditionalExploration || tutorThinking}
+                onExplore={(choice) => onAddAdditionalExploration(message, choice)}
+              />
+            ) : null}
             {message.role === "assistant" && savedAnnotations.length ? (
               <ChatSavedAnnotations
                 annotations={savedAnnotations}
@@ -1554,7 +1580,7 @@ export function App({ request }: { request: RpcRequest }) {
   async function sendAnswer(text: string) {
     if (!session || !text.trim()) return false;
     queueAnswerReadySound();
-    const typedProgressionCommand = PROGRESSION_CHOICES.has(text.trim());
+    const typedProgressionCommand = isProgressionChoice(text);
     let thinkingDelay: number | null = null;
     setBusy(true);
     setStatus(TUTOR_THINKING_STATUS);
@@ -1926,14 +1952,6 @@ export function App({ request }: { request: RpcRequest }) {
       && session?.currentModuleId
       && session.currentModuleId !== selectedModuleId
   );
-  const latestChoices = latestAssistant
-    && !sessionReadOnly
-    && !selectedModuleReadOnly
-    && !allModulesCovered
-    ? latestAssistant.choices.length
-      ? learnerChoices(latestAssistant.choices)
-      : FALLBACK_CHOICES
-    : [];
   const visibleVisual = isTeachingGuideVisual(context?.visual) ? null : context?.visual;
   const activeSourceId = activeMaterial && activeMaterial.sourceIds.length === 1 ? activeMaterial.sourceIds[0] : null;
   const activeSource = activeSourceId ? state.sources.find((source) => source.id === activeSourceId) || null : null;
@@ -2014,6 +2032,40 @@ export function App({ request }: { request: RpcRequest }) {
     });
     if (annotation.syncWarning) setStatus(annotation.syncWarning);
   }, []);
+  const addAdditionalExploration = useCallback(async (message: TutorMessage, choice: string) => {
+    if (!artifacts) throw new Error("학습 자료를 불러오지 못했습니다.");
+    const existingTitles = savedAdditionalExplorationTitles(artifacts.annotations || [], message.id);
+    if (isAdditionalExplorationSaved(existingTitles, choice)) return;
+
+    const chunkId = message.sourceRefs[0] || currentChunkId || artifacts.sourceChunks[0]?.id;
+    if (!chunkId) throw new Error("연결할 본문 대목을 찾지 못했습니다.");
+    const selectedText = additionalExplorationContext(message, sourceRefById.get(chunkId));
+    const response = (await request("annotations.askTurn", {
+      materialId: artifacts.manifest.id,
+      chunkId,
+      selectedText,
+      userText: choice,
+      useWebSearch: false,
+    })) as { thread: QuestionThreadResult };
+    const thread: QuestionThreadResult = {
+      ...response.thread,
+      origin: "suggested_exploration",
+      title: choice,
+    };
+    const saved = (await request("annotations.save", {
+      materialId: artifacts.manifest.id,
+      chunkId,
+      surface: "chat",
+      anchorMessageId: message.id,
+      anchorBlockId: null,
+      textAnchor: null,
+      kind: "question",
+      selectedText,
+      result: thread,
+      sourceMeta: thread.sourceMeta,
+    })) as MaterialAnnotation;
+    handleAnnotationSaved(saved);
+  }, [artifacts, currentChunkId, handleAnnotationSaved, request, sourceRefById]);
   const handleAnnotationDeleted = useCallback((annotationId: string) => {
     setArtifacts((current) => current ? {
       ...current,
@@ -2454,22 +2506,12 @@ export function App({ request }: { request: RpcRequest }) {
                 onAnnotationSaved={handleAnnotationSaved}
                 onDeleteAnnotation={(annotationId) => void deleteSavedAnnotation(annotationId)}
                 onContinueQuestionThread={continueQuestionThread}
+                canAddAdditionalExploration={!sessionReadOnly && !busy && !selectedModuleWaiting}
+                onAddAdditionalExploration={addAdditionalExploration}
               />
               {visibleVisual ? <VisualRenderer visual={visibleVisual} /> : null}
-              {latestChoices.length || showProgressActions || showCompletionActions ? (
+              {showProgressActions || showCompletionActions ? (
                 <div className="answer-options">
-                  {latestChoices.length ? (
-                    <>
-                      <p>다음으로 탐색</p>
-                      <div className="choice-grid">
-                        {latestChoices.map((choice) => (
-                          <button key={choice} onClick={() => void sendAnswer(choice)} disabled={busy || selectedModuleWaiting}>
-                            {choice}
-                          </button>
-                        ))}
-                      </div>
-                    </>
-                  ) : null}
                   {showProgressActions ? (
                     <div className="progress-actions" aria-label="학습 진행">
                       {canReturnToProgress && !useReadyReturnButton ? (
