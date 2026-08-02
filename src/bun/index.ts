@@ -12,6 +12,9 @@ import { createAiProviderClient } from "./ai-provider-client";
 import { SourceService } from "./source-service";
 import { CourseArtifactService } from "./course-artifact-service";
 import { AnnotationService } from "./annotation-service";
+import { listProjectAnnotations } from "./annotation-store";
+import { AnnotationExportService } from "./annotation-export-service";
+import { ProgressService } from "./progress-service";
 import { TutorService } from "./tutor-service";
 import { createMainWindow } from "./app-window";
 import { installApplicationMenu } from "./app-menu";
@@ -31,6 +34,8 @@ configureDatabaseBase(stableDatabaseBase(Utils.paths.userData));
 
 const projects = new ProjectService();
 const documents = new DocumentService();
+const progress = new ProgressService();
+const annotationExports = new AnnotationExportService();
 const documentTransfers = new DocumentTransferService();
 const projectTransfers = new ProjectTransferService();
 const sessionExports = new SessionExportService();
@@ -345,6 +350,8 @@ const rpc = BrowserView.defineRPC<AppRPC>({
       "documents.get": ({ projectId, documentId }) => documents.get(projectId, documentId),
       "documents.listSources": ({ projectId, documentId }) => documents.listSources(projectId, documentId),
       "documents.refreshMetadata": ({ projectId, documentId }) => documents.refreshMetadata(projectId, documentId),
+      "documents.previewSourceRemoval": ({ projectId, documentId, sourceId }) => sources.previewRemoval(projectId, documentId, sourceId),
+      "documents.removeSource": ({ projectId, documentId, sourceId, impactToken }) => sources.removeSource(projectId, documentId, sourceId, impactToken),
       "documents.previewTransfer": ({ projectId, documentId }) => documentTransfers.preview(projectId, documentId),
       "documents.exportTransfer": ({ projectId, documentId, destinationFolder }) => documentTransfers.export(projectId, documentId, destinationFolder),
       "documents.exportLegacyTransfers": ({ projectId, destinationFolder }) => documentTransfers.exportAll(projectId, destinationFolder),
@@ -352,6 +359,8 @@ const rpc = BrowserView.defineRPC<AppRPC>({
       "documents.prepareTransferImport": ({ path, destinationProjectId }) => documentTransfers.prepareImport(path, destinationProjectId),
       "documents.commitTransferImport": ({ importId }) => documentTransfers.commitImport(importId),
       "documents.cancelTransferImport": ({ importId }) => documentTransfers.cancelImport(importId),
+      "progress.getProjectSnapshot": ({ projectId }) => progress.getProjectSnapshot(projectId),
+      "progress.getDocumentSnapshot": ({ projectId, documentId }) => progress.getDocumentSnapshot(projectId, documentId),
       "materials.generate": async ({ projectId, sourceIds }) => {
         sendToView("materials.generationProgress", { projectId, stage: "concepts", message: "Building source-grounded material", progress: 20 });
         const result = await materials.generate(projectId, sourceIds);
@@ -372,6 +381,8 @@ const rpc = BrowserView.defineRPC<AppRPC>({
       "annotations.askTurn": (params) => annotations.askTurn(params),
       "annotations.lookup": (params) => annotations.lookup(params),
       "annotations.findImages": (params) => annotations.findImages(params),
+      "annotations.listProject": ({ projectId }) => listProjectAnnotations(projectId),
+      "annotations.exportReadable": ({ projectId, annotationIds, destinationFolder }) => annotationExports.exportReadable(projectId, annotationIds, destinationFolder),
       "annotations.save": (params) => annotations.save(params),
       "annotations.updateNote": (params) => annotations.updateNote(params),
       "annotations.updateQuestionThread": (params) => annotations.updateQuestionThread(params),

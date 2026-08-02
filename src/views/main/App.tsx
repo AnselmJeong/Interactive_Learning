@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
-import { BookOpen, Check, Download, Info, Loader2, LocateFixed, MessageSquare, Moon, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Pencil, Play, Send, Settings, Sparkles, Sun, Trash2, Upload, X } from "lucide-react";
-import type { MaterialSummary, PreparedSourceImport, ProjectSummary, SourceSummary } from "../../shared/rpc-types";
+import { BarChart3, BookOpen, Check, Download, Highlighter, Info, LibraryBig, Loader2, LocateFixed, MessageSquare, Moon, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Pencil, Play, Send, Settings, Sparkles, Sun, Trash2, Upload, X } from "lucide-react";
+import type { AnnotationReadableExport, DocumentSummary, MaterialSummary, PreparedSourceImport, ProjectProgressSnapshot, ProjectSummary, SourceRemovalImpact, SourceSummary } from "../../shared/rpc-types";
 import type { ProjectTransferExport, ProjectTransferPreview, SessionReadableExport } from "../../shared/project-transfer-types";
 import type { DocumentTransferExport, DocumentTransferImportPreview, DocumentTransferImportResult } from "../../shared/document-transfer-types";
 import type { AppSettings, AiProviderStatus, ChatSubmitShortcut, ProviderModel } from "../../shared/settings-types";
@@ -19,6 +19,7 @@ import { ProjectTransferImportModal } from "./components/ProjectTransferImportMo
 import { SourceImportModal } from "./components/SourceImportModal";
 import { SourceDocumentTypeModal } from "./components/SourceDocumentTypeModal";
 import { AboutModal } from "./components/AboutModal";
+import { AnnotationPage, LibraryPage, ProgressPage } from "./components/WorkspacePages";
 import { SourceFigureCard } from "./components/SourceFigureCard";
 import { LearningBuddy } from "./components/LearningBuddy";
 import { MilestoneConfetti } from "./components/MilestoneConfetti";
@@ -58,6 +59,7 @@ type CoursePlanModule = MaterialArtifacts["coursePlan"]["modules"][number];
 type ModuleStatus = TutorContext["moduleOutline"][number]["status"];
 type InspectorTab = "modules" | "sessions";
 type AppTheme = "light" | "dark";
+type WorkspaceRoute = "library" | "learning" | "annotations" | "progress";
 type DestructiveConfirmation = {
   title: string;
   body: string;
@@ -828,6 +830,13 @@ export function App({ request }: { request: RpcRequest }) {
   const [composerFocusToken, setComposerFocusToken] = useState(0);
   const [sideChatResumeRequest, setSideChatResumeRequest] = useState<{ annotation: MaterialAnnotation; token: number } | null>(null);
   const [pendingAnnotationDeletion, setPendingAnnotationDeletion] = useState<MaterialAnnotation | null>(null);
+  const [workspaceRoute, setWorkspaceRoute] = useState<WorkspaceRoute>("library");
+  const [documents, setDocuments] = useState<DocumentSummary[]>([]);
+  const [projectAnnotations, setProjectAnnotations] = useState<MaterialAnnotation[]>([]);
+  const [selectedDocumentId, setSelectedDocumentId] = useState<string | null>(null);
+  const [selectedProjectAnnotationId, setSelectedProjectAnnotationId] = useState<string | null>(null);
+  const [projectProgress, setProjectProgress] = useState<ProjectProgressSnapshot | null>(null);
+  const [annotationExportBusy, setAnnotationExportBusy] = useState(false);
   const tutorSurfaceRef = useRef<HTMLElement | null>(null);
   const continueButtonRef = useRef<HTMLButtonElement | null>(null);
   const lastFocusedReadyActionKeyRef = useRef<string | null>(null);
@@ -931,6 +940,11 @@ export function App({ request }: { request: RpcRequest }) {
       setContext(null);
       setPrefetchStatus(null);
       setSelectedModuleId(null);
+      setDocuments([]);
+      setProjectAnnotations([]);
+      setSelectedDocumentId(null);
+      setSelectedProjectAnnotationId(null);
+      setProjectProgress(null);
       setState((current) => ({ ...current, projects, sources: [], materials: [], sessions: [] }));
       setStatus(READY_STATUS);
     }
@@ -940,9 +954,12 @@ export function App({ request }: { request: RpcRequest }) {
     sessionStartTokenRef.current += 1;
     setSessionStartBusy(false);
     const opened = (await request("projects.open", { projectId: project.id })) as ProjectSummary;
-    const [sources, materials] = await Promise.all([
+    const [sources, materials, nextDocuments, annotations, progressSnapshot] = await Promise.all([
       request("sources.list", { projectId: project.id }) as Promise<SourceSummary[]>,
       request("materials.list", { projectId: project.id }) as Promise<MaterialSummary[]>,
+      request("documents.list", { projectId: project.id }) as Promise<DocumentSummary[]>,
+      request("annotations.listProject", { projectId: project.id }) as Promise<MaterialAnnotation[]>,
+      request("progress.getProjectSnapshot", { projectId: project.id }) as Promise<ProjectProgressSnapshot>,
     ]);
     setActiveProject(opened);
     setState((current) => ({ ...current, sources, materials, sessions: [] }));
@@ -952,14 +969,29 @@ export function App({ request }: { request: RpcRequest }) {
     setContext(null);
     setPrefetchStatus(null);
     setSelectedModuleId(null);
+    setDocuments(nextDocuments);
+    setProjectAnnotations(annotations);
+    setSelectedDocumentId(nextDocuments.find((document) => document.learning.status === "in_progress")?.id || nextDocuments[0]?.id || null);
+    setSelectedProjectAnnotationId(annotations[0]?.id || null);
+    setProjectProgress(progressSnapshot);
+    setWorkspaceRoute("library");
     setStatus(READY_STATUS);
     void Promise.all(materials.map((material) => refreshMessageSets(material.id)));
   }
 
   async function refreshSources(projectId = activeProject?.id) {
     if (!projectId) return [];
-    const sources = (await request("sources.list", { projectId })) as SourceSummary[];
+    const [sources, nextDocuments, annotations, progressSnapshot] = await Promise.all([
+      request("sources.list", { projectId }) as Promise<SourceSummary[]>,
+      request("documents.list", { projectId }) as Promise<DocumentSummary[]>,
+      request("annotations.listProject", { projectId }) as Promise<MaterialAnnotation[]>,
+      request("progress.getProjectSnapshot", { projectId }) as Promise<ProjectProgressSnapshot>,
+    ]);
     setState((current) => ({ ...current, sources }));
+    setDocuments(nextDocuments);
+    setProjectAnnotations(annotations);
+    setProjectProgress(progressSnapshot);
+    setSelectedDocumentId((current) => current && nextDocuments.some((document) => document.id === current) ? current : nextDocuments[0]?.id || null);
     return sources;
   }
 
@@ -1021,6 +1053,11 @@ export function App({ request }: { request: RpcRequest }) {
           setContext(null);
           setPrefetchStatus(null);
           setSelectedModuleId(null);
+          setDocuments([]);
+          setProjectAnnotations([]);
+          setSelectedDocumentId(null);
+          setSelectedProjectAnnotationId(null);
+          setProjectProgress(null);
           setState((current) => ({ ...current, projects, sources: [], materials: [], sessions: [] }));
         }
       }
@@ -1106,6 +1143,23 @@ export function App({ request }: { request: RpcRequest }) {
     }
   }
 
+  async function exportAnnotations(annotationIds: string[]) {
+    if (!activeProject || !annotationIds.length || annotationExportBusy) return;
+    setAnnotationExportBusy(true);
+    setStatus(`${annotationIds.length}개 학습 기록을 내보내는 중`);
+    try {
+      const result = (await request("annotations.exportReadable", {
+        projectId: activeProject.id,
+        annotationIds,
+      })) as AnnotationReadableExport;
+      setStatus(`${result.annotationCount}개 기록을 ${result.fileName}(으)로 내보냈습니다.`);
+    } catch (error) {
+      setStatus(`기록 내보내기 실패: ${(error as Error).message}`);
+    } finally {
+      setAnnotationExportBusy(false);
+    }
+  }
+
   async function importDocumentTransfer(project: ProjectSummary) {
     setBusy(true);
     setStatus("책·논문 transfer를 확인하는 중");
@@ -1165,6 +1219,15 @@ export function App({ request }: { request: RpcRequest }) {
     void refreshProjects();
     void refreshSettings();
   }, []);
+
+  useEffect(() => {
+    if (!activeProject || (workspaceRoute !== "library" && workspaceRoute !== "progress")) return;
+    let cancelled = false;
+    void (request("progress.getProjectSnapshot", { projectId: activeProject.id }) as Promise<ProjectProgressSnapshot>)
+      .then((snapshot) => { if (!cancelled) setProjectProgress(snapshot); })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [activeProject?.id, projectAnnotations[0]?.updatedAt, request, session?.updatedAt, workspaceRoute]);
 
   useEffect(() => {
     function onExternalLinkClick(event: MouseEvent) {
@@ -1278,11 +1341,11 @@ export function App({ request }: { request: RpcRequest }) {
 
   async function finishPreparedImport(imported: SourceSummary[]) {
     if (!activeProject) return;
-    const [sources, materials] = await Promise.all([
-      request("sources.list", { projectId: activeProject.id }) as Promise<SourceSummary[]>,
+    const [, materials] = await Promise.all([
+      refreshSources(activeProject.id),
       request("materials.list", { projectId: activeProject.id }) as Promise<MaterialSummary[]>,
     ]);
-    setState((current) => ({ ...current, sources, materials }));
+    setState((current) => ({ ...current, materials }));
     setPreparedImport(null);
     setSourceNotice(imported.length ? `${imported.length} source${imported.length === 1 ? "" : "s"} imported` : "No sources imported");
   }
@@ -1301,6 +1364,7 @@ export function App({ request }: { request: RpcRequest }) {
   // starts the prepared material from the topbar.
   async function learnFromSource(sourceId: string) {
     if (!activeProject) return;
+    setWorkspaceRoute("learning");
     setBusy(true);
     setStatus("학습 자료 준비 중");
     try {
@@ -1314,6 +1378,16 @@ export function App({ request }: { request: RpcRequest }) {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function openAnnotationLocation(annotation: MaterialAnnotation) {
+    if (!annotation.sourceId) return;
+    setViewMode(annotation.surface === "source" ? "source" : "chat");
+    await learnFromSource(annotation.sourceId);
+    if (annotation.sessionId) await loadSession(annotation.sessionId);
+    window.setTimeout(() => {
+      if (tutorSurfaceRef.current) focusAnnotationInline(tutorSurfaceRef.current, annotation.id);
+    }, 160);
   }
 
   async function prepareSourceInBackground(source: SourceSummary) {
@@ -1393,31 +1467,51 @@ export function App({ request }: { request: RpcRequest }) {
     setLeftPaneResizing(true);
   }
 
-  function deleteSource(source: SourceSummary) {
-    if (!activeProject) return;
+  async function deleteSource(source: SourceSummary) {
+    if (!activeProject || !source.documentId) return;
     const sourceName = displayableSourceName(source);
+    let impact: SourceRemovalImpact;
+    try {
+      impact = (await request("documents.previewSourceRemoval", {
+        projectId: activeProject.id,
+        documentId: source.documentId,
+        sourceId: source.id,
+      })) as SourceRemovalImpact;
+    } catch (error) {
+      setStatus(`삭제 영향 확인 실패: ${(error as Error).message}`);
+      return;
+    }
+    if (impact.sharedMaterials > 0) {
+      setStatus(`이 Source를 포함한 교차 Source 학습 자료 ${impact.sharedMaterials}개가 있어 삭제할 수 없습니다.`);
+      return;
+    }
     confirmDestructive({
       title: `"${sourceName}" 소스를 삭제할까요?`,
-      body: "연결된 material, session, annotation, local files가 삭제됩니다.",
-      detail: "Project는 유지됩니다.",
-      confirmLabel: "소스 삭제",
-      onConfirm: () => deleteSourceConfirmed(source),
+      body: `이 Source만 사용하는 학습 자료 ${impact.exclusiveMaterials}개와 session ${impact.sessions}개, message ${impact.messages}개, annotation ${impact.annotations}개가 함께 삭제됩니다.`,
+      detail: `준비 메시지 ${impact.preparedMessages}개도 삭제됩니다. 책과 나머지 Source는 유지됩니다.`,
+      confirmLabel: "Source와 학습 기록 삭제",
+      onConfirm: () => deleteSourceConfirmed(source, impact),
     });
   }
 
-  async function deleteSourceConfirmed(source: SourceSummary) {
-    if (!activeProject) return;
+  async function deleteSourceConfirmed(source: SourceSummary, impact: SourceRemovalImpact) {
+    if (!activeProject || !source.documentId) return;
     const sourceName = displayableSourceName(source);
     const activeMaterialUsesSource = Boolean(activeMaterial?.sourceIds.includes(source.id));
     setBusy(true);
     setStatus("소스 삭제 중");
     try {
-      await request("sources.delete", { projectId: activeProject.id, sourceId: source.id });
-      const [sources, materials] = await Promise.all([
-        request("sources.list", { projectId: activeProject.id }) as Promise<SourceSummary[]>,
+      await request("documents.removeSource", {
+        projectId: activeProject.id,
+        documentId: source.documentId,
+        sourceId: source.id,
+        impactToken: impact.impactToken,
+      });
+      const [, materials] = await Promise.all([
+        refreshSources(activeProject.id),
         request("materials.list", { projectId: activeProject.id }) as Promise<MaterialSummary[]>,
       ]);
-      setState((current) => ({ ...current, sources, materials, sessions: activeMaterialUsesSource ? [] : current.sessions }));
+      setState((current) => ({ ...current, materials, sessions: activeMaterialUsesSource ? [] : current.sessions }));
       if (activeMaterialUsesSource) {
         setActiveMaterial(null);
         setArtifacts(null);
@@ -1425,6 +1519,7 @@ export function App({ request }: { request: RpcRequest }) {
         setContext(null);
         setPrefetchStatus(null);
         setSelectedModuleId(null);
+        setWorkspaceRoute("library");
       }
       setSourceNotice(`Deleted ${sourceName}`);
       setStatus(READY_STATUS);
@@ -2004,6 +2099,7 @@ export function App({ request }: { request: RpcRequest }) {
   const visibleVisual = isTeachingGuideVisual(context?.visual) ? null : context?.visual;
   const activeSourceId = activeMaterial && activeMaterial.sourceIds.length === 1 ? activeMaterial.sourceIds[0] : null;
   const activeSource = activeSourceId ? state.sources.find((source) => source.id === activeSourceId) || null : null;
+  const activeDocument = activeSource?.documentId ? documents.find((document) => document.id === activeSource.documentId) || null : null;
   const isArticlePreview = activeSource?.documentType === "article" && !session;
   const sourceRefById = useMemo(() => {
     const refs = new Map<string, SourceRef>();
@@ -2079,6 +2175,8 @@ export function App({ request }: { request: RpcRequest }) {
         annotations: [annotation, ...(current.annotations || []).filter((item) => item.id !== annotation.id)],
       };
     });
+    setProjectAnnotations((current) => [annotation, ...current.filter((item) => item.id !== annotation.id)]);
+    setSelectedProjectAnnotationId(annotation.id);
     if (annotation.syncWarning) setStatus(annotation.syncWarning);
   }, []);
   const addAdditionalExploration = useCallback(async (message: TutorMessage, choice: string) => {
@@ -2120,6 +2218,8 @@ export function App({ request }: { request: RpcRequest }) {
       ...current,
       annotations: (current.annotations || []).filter((annotation) => annotation.id !== annotationId),
     } : current);
+    setProjectAnnotations((current) => current.filter((annotation) => annotation.id !== annotationId));
+    setSelectedProjectAnnotationId((current) => current === annotationId ? null : current);
   }, []);
   const continueQuestionThread = useCallback((annotation: MaterialAnnotation) => {
     setSideChatResumeRequest({ annotation, token: Date.now() });
@@ -2134,15 +2234,13 @@ export function App({ request }: { request: RpcRequest }) {
       setStatus(`Annotation 삭제 실패: ${(error as Error).message}`);
     }
   }, [handleAnnotationSaved, request]);
-  const deleteSavedAnnotation = useCallback((annotationId: string) => {
-    const annotation = artifacts?.annotations.find((item) => item.id === annotationId);
-    if (!annotation) return;
+  const queueAnnotationDeletion = useCallback((annotation: MaterialAnnotation) => {
     const previousPending = pendingAnnotationDeletionRef.current;
     if (previousPending) {
       if (pendingAnnotationDeletionTimerRef.current != null) window.clearTimeout(pendingAnnotationDeletionTimerRef.current);
       void finalizeAnnotationDeletion(previousPending);
     }
-    handleAnnotationDeleted(annotationId);
+    handleAnnotationDeleted(annotation.id);
     pendingAnnotationDeletionRef.current = annotation;
     setPendingAnnotationDeletion(annotation);
     pendingAnnotationDeletionTimerRef.current = window.setTimeout(() => {
@@ -2151,7 +2249,20 @@ export function App({ request }: { request: RpcRequest }) {
       setPendingAnnotationDeletion(null);
       void finalizeAnnotationDeletion(annotation);
     }, 6000);
-  }, [artifacts?.annotations, finalizeAnnotationDeletion, handleAnnotationDeleted]);
+  }, [finalizeAnnotationDeletion, handleAnnotationDeleted]);
+  const deleteSavedAnnotation = useCallback((annotationId: string) => {
+    const annotation = artifacts?.annotations.find((item) => item.id === annotationId);
+    if (annotation) queueAnnotationDeletion(annotation);
+  }, [artifacts?.annotations, queueAnnotationDeletion]);
+  const updateProjectNote = useCallback(async (annotationId: string, note: string) => {
+    try {
+      const annotation = (await request("annotations.updateNote", { annotationId, note })) as MaterialAnnotation;
+      handleAnnotationSaved(annotation);
+    } catch (error) {
+      setStatus(`노트 편집 실패: ${(error as Error).message}`);
+      throw error;
+    }
+  }, [handleAnnotationSaved, request]);
   const undoAnnotationDeletion = useCallback(() => {
     const annotation = pendingAnnotationDeletionRef.current;
     if (!annotation) return;
@@ -2210,6 +2321,7 @@ export function App({ request }: { request: RpcRequest }) {
   const importedSourceLabel = `${state.sources.length} source${state.sources.length === 1 ? "" : "s"} imported`;
   const shellClassName = [
     "app-shell",
+    `route-${workspaceRoute}`,
     leftPaneOpen ? "" : "left-pane-collapsed",
     leftPaneResizing ? "left-pane-resizing" : "",
     rightPaneOpen ? "" : "right-pane-collapsed",
@@ -2228,6 +2340,20 @@ export function App({ request }: { request: RpcRequest }) {
       status: (index === 0 ? "in_progress" : "not_started") as ModuleStatus,
     }));
   }, [artifacts?.coursePlan.modules, context?.moduleOutline, displayModuleTitle]);
+  const continueWorkspaceLearning = useCallback(() => {
+    const selectedDocumentSources = selectedDocumentId
+      ? state.sources.filter((source) => source.documentId === selectedDocumentId)
+      : [];
+    const source = selectedDocumentSources.find((item) => item.learningStatus === "in_progress")
+      || state.sources.find((item) => item.learningStatus === "in_progress")
+      || selectedDocumentSources[0]
+      || state.sources[0];
+    if (source) {
+      void learnFromSource(source.id);
+    } else {
+      setWorkspaceRoute("learning");
+    }
+  }, [selectedDocumentId, state.sources]);
 
   return (
     <div className={shellClassName} style={shellStyle}>
@@ -2269,7 +2395,23 @@ export function App({ request }: { request: RpcRequest }) {
             />
           </section>
 
-          <section className="pane-section sources-section">
+          <nav className="workspace-navigation" aria-label="Workspace">
+            <p>Workspace</p>
+            <button type="button" className={workspaceRoute === "library" ? "active" : ""} onClick={() => setWorkspaceRoute("library")}>
+              <LibraryBig size={19} /> <span>라이브러리</span>
+            </button>
+            <button type="button" className={workspaceRoute === "learning" ? "active" : ""} onClick={continueWorkspaceLearning}>
+              <BookOpen size={19} /> <span>학습 공간</span>
+            </button>
+            <button type="button" className={workspaceRoute === "annotations" ? "active" : ""} onClick={() => setWorkspaceRoute("annotations")}>
+              <Highlighter size={19} /> <span>하이라이트 · 노트</span>
+            </button>
+            <button type="button" className={workspaceRoute === "progress" ? "active" : ""} onClick={() => setWorkspaceRoute("progress")}>
+              <BarChart3 size={19} /> <span>학습 진척도</span>
+            </button>
+          </nav>
+
+          <section className="pane-section sources-section legacy-source-section" aria-hidden="true">
             <div className="section-heading">
               <h2>Sources</h2>
               <button className="icon-button ghost" onClick={chooseAndImportSources} disabled={!activeProject || busy} title="소스 추가">
@@ -2413,9 +2555,51 @@ export function App({ request }: { request: RpcRequest }) {
       />
 
       <main className="workspace">
+        {workspaceRoute === "library" ? (
+          <LibraryPage
+            project={activeProject}
+            documents={documents}
+            sources={state.sources}
+            selectedDocumentId={selectedDocumentId}
+            progress={projectProgress}
+            onSelectDocument={setSelectedDocumentId}
+            onImport={() => void chooseAndImportSources()}
+            onOpenSource={(sourceId) => void learnFromSource(sourceId)}
+            onRemoveSource={(source) => void deleteSource(source)}
+            onContinue={continueWorkspaceLearning}
+          />
+        ) : workspaceRoute === "annotations" ? (
+          <AnnotationPage
+            project={activeProject}
+            annotations={projectAnnotations}
+            documents={documents}
+            sources={state.sources}
+            selectedAnnotationId={selectedProjectAnnotationId}
+            onSelectAnnotation={setSelectedProjectAnnotationId}
+            onOpenAnnotation={(annotation) => void openAnnotationLocation(annotation)}
+            onExport={(annotationIds) => void exportAnnotations(annotationIds)}
+            exporting={annotationExportBusy}
+            onDelete={queueAnnotationDeletion}
+            onUpdateNote={updateProjectNote}
+          />
+        ) : workspaceRoute === "progress" ? (
+          <ProgressPage
+            project={activeProject}
+            documents={documents}
+            sources={state.sources}
+            annotations={projectAnnotations}
+            currentProgress={progressPercent}
+            progress={projectProgress}
+            onContinue={continueWorkspaceLearning}
+          />
+        ) : (
+          <>
         <header className="topbar">
           <div>
-            <p className="project-title">{activeProject?.title || "Learning Workspace"}</p>
+            <p className="project-title">
+              {[activeProject?.title || "Learning Workspace", activeDocument?.title, activeDocument?.documentType === "article" ? null : activeSource ? displayableSourceName(activeSource) : null]
+                .filter(Boolean).join(" / ")}
+            </p>
           </div>
           <div className="topbar-actions">
             <button
@@ -2681,6 +2865,8 @@ export function App({ request }: { request: RpcRequest }) {
           currentModuleContext={buddyModuleContext}
           complete={allModulesCovered || session?.status === "completed"}
         />
+          </>
+        )}
       </main>
 
       <aside className="inspector">

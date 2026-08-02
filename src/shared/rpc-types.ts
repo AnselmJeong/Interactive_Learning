@@ -90,6 +90,55 @@ export type DocumentSummary = {
   updatedAt: number;
 };
 
+export type SourceProgressSnapshot = {
+  sourceId: string;
+  documentId: string;
+  title: string;
+  ordinal: number;
+  status: LearningProgressSummary["status"];
+  coveredChunks: number;
+  totalChunks: number;
+  percent: number;
+  currentChunkId: string | null;
+  activeSessionId: string | null;
+};
+
+export type DocumentProgressSnapshot = {
+  documentId: string;
+  title: string;
+  documentType: DocumentType;
+  status: LearningProgressSummary["status"];
+  coveredChunks: number;
+  totalChunks: number;
+  percent: number;
+  currentSourceId: string | null;
+  activeSessionId: string | null;
+  sources: SourceProgressSnapshot[];
+};
+
+export type LearningActivity = {
+  id: string;
+  kind: "session" | "highlight" | "note" | "question" | "lookup" | "image";
+  title: string;
+  documentId: string | null;
+  sourceId: string | null;
+  occurredAt: number;
+};
+
+export type ProjectProgressSnapshot = {
+  projectId: string;
+  status: LearningProgressSummary["status"];
+  coveredChunks: number;
+  totalChunks: number;
+  percent: number;
+  currentDocumentId: string | null;
+  currentSourceId: string | null;
+  activeSessionId: string | null;
+  documents: DocumentProgressSnapshot[];
+  recentActivity: LearningActivity[];
+  orphanCoveredChunkCount: number;
+};
+
 export type PreparedSourceImportItem = {
   id: string;
   title: string;
@@ -99,6 +148,28 @@ export type PreparedSourceImportItem = {
   charCount: number;
   preview: string;
   selected: boolean;
+};
+
+export type SourceRemovalImpact = {
+  projectId: string;
+  documentId: string;
+  sourceId: string;
+  sourceTitle: string;
+  exclusiveMaterials: number;
+  sharedMaterials: number;
+  sessions: number;
+  messages: number;
+  preparedMessages: number;
+  annotations: number;
+  impactToken: string;
+};
+
+export type AnnotationReadableExport = {
+  zipPath: string;
+  fileName: string;
+  projectId: string;
+  annotationCount: number;
+  assetCount: number;
 };
 
 export type PreparedSourceImport = {
@@ -187,6 +258,8 @@ export type AppRPC = {
       "documents.get": { params: { projectId: string; documentId: string }; response: DocumentSummary };
       "documents.listSources": { params: { projectId: string; documentId: string }; response: SourceSummary[] };
       "documents.refreshMetadata": { params: { projectId: string; documentId: string }; response: DocumentSummary };
+      "documents.previewSourceRemoval": { params: { projectId: string; documentId: string; sourceId: string }; response: SourceRemovalImpact };
+      "documents.removeSource": { params: { projectId: string; documentId: string; sourceId: string; impactToken: string }; response: { removed: boolean; documentId: string } };
       "documents.previewTransfer": { params: { projectId: string; documentId: string }; response: DocumentTransferPreview };
       "documents.exportTransfer": { params: { projectId: string; documentId: string; destinationFolder?: string }; response: DocumentTransferExport };
       "documents.exportLegacyTransfers": { params: { projectId: string; destinationFolder?: string }; response: DocumentTransferExport[] };
@@ -194,6 +267,8 @@ export type AppRPC = {
       "documents.prepareTransferImport": { params: { path: string; destinationProjectId: string }; response: DocumentTransferImportPreview };
       "documents.commitTransferImport": { params: { importId: string }; response: DocumentTransferImportResult };
       "documents.cancelTransferImport": { params: { importId: string }; response: boolean };
+      "progress.getProjectSnapshot": { params: { projectId: string }; response: ProjectProgressSnapshot };
+      "progress.getDocumentSnapshot": { params: { projectId: string; documentId: string }; response: DocumentProgressSnapshot };
       "materials.generate": { params: { projectId: string; sourceIds: string[] }; response: MaterialSummary };
       "materials.list": { params: { projectId: string }; response: MaterialSummary[] };
       "materials.getArtifacts": { params: { materialId: string }; response: MaterialArtifacts };
@@ -219,6 +294,8 @@ export type AppRPC = {
       };
       "annotations.lookup": { params: { materialId: string; chunkId: string; selectedText: string }; response: LookupResult };
       "annotations.findImages": { params: { materialId: string; chunkId: string; selectedText: string }; response: ImageLookupResult };
+      "annotations.listProject": { params: { projectId: string }; response: MaterialAnnotation[] };
+      "annotations.exportReadable": { params: { projectId: string; annotationIds: string[]; destinationFolder?: string }; response: AnnotationReadableExport };
       "annotations.save": {
         params: {
           materialId: string;

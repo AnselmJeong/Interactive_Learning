@@ -44,6 +44,7 @@ type SourceRow = {
 };
 
 type AggregateRow = {
+  document_id?: string;
   source_count: number;
   annotation_count: number;
   active_session_id: string | null;
@@ -51,6 +52,35 @@ type AggregateRow = {
   completed_messages: number;
   total_messages: number;
 };
+
+function aggregatesForProject(projectId: string) {
+  const rows = getDb().query<AggregateRow, [string]>(`
+    SELECT d.id AS document_id,
+      (SELECT COUNT(*) FROM project_sources s WHERE s.document_id = d.id) AS source_count,
+      (SELECT COUNT(*) FROM material_annotations a
+       WHERE a.source_id IN (SELECT id FROM project_sources WHERE document_id = d.id)) AS annotation_count,
+      (SELECT s.id FROM learning_sessions s
+       JOIN material_sources ms ON ms.material_id = s.material_id
+       JOIN project_sources ps ON ps.id = ms.source_id
+       WHERE ps.document_id = d.id AND s.status = 'active'
+       ORDER BY s.updated_at DESC LIMIT 1) AS active_session_id,
+      (SELECT MAX(s.updated_at) FROM learning_sessions s
+       JOIN material_sources ms ON ms.material_id = s.material_id
+       JOIN project_sources ps ON ps.id = ms.source_id
+       WHERE ps.document_id = d.id) AS last_studied_at,
+      (SELECT COALESCE(MAX(lms.completed_messages), 0) FROM learning_message_sets lms
+       JOIN material_sources ms ON ms.material_id = lms.material_id
+       JOIN project_sources ps ON ps.id = ms.source_id
+       WHERE ps.document_id = d.id) AS completed_messages,
+      (SELECT COALESCE(MAX(lms.total_messages), 0) FROM learning_message_sets lms
+       JOIN material_sources ms ON ms.material_id = lms.material_id
+       JOIN project_sources ps ON ps.id = ms.source_id
+       WHERE ps.document_id = d.id) AS total_messages
+    FROM project_documents d
+    WHERE d.project_id = ?
+  `).all(projectId);
+  return new Map(rows.map((row) => [row.document_id!, row]));
+}
 
 function jsonStringList(value: string) {
   try {
@@ -168,7 +198,15 @@ export class DocumentService {
     const documents = getDb()
       .query<DocumentRow, [string]>("SELECT * FROM project_documents WHERE project_id = ? ORDER BY imported_at ASC, id ASC")
       .all(projectId);
-    return documents.map((row) => toSummary(row, aggregateFor(row.id)));
+    const aggregates = aggregatesForProject(projectId);
+    return documents.map((row) => toSummary(row, aggregates.get(row.id) || {
+      source_count: 0,
+      annotation_count: 0,
+      active_session_id: null,
+      last_studied_at: null,
+      completed_messages: 0,
+      total_messages: 0,
+    }));
   }
 
   get(projectId: string, documentId: string) {

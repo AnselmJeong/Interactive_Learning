@@ -3,7 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { closeDbForTests, getDb } from "./project-db";
-import { listMaterialAnnotations, replaceMaterialAnnotations, saveMaterialAnnotation } from "./annotation-store";
+import { listMaterialAnnotations, listProjectAnnotations, replaceMaterialAnnotations, saveMaterialAnnotation } from "./annotation-store";
 import type { TextSelectionAnchor } from "../shared/artifact-types";
 
 describe("annotation store", () => {
@@ -91,5 +91,26 @@ describe("annotation store", () => {
     const loaded = listMaterialAnnotations("material-1");
     expect(loaded).toHaveLength(1);
     expect(loaded[0]?.textAnchor).toEqual(anchor());
+  });
+
+  test("lists annotations across a project for the reading-traces page", () => {
+    const first = saveMaterialAnnotation({
+      materialId: "material-1",
+      chunkId: "chunk-1",
+      kind: "highlight",
+      selectedText: "first trace",
+      result: { kind: "highlight", style: "yellow" },
+    });
+    const second = saveMaterialAnnotation({
+      materialId: "material-1",
+      chunkId: "chunk-2",
+      kind: "note",
+      selectedText: "second trace",
+      result: { kind: "note", note: "My note" },
+    });
+
+    const loaded = listProjectAnnotations("project-1");
+    expect(loaded.map((annotation) => annotation.id)).toEqual([second.id, first.id]);
+    expect(listProjectAnnotations("missing-project")).toEqual([]);
   });
 });

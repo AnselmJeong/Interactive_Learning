@@ -1,4 +1,5 @@
-import { copyFile, cp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { copyFile, cp, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { getDb } from "./project-db";
@@ -7,7 +8,7 @@ import { buildPreppySourcePack } from "./preppy-service";
 import { SettingsService } from "./settings-service";
 import { writeProjectDocumentIndex } from "./project-bundle-sync";
 import type { DocumentType, SourceChunk, SourceFigure, SourceManifest, SourceType } from "../shared/artifact-types";
-import type { PreparedSourceImport, PreparedSourceImportItem, SourceSummary } from "../shared/rpc-types";
+import type { PreparedSourceImport, PreparedSourceImportItem, SourceRemovalImpact, SourceSummary } from "../shared/rpc-types";
 
 type SourceRow = {
   id: string;
@@ -31,6 +32,7 @@ type SourceRow = {
 type MaterialDeletionRow = {
   id: string;
   manifest_path: string | null;
+  source_count: number;
 };
 
 type SourceLearningStatus = SourceSummary["learningStatus"];
@@ -1085,50 +1087,142 @@ export class SourceService {
     return row;
   }
 
-  async delete(projectId: string, sourceId: string) {
+  previewRemoval(projectId: string, documentId: string, sourceId: string): SourceRemovalImpact {
     const db = getDb();
-    const row = db.query<SourceRow, [string, string]>("SELECT * FROM project_sources WHERE id = ? AND project_id = ?").get(sourceId, projectId);
+    const row = db.query<SourceRow, [string, string, string]>(
+      "SELECT * FROM project_sources WHERE id = ? AND project_id = ? AND document_id = ?"
+    ).get(sourceId, projectId, documentId);
     if (!row) throw new Error("Source not found");
-
-    const root = this.projectRoot(projectId);
-    const projectPath = join(root, projectId);
     const materialRows = db
       .query<MaterialDeletionRow, [string]>(
-        `SELECT learning_materials.id, learning_materials.manifest_path
+        `SELECT learning_materials.id, learning_materials.manifest_path, COUNT(all_sources.source_id) AS source_count
          FROM learning_materials
          JOIN material_sources ON material_sources.material_id = learning_materials.id
-         WHERE material_sources.source_id = ?`
+         JOIN material_sources all_sources ON all_sources.material_id = learning_materials.id
+         WHERE material_sources.source_id = ?
+         GROUP BY learning_materials.id, learning_materials.manifest_path`
       )
       .all(sourceId);
-    const pathsToRemove = new Set<string>();
-    for (const material of materialRows) {
-      pathsToRemove.add(material.manifest_path ? dirname(material.manifest_path) : join(projectPath, "materials", material.id));
+    const exclusive = materialRows.filter((material) => material.source_count === 1);
+    const shared = materialRows.filter((material) => material.source_count > 1);
+    let sessions = 0;
+    let messages = 0;
+    let preparedMessages = 0;
+    let annotations = 0;
+    for (const material of exclusive) {
+      sessions += db.query<{ count: number }, [string]>("SELECT COUNT(*) AS count FROM learning_sessions WHERE material_id = ?").get(material.id)?.count || 0;
+      messages += db.query<{ count: number }, [string]>(`
+        SELECT COUNT(*) AS count FROM learning_messages
+        WHERE session_id IN (SELECT id FROM learning_sessions WHERE material_id = ?)
+      `).get(material.id)?.count || 0;
+      preparedMessages += db.query<{ count: number }, [string]>(`
+        SELECT COUNT(*) AS count FROM prepared_learning_messages
+        WHERE message_set_id IN (SELECT id FROM learning_message_sets WHERE material_id = ?)
+      `).get(material.id)?.count || 0;
+      annotations += db.query<{ count: number }, [string]>("SELECT COUNT(*) AS count FROM material_annotations WHERE material_id = ?").get(material.id)?.count || 0;
     }
-    pathsToRemove.add(row.manifest_path ? dirname(row.manifest_path) : join(projectPath, "sources", sourceId));
+    const tokenPayload = {
+      projectId,
+      documentId,
+      sourceId,
+      materialIds: materialRows.map((material) => `${material.id}:${material.source_count}`).sort(),
+      sessions,
+      messages,
+      preparedMessages,
+      annotations,
+      sourceUpdatedAt: row.updated_at,
+    };
+    return {
+      projectId,
+      documentId,
+      sourceId,
+      sourceTitle: row.title,
+      exclusiveMaterials: exclusive.length,
+      sharedMaterials: shared.length,
+      sessions,
+      messages,
+      preparedMessages,
+      annotations,
+      impactToken: createHash("sha256").update(JSON.stringify(tokenPayload)).digest("hex").slice(0, 24),
+    };
+  }
+
+  async removeSource(projectId: string, documentId: string, sourceId: string, impactToken: string) {
+    const impact = this.previewRemoval(projectId, documentId, sourceId);
+    if (impact.impactToken !== impactToken) throw new Error("Source removal impact changed. Review the updated counts and try again.");
+    if (impact.sharedMaterials > 0) throw new Error("This source belongs to a learning material that also uses another source. Remove that material first or use document transfer.");
+
+    const db = getDb();
+    const row = db.query<SourceRow, [string, string, string]>(
+      "SELECT * FROM project_sources WHERE id = ? AND project_id = ? AND document_id = ?"
+    ).get(sourceId, projectId, documentId);
+    if (!row) throw new Error("Source not found");
+    const materialRows = db.query<MaterialDeletionRow, [string]>(`
+      SELECT learning_materials.id, learning_materials.manifest_path, COUNT(all_sources.source_id) AS source_count
+      FROM learning_materials
+      JOIN material_sources ON material_sources.material_id = learning_materials.id
+      JOIN material_sources all_sources ON all_sources.material_id = learning_materials.id
+      WHERE material_sources.source_id = ?
+      GROUP BY learning_materials.id, learning_materials.manifest_path
+    `).all(sourceId);
+    const root = this.projectRoot(projectId);
+    const projectPath = join(root, projectId);
+    const pathsToMove = new Set<string>();
+    for (const material of materialRows) pathsToMove.add(material.manifest_path ? dirname(material.manifest_path) : join(projectPath, "materials", material.id));
+    pathsToMove.add(row.manifest_path ? dirname(row.manifest_path) : join(projectPath, "sources", sourceId));
 
     const sourceFolderDir = sourceFolderDirFor(root, projectId, row.imported_file_path);
-    const deleteRows = db.transaction(() => {
-      for (const material of materialRows) {
-        db.query("DELETE FROM learning_materials WHERE id = ? AND project_id = ?").run(material.id, projectId);
-      }
-      db.query("DELETE FROM project_sources WHERE id = ? AND project_id = ?").run(sourceId, projectId);
-    });
-    deleteRows();
-
     if (sourceFolderDir) {
-      const remainingRows = db.query<SourceRow, [string]>("SELECT * FROM project_sources WHERE project_id = ?").all(projectId);
+      const remainingRows = db.query<SourceRow, [string, string]>("SELECT * FROM project_sources WHERE project_id = ? AND id != ?").all(projectId, sourceId);
       const folderStillUsed = remainingRows.some((item) => isInsidePath(sourceFolderDir, item.imported_file_path));
       if (folderStillUsed) {
         const exactPathStillUsed = remainingRows.some((item) => resolve(item.imported_file_path) === resolve(row.imported_file_path));
-        if (!exactPathStillUsed && isInsidePath(sourceFolderDir, row.imported_file_path)) pathsToRemove.add(row.imported_file_path);
+        if (!exactPathStillUsed && isInsidePath(sourceFolderDir, row.imported_file_path)) pathsToMove.add(row.imported_file_path);
       } else {
-        pathsToRemove.add(sourceFolderDir);
+        pathsToMove.add(sourceFolderDir);
       }
     }
 
-    for (const path of [...pathsToRemove].filter((path) => isInsidePath(projectPath, path)).sort((a, b) => b.length - a.length)) {
-      await rm(path, { recursive: true, force: true }).catch(() => undefined);
+    const safePaths = [...pathsToMove]
+      .filter((path) => path !== projectPath && isInsidePath(projectPath, path))
+      .sort((a, b) => a.length - b.length)
+      .filter((path, index, paths) => !paths.slice(0, index).some((parent) => isInsidePath(parent, path)));
+    const quarantineRoot = join(projectPath, ".quarantine", `source-${sourceId}-${Date.now()}`);
+    const moved: Array<{ from: string; to: string }> = [];
+    try {
+      for (const path of safePaths) {
+        if (!(await stat(path).then(() => true).catch(() => false))) continue;
+        const target = join(quarantineRoot, relative(projectPath, path));
+        await mkdir(dirname(target), { recursive: true });
+        await rename(path, target);
+        moved.push({ from: path, to: target });
+      }
+      db.transaction(() => {
+        for (const material of materialRows) db.query("DELETE FROM learning_materials WHERE id = ? AND project_id = ?").run(material.id, projectId);
+        db.query("DELETE FROM project_sources WHERE id = ? AND project_id = ? AND document_id = ?").run(sourceId, projectId, documentId);
+        const remaining = db.query<{ id: string }, [string]>(`
+          SELECT id FROM project_sources WHERE document_id = ?
+          ORDER BY COALESCE(source_ordinal, 2147483647), created_at ASC, id ASC
+        `).all(documentId);
+        remaining.forEach((source, ordinal) => db.query("UPDATE project_sources SET source_ordinal = ? WHERE id = ?").run(ordinal, source.id));
+      })();
+    } catch (error) {
+      for (const item of moved.reverse()) {
+        await mkdir(dirname(item.from), { recursive: true }).catch(() => undefined);
+        await rename(item.to, item.from).catch(() => undefined);
+      }
+      throw error;
     }
+    await rm(quarantineRoot, { recursive: true, force: true }).catch(() => undefined);
+    await writeProjectDocumentIndex(projectId, root);
+    return { removed: true, documentId };
+  }
+
+  async delete(projectId: string, sourceId: string) {
+    const row = this.getRow(sourceId);
+    if (!row.document_id) throw new Error("Source has no document context");
+    const impact = this.previewRemoval(projectId, row.document_id, sourceId);
+    await this.removeSource(projectId, row.document_id, sourceId, impact.impactToken);
     return true;
   }
 

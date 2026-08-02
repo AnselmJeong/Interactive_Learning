@@ -118,6 +118,17 @@ export function listMaterialAnnotations(materialId: string) {
     .map(rowToAnnotation);
 }
 
+export function listProjectAnnotations(projectId: string) {
+  return getDb()
+    .query<MaterialAnnotationRow, [string]>(
+      `SELECT * FROM material_annotations
+       WHERE project_id = ?
+       ORDER BY updated_at DESC, created_at DESC, rowid DESC`
+    )
+    .all(projectId)
+    .map(rowToAnnotation);
+}
+
 export function saveMaterialAnnotation(input: SaveMaterialAnnotationInput) {
   const material = getDb()
     .query<{ project_id: string }, [string]>("SELECT project_id FROM learning_materials WHERE id = ?")
