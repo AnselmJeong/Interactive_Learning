@@ -41,9 +41,10 @@ describe("project transfer", () => {
     await writeFile(join(sourceDir, "source_chunks.json"), "[]", "utf8");
     await writeFile(join(materialDir, "material_manifest.json"), "{}", "utf8");
     await writeFile(join(materialDir, "figures.json"), JSON.stringify([{ assetPath: join(sourceDir, "asset.png"), assetUrl: `file://${join(sourceDir, "asset.png")}` }]), "utf8");
+    await writeFile(join(projectDir, "documents.json"), JSON.stringify({ documents: [{ id: "document-1", originalFilePath: "/Users/private/book.md" }] }), "utf8");
     const now = Date.now();
-    getDb().query(`INSERT INTO project_documents (id, project_id, document_type, title, original_file_name, imported_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`)
-      .run("document-1", project.id, "book", "Book", "book.md", now, now);
+    getDb().query(`INSERT INTO project_documents (id, project_id, document_type, title, original_file_name, original_file_path, imported_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+      .run("document-1", project.id, "book", "Book", "book.md", "/Users/private/book.md", now, now);
     getDb().query(`INSERT INTO project_sources (id, project_id, title, source_type, original_file_name, original_file_path, imported_file_path, document_id, source_ordinal, source_kind, content_hash, manifest_path, chunks_path, quality_status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
       .run("source-1", project.id, "Source", "markdown", "book.md", "/Users/private/book.md", join(sourceDir, "original.md"), "document-1", 0, "chapter", "hash-1", join(sourceDir, "source_manifest.json"), join(sourceDir, "source_chunks.json"), "good", now, now);
     getDb().query(`INSERT INTO learning_materials (id, project_id, title, material_type, status, manifest_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)

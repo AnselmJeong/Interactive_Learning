@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { projectManifestFromSummary, recoverProjectManifestIfPossible, shouldImportSessionSnapshot, shouldPurgeProjectsMissingFromRoot } from "./project-bundle-sync";
+import { projectManifestFromSummary, recoverProjectManifestIfPossible, resolveRecoveredDocumentMembership, shouldImportSessionSnapshot, shouldPurgeProjectsMissingFromRoot } from "./project-bundle-sync";
 
 describe("project root purge safety", () => {
   test("does not purge cached projects when a root has no project manifests", () => {
@@ -19,6 +19,12 @@ describe("project root purge safety", () => {
 });
 
 describe("project manifest recovery", () => {
+  test("keeps legacy chapters grouped by the document index", () => {
+    const documents = [{ id: "book-1", originalFilePath: null, sourceIds: ["chapter-1", "chapter-2"] }];
+    expect(resolveRecoveredDocumentMembership({ sourceId: "chapter-1", documents })).toEqual({ documentId: "book-1", sourceOrdinal: 0 });
+    expect(resolveRecoveredDocumentMembership({ sourceId: "chapter-2", documents })).toEqual({ documentId: "book-1", sourceOrdinal: 1 });
+  });
+
   test("recovers a missing project manifest from source bundle artifacts", async () => {
     const root = await mkdtemp(join(tmpdir(), "learnie-sync-"));
     try {

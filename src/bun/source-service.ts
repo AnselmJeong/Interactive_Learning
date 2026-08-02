@@ -730,29 +730,23 @@ export class SourceService {
     const title = titleForPath(path);
     const documentId = this.createDocument(projectId, documentType, title, path, basename(path), digest);
     const dir = sourceDirAt(this.projectRoot(projectId), projectId, id);
-    await mkdir(dir, { recursive: true });
-    const originalFileName = basename(path);
-    const importedPath = join(dir, `original${extname(path).toLowerCase() || ".txt"}`);
-    await copyFile(path, importedPath);
-
-    const chunks = normalizeMarkdownChunks(id, rewriteLocalMarkdownImageLinks(importedPath, bytes.toString("utf8")));
-    const status = chunks.length ? "good" : "poor";
-    return this.persistSource({
-      id,
-      projectId,
-      title,
-      type,
-      documentId,
-      sourceOrdinal: 0,
-      originalPath: path,
-      originalFileName,
-      importedPath,
-      digest,
-      chunks,
-      extractionMethod: "typescript-markdown-normalizer",
-      status,
-      warnings: [],
-    });
+    try {
+      await mkdir(dir, { recursive: true });
+      const originalFileName = basename(path);
+      const importedPath = join(dir, `original${extname(path).toLowerCase() || ".txt"}`);
+      await copyFile(path, importedPath);
+      const chunks = normalizeMarkdownChunks(id, rewriteLocalMarkdownImageLinks(importedPath, bytes.toString("utf8")));
+      const status = chunks.length ? "good" : "poor";
+      return await this.persistSource({
+        id, projectId, title, type, documentId, sourceOrdinal: 0, originalPath: path, originalFileName,
+        importedPath, digest, chunks, extractionMethod: "typescript-markdown-normalizer", status, warnings: [],
+      });
+    } catch (error) {
+      getDb().query("DELETE FROM project_documents WHERE id = ?").run(documentId);
+      await rm(dir, { recursive: true, force: true });
+      await writeProjectDocumentIndex(projectId, this.projectRoot(projectId)).catch(() => undefined);
+      throw error;
+    }
   }
 
   private async importFolder(projectId: string, path: string, originalSourcePath = path, selectedRelativePaths?: string[], requestedDocumentType?: DocumentType) {
@@ -813,22 +807,29 @@ export class SourceService {
       basename(originalSourcePath),
       folderDigest,
     );
-    for (let ordinal = 0; ordinal < textFiles.length; ordinal += 1) {
-      const copiedFile = textFiles[ordinal]!;
-      const manifestPath = relativePortable(importedRoot, copiedFile);
-      const originalPath = await sourceChildPath(originalSourcePath, manifestPath);
-      const title = preppyManifest.chapterTitleByPath.get(manifestPath) || titleForPath(copiedFile);
-      const result = await this.importTextFileFromCopiedFolder(projectId, originalPath, copiedFile, title, {
-        importedRoot,
-        manifestPath,
-        chapterIndex: preppyManifest.chapterIndexByPath.get(manifestPath),
-        figures: preppyFigures,
-        documentType,
-        documentId,
-        sourceOrdinal: ordinal,
-      });
-      imported.push(result.source);
-      if (result.created) createdCount += 1;
+    const createdSourceIds: string[] = [];
+    try {
+      for (let ordinal = 0; ordinal < textFiles.length; ordinal += 1) {
+        const copiedFile = textFiles[ordinal]!;
+        const manifestPath = relativePortable(importedRoot, copiedFile);
+        const originalPath = await sourceChildPath(originalSourcePath, manifestPath);
+        const title = preppyManifest.chapterTitleByPath.get(manifestPath) || titleForPath(copiedFile);
+        const result = await this.importTextFileFromCopiedFolder(projectId, originalPath, copiedFile, title, {
+          importedRoot, manifestPath, chapterIndex: preppyManifest.chapterIndexByPath.get(manifestPath),
+          figures: preppyFigures, documentType, documentId, sourceOrdinal: ordinal,
+        });
+        imported.push(result.source);
+        if (result.created) {
+          createdCount += 1;
+          createdSourceIds.push(result.source.id);
+        }
+      }
+    } catch (error) {
+      getDb().query("DELETE FROM project_documents WHERE id = ?").run(documentId);
+      await Promise.all(createdSourceIds.map((sourceId) => rm(sourceDirAt(this.projectRoot(projectId), projectId, sourceId), { recursive: true, force: true })));
+      await rm(folderDir, { recursive: true, force: true });
+      await writeProjectDocumentIndex(projectId, this.projectRoot(projectId)).catch(() => undefined);
+      throw error;
     }
     if (createdCount === 0) {
       getDb().query("DELETE FROM project_documents WHERE id = ?").run(documentId);
@@ -878,11 +879,6 @@ export class SourceService {
     }
   ) {
     const { digest, bytes } = await hashFile(importedPath);
-    const existing = getDb()
-      .query<SourceRow, [string, string]>("SELECT * FROM project_sources WHERE project_id = ? AND content_hash = ?")
-      .get(projectId, digest);
-    if (existing) return { source: toSource(existing), created: false };
-
     const id = crypto.randomUUID();
     const type = sourceTypeForPath(importedPath);
     const chunks = normalizeMarkdownChunks(id, rewriteLocalMarkdownImageLinks(importedPath, bytes.toString("utf8")));
@@ -941,6 +937,7 @@ export class SourceService {
       id: input.id,
       projectId: input.projectId,
       documentId: input.documentId,
+      sourceOrdinal: input.sourceOrdinal,
       title: input.title,
       updatedAt: new Date().toISOString(),
       sourceType: input.type,

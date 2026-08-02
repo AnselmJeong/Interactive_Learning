@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
+import { existsSync, writeFileSync } from "node:fs";
 import { basename } from "node:path";
 import { databasePath } from "./paths";
 
@@ -8,7 +9,18 @@ let db: Database | null = null;
 export function getDb() {
   if (db) return db;
 
-  db = new Database(databasePath("projects.sqlite"), { create: true });
+  const path = databasePath("projects.sqlite");
+  db = new Database(path, { create: true });
+  const hasLegacySources = db.query<{ count: number }, []>(
+    "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'table' AND name = 'project_sources'"
+  ).get()?.count;
+  const legacySourceColumns = hasLegacySources
+    ? db.query<{ name: string }, []>("PRAGMA table_info(project_sources)").all().map((column) => column.name)
+    : [];
+  if (existsSync(path) && hasLegacySources && !legacySourceColumns.includes("document_id")) {
+    const backupPath = `${path}.pre-document-migration-${Date.now()}.bak`;
+    writeFileSync(backupPath, db.serialize());
+  }
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec("PRAGMA foreign_keys = ON;");
   db.exec(`
@@ -43,9 +55,6 @@ export function getDb() {
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );
-
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_project_sources_hash
-      ON project_sources(project_id, content_hash);
 
     CREATE TABLE IF NOT EXISTS project_documents (
       id TEXT PRIMARY KEY,
@@ -335,6 +344,25 @@ export function getDb() {
 
     CREATE INDEX IF NOT EXISTS idx_project_transfer_history_project
       ON project_transfer_history(project_id, transferred_at DESC);
+
+    CREATE TABLE IF NOT EXISTS document_transfer_history (
+      id TEXT PRIMARY KEY,
+      export_id TEXT NOT NULL,
+      local_document_id TEXT REFERENCES project_documents(id) ON DELETE SET NULL,
+      origin_document_id TEXT NOT NULL,
+      origin_project_id TEXT NOT NULL,
+      parent_export_id TEXT,
+      device_id TEXT NOT NULL,
+      direction TEXT NOT NULL CHECK (direction IN ('export', 'import')),
+      document_state_hash TEXT NOT NULL,
+      transferred_at INTEGER NOT NULL,
+      applied_at INTEGER
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_document_transfer_history_document
+      ON document_transfer_history(local_document_id, transferred_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_document_transfer_history_export
+      ON document_transfer_history(export_id, transferred_at DESC);
   `);
 
   const projectColumns = db.query<{ name: string }, []>("PRAGMA table_info(projects)").all().map((column) => column.name);
@@ -357,6 +385,9 @@ export function getDb() {
   if (!sourceColumns.includes("source_kind")) {
     db.exec("ALTER TABLE project_sources ADD COLUMN source_kind TEXT;");
   }
+  db.exec("DROP INDEX IF EXISTS idx_project_sources_hash;");
+  db.exec("DROP INDEX IF EXISTS idx_project_sources_document_hash;");
+  db.exec("CREATE INDEX IF NOT EXISTS idx_project_sources_document_hash_lookup ON project_sources(project_id, document_id, content_hash);");
   db.exec("CREATE INDEX IF NOT EXISTS idx_project_sources_document_ordinal ON project_sources(document_id, source_ordinal ASC, created_at ASC);");
   migrateProjectDocuments(db);
   const messageColumns = db.query<{ name: string }, []>("PRAGMA table_info(learning_messages)").all().map((column) => column.name);

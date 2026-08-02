@@ -1,5 +1,7 @@
 import { getDb } from "./project-db";
 import { BookMetadataService } from "./book-metadata-service";
+import { writeProjectDocumentIndex } from "./project-bundle-sync";
+import { dataPath } from "./paths";
 import type {
   DocumentSummary,
   LearningProgressSummary,
@@ -158,6 +160,10 @@ function aggregateFor(documentId: string): AggregateRow {
 
 export class DocumentService {
   private readonly metadata = new BookMetadataService();
+  private async persistDocumentIndex(projectId: string) {
+    const root = getDb().query<{ root_path: string | null }, [string]>("SELECT root_path FROM projects WHERE id = ?").get(projectId)?.root_path || dataPath("projects");
+    await writeProjectDocumentIndex(projectId, root);
+  }
   list(projectId: string) {
     const documents = getDb()
       .query<DocumentRow, [string]>("SELECT * FROM project_documents WHERE project_id = ? ORDER BY imported_at ASC, id ASC")
@@ -193,12 +199,14 @@ export class DocumentService {
     const isbn = current.isbn13 || current.isbn10 || this.metadata.isbnFromFilename(current.originalFileName)?.value;
     if (!isbn) {
       getDb().query("UPDATE project_documents SET metadata_status = 'not_found', updated_at = ? WHERE id = ?").run(Date.now(), documentId);
+      await this.persistDocumentIndex(projectId);
       return this.get(projectId, documentId);
     }
     try {
       const metadata = await this.metadata.lookup(isbn);
       if (!metadata) {
         getDb().query("UPDATE project_documents SET metadata_status = 'not_found', metadata_fetched_at = ?, updated_at = ? WHERE id = ?").run(Date.now(), Date.now(), documentId);
+        await this.persistDocumentIndex(projectId);
         return this.get(projectId, documentId);
       }
       const now = Date.now();
@@ -207,6 +215,7 @@ export class DocumentService {
     } catch {
       getDb().query("UPDATE project_documents SET metadata_status = 'failed', metadata_fetched_at = ?, updated_at = ? WHERE id = ?").run(Date.now(), Date.now(), documentId);
     }
+    await this.persistDocumentIndex(projectId);
     return this.get(projectId, documentId);
   }
 }

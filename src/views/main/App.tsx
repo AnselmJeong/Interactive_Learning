@@ -2,7 +2,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { BookOpen, Check, Download, Info, Loader2, LocateFixed, MessageSquare, Moon, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Pencil, Play, Send, Settings, Sparkles, Sun, Trash2, Upload, X } from "lucide-react";
 import type { MaterialSummary, PreparedSourceImport, ProjectSummary, SourceSummary } from "../../shared/rpc-types";
 import type { ProjectTransferExport, ProjectTransferPreview, SessionReadableExport } from "../../shared/project-transfer-types";
-import type { DocumentTransferExport } from "../../shared/document-transfer-types";
+import type { DocumentTransferExport, DocumentTransferImportPreview, DocumentTransferImportResult } from "../../shared/document-transfer-types";
 import type { AppSettings, AiProviderStatus, ChatSubmitShortcut, ProviderModel } from "../../shared/settings-types";
 import type { DocumentType, MaterialAnnotation, MaterialArtifacts, QuestionThreadResult } from "../../shared/artifact-types";
 import type { LearningMessageSetSummary, SessionSnapshot, SessionSummary, SourceRef, TutorContext, TutorMessage, TutorPrefetchStatus } from "../../shared/tutor-types";
@@ -1101,6 +1101,41 @@ export function App({ request }: { request: RpcRequest }) {
       setStatus(exports.length ? `${exports.length}개 자료를 개별 내보냈습니다.` : "내보낼 자료가 없습니다.");
     } catch (error) {
       setStatus(`자료별 내보내기 실패: ${(error as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function importDocumentTransfer(project: ProjectSummary) {
+    setBusy(true);
+    setStatus("책·논문 transfer를 확인하는 중");
+    let preview: DocumentTransferImportPreview | null = null;
+    try {
+      const path = (await request("documents.chooseTransferFile", {})) as string;
+      if (!path) {
+        setStatus(READY_STATUS);
+        return;
+      }
+      preview = (await request("documents.prepareTransferImport", { path, destinationProjectId: project.id })) as DocumentTransferImportPreview;
+      if (preview.classification === "diverged" || preview.classification === "invalid") {
+        setStatus(`책·논문 가져오기 차단: ${preview.warnings[0] || "충돌하는 자료 상태가 있습니다."}`);
+        await request("documents.cancelTransferImport", { importId: preview.importId }).catch(() => undefined);
+        return;
+      }
+      const confirmed = preview.classification === "no_changes" || window.confirm(
+        `${preview.documentTitle}\n\nsource ${preview.counts.sources}개 · session ${preview.counts.sessions}개 · annotation ${preview.counts.annotations}개를 ${project.title}에 가져옵니다.`
+      );
+      if (!confirmed) {
+        await request("documents.cancelTransferImport", { importId: preview.importId });
+        setStatus(READY_STATUS);
+        return;
+      }
+      const result = (await request("documents.commitTransferImport", { importId: preview.importId })) as DocumentTransferImportResult;
+      await openProject(project);
+      setStatus(result.imported ? `${preview.documentTitle} 자료를 가져왔습니다.` : "이미 같은 자료 상태가 있습니다.");
+    } catch (error) {
+      if (preview) await request("documents.cancelTransferImport", { importId: preview.importId }).catch(() => undefined);
+      setStatus(`책·논문 가져오기 실패: ${(error as Error).message}`);
     } finally {
       setBusy(false);
     }
@@ -2227,6 +2262,7 @@ export function App({ request }: { request: RpcRequest }) {
               onSelect={(project) => void openProject(project)}
               onCreate={() => setNewProjectOpen(true)}
               onImport={() => void chooseProjectTransfer()}
+              onImportDocument={(project) => void importDocumentTransfer(project)}
               onExport={(project) => void exportProjectTransfer(project)}
               onExportDocuments={(project) => void exportAllDocumentTransfers(project)}
               onDelete={(project) => void deleteProject(project)}

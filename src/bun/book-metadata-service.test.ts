@@ -9,6 +9,12 @@ describe("book metadata lookup", () => {
     ];
     expect(selectExactIsbnVolume(volumes, "9780306406157")?.id).toBe("exact");
   });
+  test("canonicalizes provider ISBN punctuation before exact matching", () => {
+    const volumes = [
+      { id: "exact", volumeInfo: { title: "Exact", industryIdentifiers: [{ type: "ISBN_13", identifier: "978-0-306-40615-7" }] } },
+    ];
+    expect(selectExactIsbnVolume(volumes, "9780306406157")?.id).toBe("exact");
+  });
   test("keeps lookup optional when no exact match exists", async () => {
     const service = new BookMetadataService(async () => new Response(JSON.stringify({ items: [{ id: "near", volumeInfo: { title: "Near" } }] }), { status: 200 }));
     await expect(service.lookup("9780306406157")).resolves.toBeNull();

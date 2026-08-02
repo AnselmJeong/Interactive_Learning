@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs";
 import { mkdir, readdir, readFile, rm, stat, writeFile } from "node:fs/promises";
-import { basename, dirname, join } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { getDb } from "./project-db";
 import { dataPath } from "./paths";
 import { listMaterialAnnotations, replaceMaterialAnnotations } from "./annotation-store";
@@ -42,9 +42,33 @@ type ProjectDocumentBundle = {
   originalFilePath: string | null;
   contentHash: string | null;
   coverImagePath: string | null;
+  provider: string | null;
+  providerVolumeId: string | null;
+  metadataFetchedAt: number | null;
+  metadataOverridesJson: string;
+  sourceIds: string[];
   importedAt: number;
   updatedAt: number;
 };
+
+export function resolveRecoveredDocumentMembership(input: {
+  sourceId: string;
+  manifestDocumentId?: string;
+  manifestSourceOrdinal?: number;
+  originalPath?: string;
+  documents: Array<Pick<ProjectDocumentBundle, "id" | "originalFilePath" | "sourceIds">>;
+}) {
+  if (input.manifestDocumentId) return { documentId: input.manifestDocumentId, sourceOrdinal: input.manifestSourceOrdinal ?? 0 };
+  for (const document of input.documents) {
+    const ordinal = document.sourceIds?.indexOf(input.sourceId) ?? -1;
+    if (ordinal >= 0) return { documentId: document.id, sourceOrdinal: ordinal };
+  }
+  const normalizedOrigin = (value: string | null | undefined) =>
+    (value || "").replaceAll("\\", "/").split("#", 1)[0]!.replace(/\/+$/, "").toLocaleLowerCase();
+  const origin = normalizedOrigin(input.originalPath);
+  const matching = origin ? input.documents.find((document) => normalizedOrigin(document.originalFilePath) === origin) : undefined;
+  return matching ? { documentId: matching.id, sourceOrdinal: input.manifestSourceOrdinal ?? 0 } : null;
+}
 
 type ProjectBundleMarker = {
   kind: "source" | "material" | "session";
@@ -364,12 +388,20 @@ export async function writeProjectManifest(project: ProjectSummary) {
 }
 
 export async function writeProjectDocumentIndex(projectId: string, rootPath: string) {
+  const projectDir = join(rootPath, projectId);
+  const portablePath = (value: string | null) => {
+    if (!value) return null;
+    const portable = relative(projectDir, value).replaceAll("\\", "/");
+    return !portable || portable === "." || portable.startsWith("../") || isAbsolute(portable) ? null : portable;
+  };
   const rows = getDb().query<{
     id: string; project_id: string; document_type: DocumentType; title: string; subtitle: string | null;
     description: string | null; authors_json: string; publisher: string | null; published_date: string | null;
     isbn_10: string | null; isbn_13: string | null; journal: string | null; doi: string | null;
     language: string | null; metadata_status: string; original_file_name: string; original_file_path: string | null;
-    content_hash: string | null; cover_image_path: string | null; imported_at: number; updated_at: number;
+    content_hash: string | null; cover_image_path: string | null; provider: string | null;
+    provider_volume_id: string | null; metadata_fetched_at: number | null; metadata_overrides_json: string;
+    imported_at: number; updated_at: number;
   }, [string]>("SELECT * FROM project_documents WHERE project_id = ? ORDER BY imported_at, id").all(projectId);
   const documents: ProjectDocumentBundle[] = rows.map((row) => ({
     id: row.id,
@@ -388,12 +420,30 @@ export async function writeProjectDocumentIndex(projectId: string, rootPath: str
     language: row.language,
     metadataStatus: row.metadata_status,
     originalFileName: row.original_file_name,
-    originalFilePath: row.original_file_path,
+    originalFilePath: null,
     contentHash: row.content_hash,
-    coverImagePath: row.cover_image_path,
+    coverImagePath: portablePath(row.cover_image_path),
+    provider: row.provider,
+    providerVolumeId: row.provider_volume_id,
+    metadataFetchedAt: row.metadata_fetched_at,
+    metadataOverridesJson: row.metadata_overrides_json,
+    sourceIds: getDb().query<{ id: string }, [string]>(
+      "SELECT id FROM project_sources WHERE document_id = ? ORDER BY COALESCE(source_ordinal, 2147483647), created_at, id"
+    ).all(row.id).map((source) => source.id),
     importedAt: row.imported_at,
     updatedAt: row.updated_at,
   }));
+  const memberships = getDb().query<{
+    id: string; document_id: string | null; source_ordinal: number | null; manifest_path: string | null;
+  }, [string]>("SELECT id, document_id, source_ordinal, manifest_path FROM project_sources WHERE project_id = ?").all(projectId);
+  for (const membership of memberships) {
+    if (!membership.manifest_path || !membership.document_id) continue;
+    const manifestPath = resolve(membership.manifest_path);
+    if (!manifestPath.startsWith(`${resolve(projectDir)}${sep}`)) continue;
+    const manifest = await readJson<SourceManifest>(manifestPath);
+    if (!manifest || (manifest.documentId === membership.document_id && manifest.sourceOrdinal === membership.source_ordinal)) continue;
+    await writeJson(manifestPath, { ...manifest, documentId: membership.document_id, sourceOrdinal: membership.source_ordinal ?? undefined });
+  }
   await writeJson(join(rootPath, projectId, "documents.json"), { schemaVersion: 1, documents });
 }
 
@@ -441,8 +491,9 @@ async function importDocuments(projectDir: string, projectId: string) {
       INSERT INTO project_documents
       (id, project_id, document_type, title, subtitle, description, authors_json, publisher, published_date,
        isbn_10, isbn_13, journal, doi, language, metadata_status, original_file_name, original_file_path,
-       content_hash, cover_image_path, imported_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       content_hash, cover_image_path, provider, provider_volume_id, metadata_fetched_at,
+       metadata_overrides_json, imported_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         project_id = excluded.project_id, document_type = excluded.document_type, title = excluded.title,
         subtitle = excluded.subtitle, description = excluded.description, authors_json = excluded.authors_json,
@@ -450,19 +501,27 @@ async function importDocuments(projectDir: string, projectId: string) {
         isbn_13 = excluded.isbn_13, journal = excluded.journal, doi = excluded.doi, language = excluded.language,
         metadata_status = excluded.metadata_status, original_file_name = excluded.original_file_name,
         original_file_path = excluded.original_file_path, content_hash = excluded.content_hash,
-        cover_image_path = excluded.cover_image_path, updated_at = excluded.updated_at
+        cover_image_path = excluded.cover_image_path, provider = excluded.provider,
+        provider_volume_id = excluded.provider_volume_id, metadata_fetched_at = excluded.metadata_fetched_at,
+        metadata_overrides_json = excluded.metadata_overrides_json, updated_at = excluded.updated_at
     `).run(
       document.id, projectId, documentType(document.documentType), document.title || titleFromFile(document.originalFileName),
       document.subtitle, document.description, document.authorsJson || "[]", document.publisher, document.publishedDate,
       document.isbn10, document.isbn13, document.journal, document.doi, document.language,
       ["found", "not_found", "manual", "failed"].includes(document.metadataStatus) ? document.metadataStatus : "pending",
       document.originalFileName || document.title, document.originalFilePath, document.contentHash,
-      document.coverImagePath, timestamp(document.importedAt), timestamp(document.updatedAt || document.importedAt),
+      document.coverImagePath && resolve(projectDir, document.coverImagePath).startsWith(`${resolve(projectDir)}${sep}`)
+        ? resolve(projectDir, document.coverImagePath)
+        : null,
+      document.provider || null, document.providerVolumeId || null,
+      document.metadataFetchedAt || null, document.metadataOverridesJson || "{}",
+      timestamp(document.importedAt), timestamp(document.updatedAt || document.importedAt),
     );
   }
 }
 
 async function importSources(projectDir: string, projectId: string) {
+  const stored = await readJson<{ documents?: ProjectDocumentBundle[] }>(join(projectDir, "documents.json"));
   for (const sourceId of await childDirs(join(projectDir, "sources"))) {
     const dir = join(projectDir, "sources", sourceId);
     const manifestPath = join(dir, "source_manifest.json");
@@ -477,7 +536,14 @@ async function importSources(projectDir: string, projectId: string) {
     const createdAt = timestamp(manifest.importedAt);
     const updatedAt = timestamp(manifest.updatedAt || manifest.importedAt);
     const contentHash = await hashProjectFile(importedPath, [manifestPath, chunksPath]);
-    const documentId = manifest.documentId || `document-${(new Bun.CryptoHasher("sha256").update(`${projectId}\u0000${manifest.id}`).digest("hex")).slice(0, 32)}`;
+    const recoveredMembership = resolveRecoveredDocumentMembership({
+      sourceId: manifest.id,
+      manifestDocumentId: manifest.documentId,
+      manifestSourceOrdinal: manifest.sourceOrdinal,
+      originalPath: manifest.originalPath,
+      documents: stored?.documents || [],
+    });
+    const documentId = recoveredMembership?.documentId || `document-${(new Bun.CryptoHasher("sha256").update(`${projectId}\u0000${manifest.id}`).digest("hex")).slice(0, 32)}`;
     getDb().query(`
       INSERT OR IGNORE INTO project_documents
       (id, project_id, document_type, title, original_file_name, original_file_path, content_hash, imported_at, updated_at)
@@ -517,7 +583,7 @@ async function importSources(projectDir: string, projectId: string) {
         importedPath || manifestPath,
         sourceDocumentType,
         documentId,
-        0,
+        recoveredMembership?.sourceOrdinal ?? 0,
         sourceDocumentType === "article" ? "article" : "chapter",
         contentHash,
         manifestPath,

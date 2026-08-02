@@ -9,6 +9,7 @@ export function ProjectDropdown({
   onSelect,
   onCreate,
   onImport,
+  onImportDocument,
   onExport,
   onExportDocuments,
   onDelete,
@@ -19,6 +20,7 @@ export function ProjectDropdown({
   onSelect: (project: ProjectSummary) => void;
   onCreate: () => void;
   onImport: () => void;
+  onImportDocument: (project: ProjectSummary) => void;
   onExport: (project: ProjectSummary) => void;
   onExportDocuments: (project: ProjectSummary) => void;
   onDelete: (project: ProjectSummary) => void;
@@ -104,6 +106,18 @@ export function ProjectDropdown({
                 <FolderInput size={17} aria-hidden="true" />
                 <span className="pd-action-tooltip" role="tooltip">프로젝트 불러오기</span>
               </button>
+              {activeProject ? (
+                <button
+                  type="button"
+                  className="pd-transfer-action"
+                  aria-label="Learnie 책·논문 가져오기"
+                  disabled={busy}
+                  onClick={() => { onImportDocument(activeProject); setOpen(false); }}
+                >
+                  <FolderInput size={17} aria-hidden="true" />
+                  <span className="pd-action-tooltip" role="tooltip">책·논문 가져오기</span>
+                </button>
+              ) : null}
               {activeProject ? (
                 <button
                   type="button"

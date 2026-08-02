@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { closeDbForTests, getDb } from "./project-db";
@@ -111,6 +111,13 @@ describe("project database migrations", () => {
     expect(row?.document_id).toBe(document?.id);
     expect(row?.source_ordinal).toBe(0);
     expect(document).toMatchObject({ title: "book", document_type: "book" });
+    const backups = await readdir(appData);
+    const backupName = backups.find((name) => name.startsWith("projects.sqlite.pre-document-migration-") && name.endsWith(".bak"));
+    expect(backupName).toBeTruthy();
+    const backup = new Database(join(appData, backupName!), { readonly: true });
+    expect(backup.query<{ id: string }, []>("SELECT id FROM project_sources").get()?.id).toBe("legacy-source");
+    expect(backup.query<{ name: string }, []>("PRAGMA table_info(project_sources)").all().map((column) => column.name)).not.toContain("document_id");
+    backup.close();
   });
 
   test("moves legacy prepared batch rows into immutable message sets and binds the session", () => {
@@ -150,6 +157,22 @@ describe("project database migrations", () => {
     expect(migrated.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM learning_messages WHERE delivery_state != 'visible'").get()?.count).toBe(0);
     expect(migrated.query<{ message_set_id: string | null }, []>("SELECT message_set_id FROM learning_sessions WHERE id = 'session-1'").get()?.message_set_id).toBe("legacy-run");
     expect(migrated.query<{ origin_prepared_message_id: string | null }, []>("SELECT origin_prepared_message_id FROM learning_messages WHERE id = 'visible-route'").get()?.origin_prepared_message_id).toBe("legacy-prepared-visible-route");
+  });
+
+  test("allows equal source content in distinct documents", () => {
+    const database = getDb();
+    database.query("INSERT INTO projects (id, title, created_at, updated_at) VALUES ('project-docs', 'Project', 1, 1)").run();
+    database.query("INSERT INTO project_documents (id, project_id, document_type, title, original_file_name, imported_at, updated_at) VALUES (?, 'project-docs', 'book', ?, ?, 1, 1)")
+      .run("document-a", "Book A", "a.pdf");
+    database.query("INSERT INTO project_documents (id, project_id, document_type, title, original_file_name, imported_at, updated_at) VALUES (?, 'project-docs', 'book', ?, ?, 1, 1)")
+      .run("document-b", "Book B", "b.pdf");
+    const insert = database.query(`INSERT INTO project_sources
+      (id, project_id, document_id, source_ordinal, source_kind, title, source_type, document_type,
+       original_file_name, imported_file_path, content_hash, quality_status, created_at, updated_at)
+      VALUES (?, 'project-docs', ?, 0, 'chapter', ?, 'markdown', 'book', ?, ?, 'same-content', 'good', 1, 1)`);
+    insert.run("source-a", "document-a", "Chapter", "a.md", "a.md");
+    insert.run("source-b", "document-b", "Chapter", "b.md", "b.md");
+    expect(database.query<{ count: number }, []>("SELECT COUNT(*) AS count FROM project_sources WHERE content_hash = 'same-content'").get()?.count).toBe(2);
   });
 
   test("adds annotation anchor_json before rebuilding legacy annotation constraints", async () => {

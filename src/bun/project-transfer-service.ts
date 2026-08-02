@@ -97,6 +97,10 @@ function normalizeStatePaths(state: TransferState, projectDir: string) {
     project.root_path = null;
     project.last_opened_at = null;
   }
+  for (const document of state.tables.project_documents) {
+    document.original_file_path = null;
+    document.cover_image_path = document.cover_image_path ? portablePath(projectDir, document.cover_image_path) : null;
+  }
   for (const source of state.tables.project_sources) {
     source.imported_file_path = portablePath(projectDir, source.imported_file_path);
     source.manifest_path = source.manifest_path ? portablePath(projectDir, source.manifest_path) : null;
@@ -156,13 +160,16 @@ function rewritePortableJsonValue(value: unknown, mode: "export" | "import", pro
   if (value && typeof value === "object") {
     const output: Record<string, unknown> = {};
     for (const [childKey, childValue] of Object.entries(value as Record<string, unknown>)) {
-      if (childKey === "originalPath") continue;
+      if (childKey === "originalPath" || childKey === "originalFilePath") continue;
       output[childKey] = rewritePortableJsonValue(childValue, mode, projectDir, childKey);
     }
     return output;
   }
   if (typeof value !== "string") return value;
   if (key === "assetPath") {
+    return mode === "export" ? portablePath(projectDir, value) : join(projectDir, safeArchivePath(value));
+  }
+  if (key === "coverImagePath") {
     return mode === "export" ? portablePath(projectDir, value) : join(projectDir, safeArchivePath(value));
   }
   if (key === "assetUrl" && value.startsWith("file:")) {
@@ -239,16 +246,32 @@ function materializeLegacyDocuments(state: TransferState) {
   const project = state.tables.projects[0];
   if (!project) return state;
   const sources = state.tables.project_sources;
-  const documents = sources.map((source, ordinal) => {
-    const id = `legacy-document-${sha256(`${project.id}\u0000${source.id}`).slice(0, 32)}`;
-    source.document_id = id;
-    source.source_ordinal = 0;
-    source.source_kind = source.document_type === "article" ? "article" : "chapter";
+  const groups = new Map<string, Array<Record<string, unknown>>>();
+  for (const source of sources) {
+    const type = source.document_type === "article" ? "article" : "book";
+    const original = typeof source.original_file_path === "string"
+      ? source.original_file_path.replaceAll("\\", "/").split("#", 1)[0]!.replace(/\/+$/, "").toLocaleLowerCase()
+      : "";
+    const origin = type === "article" || !original ? `source:${source.id}` : original;
+    const key = `${type}\u0000${origin}`;
+    const group = groups.get(key) || [];
+    group.push(source);
+    groups.set(key, group);
+  }
+  const documents = [...groups.entries()].map(([key, group], documentOrdinal) => {
+    const [type = "book", origin = ""] = key.split("\u0000");
+    const id = `legacy-document-${sha256(`${project.id}\u0000${type}\u0000${origin}\u0000${group.map((source) => source.id).join("\u0000")}`).slice(0, 32)}`;
+    group.forEach((source, sourceOrdinal) => {
+      source.document_id = id;
+      source.source_ordinal = sourceOrdinal;
+      source.source_kind = type === "article" ? "article" : "chapter";
+    });
+    const source = group[0]!;
     return {
       id,
       project_id: project.id,
-      document_type: source.document_type === "article" ? "article" : "book",
-      title: String(source.title || source.original_file_name || `Imported document ${ordinal + 1}`),
+      document_type: type,
+      title: String(source.title || source.original_file_name || `Imported document ${documentOrdinal + 1}`),
       subtitle: null,
       description: null,
       authors_json: "[]",
@@ -266,7 +289,7 @@ function materializeLegacyDocuments(state: TransferState) {
       metadata_overrides_json: "{}",
       original_file_name: String(source.original_file_name || source.title || "document"),
       original_file_path: null,
-      content_hash: source.content_hash || null,
+      content_hash: group.length === 1 ? source.content_hash || null : null,
       cover_image_path: null,
       imported_at: Number(source.created_at || Date.now()),
       updated_at: Number(source.updated_at || source.created_at || Date.now()),
@@ -315,6 +338,10 @@ function importRows(state: TransferState, root: string, mode: "create_new" | "fa
         if (row.manifest_path) row.manifest_path = join(finalDir, safeArchivePath(String(row.manifest_path)));
         if (row.chunks_path) row.chunks_path = join(finalDir, safeArchivePath(String(row.chunks_path)));
         row.original_file_path = null;
+      }
+      if (table === "project_documents") {
+        row.original_file_path = null;
+        if (row.cover_image_path) row.cover_image_path = join(finalDir, safeArchivePath(String(row.cover_image_path)));
       }
       if (table === "learning_materials") {
         for (const column of ["manifest_path", "concept_map_path", "course_plan_path", "overview_path", "lecture_plan_path", "presentation_plan_path", "critic_report_path", "visual_specs_path", "source_index_path"]) {

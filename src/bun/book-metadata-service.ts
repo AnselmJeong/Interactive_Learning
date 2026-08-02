@@ -1,4 +1,4 @@
-import { extractIsbns } from "./isbn";
+import { extractIsbns, isValidIsbn10, isValidIsbn13 } from "./isbn";
 
 export type BookMetadata = {
   title: string;
@@ -31,10 +31,18 @@ function identifiers(volume: GoogleVolume) {
   };
 }
 
+function canonicalIsbn(value: string | null) {
+  if (!value) return null;
+  const normalized = value.toUpperCase().replace(/[^0-9X]/g, "");
+  return isValidIsbn13(normalized) || isValidIsbn10(normalized) ? normalized : null;
+}
+
 export function selectExactIsbnVolume(volumes: GoogleVolume[], isbn: string) {
+  const requested = canonicalIsbn(isbn);
+  if (!requested) return null;
   return volumes.find((volume) => {
     const ids = identifiers(volume);
-    return ids.isbn10 === isbn || ids.isbn13 === isbn;
+    return canonicalIsbn(ids.isbn10) === requested || canonicalIsbn(ids.isbn13) === requested;
   }) || null;
 }
 

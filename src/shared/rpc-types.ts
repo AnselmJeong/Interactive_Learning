@@ -20,7 +20,7 @@ import type { AiProviderId, AiProviderStatus, AppSettings, ProviderModel, Public
 import type { LearningMessageSetSummary, SessionSnapshot, SessionSummary, TutorContext, TutorPrefetchStatus, TutorTurnOutput } from "./tutor-types";
 import type { LearningLevel } from "./learning-levels";
 import type { ProjectTransferExport, ProjectTransferImportResult, ProjectTransferPreview, SessionReadableExport } from "./project-transfer-types";
-import type { DocumentTransferExport, DocumentTransferPreview } from "./document-transfer-types";
+import type { DocumentTransferExport, DocumentTransferImportPreview, DocumentTransferImportResult, DocumentTransferPreview } from "./document-transfer-types";
 
 export type ProjectSummary = {
   id: string;
@@ -190,6 +190,10 @@ export type AppRPC = {
       "documents.previewTransfer": { params: { projectId: string; documentId: string }; response: DocumentTransferPreview };
       "documents.exportTransfer": { params: { projectId: string; documentId: string; destinationFolder?: string }; response: DocumentTransferExport };
       "documents.exportLegacyTransfers": { params: { projectId: string; destinationFolder?: string }; response: DocumentTransferExport[] };
+      "documents.chooseTransferFile": { params: {}; response: string };
+      "documents.prepareTransferImport": { params: { path: string; destinationProjectId: string }; response: DocumentTransferImportPreview };
+      "documents.commitTransferImport": { params: { importId: string }; response: DocumentTransferImportResult };
+      "documents.cancelTransferImport": { params: { importId: string }; response: boolean };
       "materials.generate": { params: { projectId: string; sourceIds: string[] }; response: MaterialSummary };
       "materials.list": { params: { projectId: string }; response: MaterialSummary[] };
       "materials.getArtifacts": { params: { materialId: string }; response: MaterialArtifacts };

@@ -348,6 +348,10 @@ const rpc = BrowserView.defineRPC<AppRPC>({
       "documents.previewTransfer": ({ projectId, documentId }) => documentTransfers.preview(projectId, documentId),
       "documents.exportTransfer": ({ projectId, documentId, destinationFolder }) => documentTransfers.export(projectId, documentId, destinationFolder),
       "documents.exportLegacyTransfers": ({ projectId, destinationFolder }) => documentTransfers.exportAll(projectId, destinationFolder),
+      "documents.chooseTransferFile": () => chooseProjectTransferPath(),
+      "documents.prepareTransferImport": ({ path, destinationProjectId }) => documentTransfers.prepareImport(path, destinationProjectId),
+      "documents.commitTransferImport": ({ importId }) => documentTransfers.commitImport(importId),
+      "documents.cancelTransferImport": ({ importId }) => documentTransfers.cancelImport(importId),
       "materials.generate": async ({ projectId, sourceIds }) => {
         sendToView("materials.generationProgress", { projectId, stage: "concepts", message: "Building source-grounded material", progress: 20 });
         const result = await materials.generate(projectId, sourceIds);
