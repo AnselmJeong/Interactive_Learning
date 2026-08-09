@@ -140,7 +140,7 @@ export function LibraryPage({ project, documents, sources, selectedDocumentId, p
             <div className="renovation-empty">
               <BookOpen size={28} />
               <h3>{query ? "검색 결과가 없습니다" : "첫 자료를 가져오세요"}</h3>
-              <p>{query ? "다른 제목이나 저자로 검색해 보세요." : "PDF, EPUB, Markdown을 가져오면 하나의 책으로 묶어 정리합니다."}</p>
+              <p>{query ? "다른 제목이나 저자로 검색해 보세요." : "PDF, EPUB, Markdown 또는 Learnie 내보내기 ZIP을 가져올 수 있습니다."}</p>
               {!query ? <button type="button" className="renovation-primary" onClick={onImport}><Upload size={16} /> 책·논문 가져오기</button> : null}
             </div>
           )}

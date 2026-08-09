@@ -108,7 +108,10 @@ async function chooseSourcePaths() {
   const startingFolder = existsSync(appSettings.projectRootFolder) ? appSettings.projectRootFolder : Utils.paths.home;
   const selected = await Utils.openFileDialog({
     startingFolder,
-    allowedFileTypes: "pdf,epub,md,txt",
+    // Document-transfer bundles belong in the same learner-facing entry point
+    // as source files.  The renderer recognizes their ZIP extension and sends
+    // them through the safe document-transfer preview/commit flow.
+    allowedFileTypes: "pdf,epub,md,txt,zip",
     canChooseFiles: true,
     canChooseDirectory: true,
     allowsMultipleSelection: true,

@@ -1,7 +1,7 @@
 export type SessionDeletionTransition =
   | { kind: "keep_current" }
   | { kind: "load_previous"; sessionId: string }
-  | { kind: "start_new" };
+  | { kind: "show_preview" };
 
 export function sessionDeletionTransition(
   activeSessionId: string | null | undefined,
@@ -12,5 +12,5 @@ export function sessionDeletionTransition(
   const previousSessionId = remainingSessionIds[0];
   return previousSessionId
     ? { kind: "load_previous", sessionId: previousSessionId }
-    : { kind: "start_new" };
+    : { kind: "show_preview" };
 }

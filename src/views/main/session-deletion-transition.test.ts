@@ -7,8 +7,8 @@ describe("session deletion transition", () => {
       .toEqual({ kind: "load_previous", sessionId: "previous" });
   });
 
-  test("starts fresh after deleting the last active session", () => {
-    expect(sessionDeletionTransition("active", "active", [])).toEqual({ kind: "start_new" });
+  test("returns to material preview after deleting the last active session", () => {
+    expect(sessionDeletionTransition("active", "active", [])).toEqual({ kind: "show_preview" });
   });
 
   test("keeps the current session when a different history row is deleted", () => {

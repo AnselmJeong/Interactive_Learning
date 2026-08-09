@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readZipEntries } from "./archive-reader";
 import { DocumentTransferService } from "./document-transfer-service";
+import { DocumentService } from "./document-service";
 import { configureAppDataBase, configureDatabaseBase } from "./paths";
 import { closeDbForTests, getDb } from "./project-db";
 import { ProjectService } from "./project-service";
@@ -86,6 +87,9 @@ describe("document transfer bridge", () => {
     expect(source?.document_id).toBe(result.documentId!);
     expect(source?.imported_file_path).toContain(join("projects", destination.id));
     expect(await readFile(source!.imported_file_path, "utf8")).toBe("# Source");
+    expect(new DocumentService().list(destination.id)).toMatchObject([
+      { id: result.documentId, title: "A book", sourceCount: 1 },
+    ]);
 
     const duplicate = await service.prepareImport(exported.zipPath, destination.id);
     expect(duplicate.classification).toBe("no_changes");

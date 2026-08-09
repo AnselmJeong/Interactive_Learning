@@ -2,6 +2,7 @@ import { memo, useState, type ReactNode } from "react";
 import type { MaterialAnnotation } from "../../../shared/artifact-types";
 import type { SourceRef, TutorContentBlock } from "../../../shared/tutor-types";
 import { plainDisplayText } from "../../../shared/display-title";
+import { stripMarkdownImageTokens } from "../../../shared/markdown-image-text";
 import { AnnotationInlineScope } from "./AnnotationInlineScope";
 import { MarkdownContent } from "./MarkdownContent";
 import { SourceFigureCard } from "./SourceFigureCard";
@@ -367,9 +368,11 @@ function TutorBlock({ block }: { block: TutorContentBlock }) {
 
   if (block.type === "source_quote") {
     if (!block.showToLearner) return null;
+    const quote = stripMarkdownImageTokens(block.quote);
+    if (!quote) return null;
     return (
       <section className="tutor-block source-quote-block">
-        <p>{block.quote}</p>
+        <p>{quote}</p>
         <small>{block.attribution || block.sourceRef}</small>
       </section>
     );

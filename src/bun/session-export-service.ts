@@ -8,6 +8,7 @@ import { CourseArtifactService } from "./course-artifact-service";
 import { writeZipFromDirectory } from "./archive-writer";
 import type { SessionReadableExport } from "../shared/project-transfer-types";
 import type { TutorContentBlock } from "../shared/tutor-types";
+import { stripMarkdownImageTokens } from "../shared/markdown-image-text";
 
 type SessionExportRow = {
   id: string;
@@ -64,7 +65,7 @@ function collisionSafePath(folder: string, baseName: string) {
 }
 
 function blocksToMarkdown(blocks: TutorContentBlock[], fallback: string) {
-  if (!blocks.length) return fallback.trim();
+  if (!blocks.length) return stripMarkdownImageTokens(fallback).trim();
   return blocks.map((block) => {
     if (block.type === "hook") return `> ${block.body}`;
     if (block.type === "guided_reading") return block.sourceRef ? `${block.body}\n\n_Source: ${block.sourceRef}_` : block.body;
@@ -77,7 +78,10 @@ function blocksToMarkdown(blocks: TutorContentBlock[], fallback: string) {
       const rows = block.rows.map((row) => `| ${block.columns.map((column) => row[column] || "").join(" | ")} |`);
       return [block.title ? `**${block.title}**` : "", header, divider, ...rows].filter(Boolean).join("\n");
     }
-    if (block.type === "source_quote") return `> ${block.quote}\n\n_Source: ${block.sourceRef}${block.attribution ? `, ${block.attribution}` : ""}_`;
+    if (block.type === "source_quote") {
+      const quote = stripMarkdownImageTokens(block.quote);
+      return quote ? `> ${quote}\n\n_Source: ${block.sourceRef}${block.attribution ? `, ${block.attribution}` : ""}_` : "";
+    }
     if (block.type === "reflection") return `**Reflection**\n\n${block.body}${block.aiView ? `\n\n_AI의 견해:_ ${block.aiView}` : ""}`;
     if (block.type === "misconception") return `**${block.title || "Clarification"}**\n\n${block.body}\n\n${block.repair}`;
     if (block.type === "bridge") return `_${block.body}_`;

@@ -1,4 +1,5 @@
 import type { SourceFigure } from "../../shared/artifact-types";
+import { stripMarkdownImageTokens } from "../../shared/markdown-image-text";
 
 function sameText(a: string, b: string) {
   return a.replace(/\s+/g, " ").trim().toLowerCase() === b.replace(/\s+/g, " ").trim().toLowerCase();
@@ -28,7 +29,7 @@ function isCaptionFragment(content: string, figures: SourceFigure[]) {
 }
 
 export function stripFigureMarkdown(content: string, figures: SourceFigure[]) {
-  if (!figures.length) return content;
+  if (!figures.length) return stripMarkdownImageTokens(content);
   if (isCaptionFragment(content, figures)) return "";
   if (!content.includes("![")) return content;
   const assetUrls = new Set(figures.map((figure) => figure.assetUrl));
@@ -43,11 +44,13 @@ export function stripFigureMarkdown(content: string, figures: SourceFigure[]) {
       continue;
     }
     skipCaption = false;
-    if (trimmed.startsWith("![") && [...assetUrls].some((url) => trimmed.includes(url))) {
+    if (trimmed.includes("![") && [...assetUrls].some((url) => trimmed.includes(url))) {
       skipCaption = true;
+      const prose = stripMarkdownImageTokens(line);
+      if (prose) kept.push(prose);
       continue;
     }
-    kept.push(line);
+    kept.push(stripMarkdownImageTokens(line));
   }
   return kept.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }

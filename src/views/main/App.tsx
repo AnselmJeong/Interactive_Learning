@@ -17,8 +17,8 @@ import { NewProjectModal } from "./components/NewProjectModal";
 import { ProjectDropdown } from "./components/ProjectDropdown";
 import { DocumentDropdown } from "./components/DocumentDropdown";
 import { BookMetadataModal } from "./components/BookMetadataModal";
-import { SourceDropdown } from "./components/SourceDropdown";
 import { ProjectTransferImportModal } from "./components/ProjectTransferImportModal";
+import { DocumentTransferImportModal } from "./components/DocumentTransferImportModal";
 import { SourceImportModal } from "./components/SourceImportModal";
 import { SourceDocumentTypeModal } from "./components/SourceDocumentTypeModal";
 import { AboutModal } from "./components/AboutModal";
@@ -40,7 +40,9 @@ import { playAnswerReadySound, primeAnswerReadySound } from "./notification-soun
 import { continuePrefetchStateForPreparedRoute, continueReadyFocusKeyForPreparedRoute, nextPrefetchStatusForSession } from "./prefetch-status";
 import { hasExpandedTextSelection, isReadyActionActiveElementIdle, shouldAutoFocusReadyAction } from "./focus-management";
 import { shouldSubmitTextArea } from "./submit-shortcut";
+import { isMessageSetPreparationComplete } from "./message-set-state";
 import { sessionDeletionTransition } from "./session-deletion-transition";
+import { groupFiguresByCanonicalChunk } from "../../shared/source-figure-placement";
 import {
   additionalExplorationChoices,
   additionalExplorationContext,
@@ -800,6 +802,8 @@ export function App({ request }: { request: RpcRequest }) {
   const [context, setContext] = useState<TutorContext | null>(null);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
   const [projectTransferPreview, setProjectTransferPreview] = useState<ProjectTransferPreview | null>(null);
+  const [documentTransferPreview, setDocumentTransferPreview] = useState<DocumentTransferImportPreview | null>(null);
+  const [documentTransferError, setDocumentTransferError] = useState("");
   const [sessionExportBusyId, setSessionExportBusyId] = useState<string | null>(null);
   const [sourceNotice, setSourceNotice] = useState("");
   const [preparedImport, setPreparedImport] = useState<PreparedSourceImport | null>(null);
@@ -1218,36 +1222,59 @@ export function App({ request }: { request: RpcRequest }) {
     }
   }
 
-  async function importDocumentTransfer(project: ProjectSummary) {
+  async function importDocumentTransfer(project: ProjectSummary, selectedPath?: string) {
     setBusy(true);
     setStatus("책·논문 transfer를 확인하는 중");
-    let preview: DocumentTransferImportPreview | null = null;
+    setDocumentTransferError("");
     try {
-      const path = (await request("documents.chooseTransferFile", {})) as string;
+      const path = selectedPath || (await request("documents.chooseTransferFile", {})) as string;
       if (!path) {
         setStatus(READY_STATUS);
         return;
       }
-      preview = (await request("documents.prepareTransferImport", { path, destinationProjectId: project.id })) as DocumentTransferImportPreview;
-      if (preview.classification === "diverged" || preview.classification === "invalid") {
-        setStatus(`책·논문 가져오기 차단: ${preview.warnings[0] || "충돌하는 자료 상태가 있습니다."}`);
-        await request("documents.cancelTransferImport", { importId: preview.importId }).catch(() => undefined);
-        return;
-      }
-      const confirmed = preview.classification === "no_changes" || window.confirm(
-        `${preview.documentTitle}\n\nsource ${preview.counts.sources}개 · session ${preview.counts.sessions}개 · annotation ${preview.counts.annotations}개를 ${project.title}에 가져옵니다.`
-      );
-      if (!confirmed) {
-        await request("documents.cancelTransferImport", { importId: preview.importId });
-        setStatus(READY_STATUS);
-        return;
-      }
+      const preview = (await request("documents.prepareTransferImport", { path, destinationProjectId: project.id })) as DocumentTransferImportPreview;
+      setDocumentTransferPreview(preview);
+      setStatus("책·논문 가져오기 준비 완료");
+    } catch (error) {
+      const message = (error as Error).message;
+      setDocumentTransferPreview(null);
+      setDocumentTransferError(message);
+      setStatus(`책·논문 가져오기 실패: ${message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function cancelDocumentTransfer() {
+    const preview = documentTransferPreview;
+    setDocumentTransferPreview(null);
+    setDocumentTransferError("");
+    if (preview) await request("documents.cancelTransferImport", { importId: preview.importId }).catch(() => undefined);
+    setStatus(READY_STATUS);
+  }
+
+  async function commitDocumentTransfer() {
+    const preview = documentTransferPreview;
+    if (!preview) return;
+    const destination = activeProject?.id === preview.destinationProjectId
+      ? activeProject
+      : state.projects.find((project) => project.id === preview.destinationProjectId);
+    if (!destination) {
+      setDocumentTransferError("대상 프로젝트를 찾을 수 없습니다. 창을 닫고 다시 시도해 주세요.");
+      return;
+    }
+    setBusy(true);
+    setDocumentTransferError("");
+    setStatus("책·논문과 학습 기록을 가져오는 중");
+    try {
       const result = (await request("documents.commitTransferImport", { importId: preview.importId })) as DocumentTransferImportResult;
-      await openProject(project);
+      setDocumentTransferPreview(null);
+      await openProject(destination);
       setStatus(result.imported ? `${preview.documentTitle} 자료를 가져왔습니다.` : "이미 같은 자료 상태가 있습니다.");
     } catch (error) {
-      if (preview) await request("documents.cancelTransferImport", { importId: preview.importId }).catch(() => undefined);
-      setStatus(`책·논문 가져오기 실패: ${(error as Error).message}`);
+      const message = (error as Error).message;
+      setDocumentTransferError(message);
+      setStatus(`책·논문 가져오기 실패: ${message}`);
     } finally {
       setBusy(false);
     }
@@ -1369,6 +1396,15 @@ export function App({ request }: { request: RpcRequest }) {
         setSourceNotice("No files selected");
         return;
       }
+      const transferPaths = paths.filter((path) => path.toLowerCase().endsWith(".zip"));
+      if (transferPaths.length) {
+        if (transferPaths.length !== 1 || paths.length !== 1) {
+          setSourceNotice("Learnie 내보내기 ZIP은 한 번에 하나만 선택해 주세요.");
+          return;
+        }
+        await importDocumentTransfer(activeProject, transferPaths[0]);
+        return;
+      }
       setPendingSourcePaths(paths);
       setSourceNotice("");
     } catch (error) {
@@ -1468,7 +1504,15 @@ export function App({ request }: { request: RpcRequest }) {
         const materials = (await request("materials.list", { projectId: activeProject.id })) as MaterialSummary[];
         setState((current) => ({ ...current, materials }));
       }
-      const next = (await request("materials.prepareMessages", { materialId: material.id })) as LearningMessageSetSummary;
+      const currentSet = (messageSetsByMaterial[material.id] || [])
+        .find((item) => item.status !== "cancelled" && item.status !== "superseded") || null;
+      if (isMessageSetPreparationComplete(currentSet)) {
+        setStatus(`${currentSet!.completedMessages}개 메시지 준비 완료`);
+        return;
+      }
+      const next = currentSet
+        ? (await request("materials.resumeMessageSetGeneration", { messageSetId: currentSet.id })) as LearningMessageSetSummary
+        : (await request("materials.prepareMessages", { materialId: material.id })) as LearningMessageSetSummary;
       setMessageSetsByMaterial((current) => ({
         ...current,
         [material!.id]: [next, ...(current[material!.id] || []).filter((item) => item.id !== next.id)],
@@ -1748,13 +1792,20 @@ export function App({ request }: { request: RpcRequest }) {
 
   async function startBatchMessages(force = false) {
     if (!activeMaterial || batchActionBusy) return;
+    const currentSet = activeMessageSet;
+    if (!force && isMessageSetPreparationComplete(currentSet)) {
+      setStatus(`${currentSet!.completedMessages}개 메시지 준비 완료`);
+      return;
+    }
     setBatchActionBusy(true);
     setStatus("학습 메시지를 background에서 준비합니다");
     try {
-      const next = (await request("materials.prepareMessages", {
-        materialId: activeMaterial.id,
-        forceNewVersion: force,
-      })) as LearningMessageSetSummary;
+      const next = currentSet && !force
+        ? (await request("materials.resumeMessageSetGeneration", { messageSetId: currentSet.id })) as LearningMessageSetSummary
+        : (await request("materials.prepareMessages", {
+            materialId: activeMaterial.id,
+            forceNewVersion: force,
+          })) as LearningMessageSetSummary;
       setMessageSetsByMaterial((current) => ({
         ...current,
         [activeMaterial.id]: [next, ...(current[activeMaterial.id] || []).filter((item) => item.id !== next.id)],
@@ -1777,7 +1828,7 @@ export function App({ request }: { request: RpcRequest }) {
         ...current,
         [next.materialId]: [next, ...(current[next.materialId] || []).filter((item) => item.id !== next.id)],
       }));
-      setStatus(READY_STATUS);
+      setStatus(`${next.completedMessages}개에서 준비 중지 · 기존 메시지는 보존됩니다.`);
     } catch (error) {
       setStatus(`생성 중지 실패: ${(error as Error).message}`);
     } finally {
@@ -1813,7 +1864,7 @@ export function App({ request }: { request: RpcRequest }) {
     confirmDestructive({
       title: `"${item.title}" session을 삭제할까요?`,
       body: "이 session의 대화 기록과 진행 상태가 삭제됩니다.",
-      detail: "Source와 material은 유지됩니다. 삭제 후 남아 있는 최근 session을 열며, 없으면 새 session을 시작합니다.",
+      detail: "Source와 material은 유지됩니다. 남아 있는 session이 있으면 최근 session을 열고, 없으면 자료 미리보기로 돌아갑니다. 새 session과 메시지 준비는 자동으로 시작하지 않습니다.",
       confirmLabel: "세션 삭제",
       onConfirm: () => deleteSessionConfirmed(item),
     });
@@ -1848,10 +1899,6 @@ export function App({ request }: { request: RpcRequest }) {
       if (transition.kind === "load_previous") {
         const loaded = await loadSession(transition.sessionId);
         if (!loaded) return;
-      } else if (transition.kind === "start_new") {
-        setSessionStartBusy(true);
-        const started = await beginSession(item.materialId, "new");
-        if (!started) return;
       }
       setStatus(READY_STATUS);
     } catch (error) {
@@ -2144,6 +2191,7 @@ export function App({ request }: { request: RpcRequest }) {
       ? `${preparedMessages}/${totalPreparedMessages} 메시지 (${preparationPercent}%)`
       : `${preparedMessages}개 메시지`
     : "준비 전";
+  const preparationComplete = isMessageSetPreparationComplete(activeMessageSet);
   const activeModule = context?.moduleOutline.find((item) => item.status === "in_progress");
   const activeModuleTitle = activeModule ? displayModuleTitle(activeModule) : "";
   const buddyModuleTitle = activeModuleTitle || selectedModuleTitle;
@@ -2261,14 +2309,10 @@ export function App({ request }: { request: RpcRequest }) {
     const refs = new Map<string, SourceRef>();
     for (const ref of context?.sourceRefs || []) refs.set(ref.chunkId, ref);
     if (artifacts) {
-      const figuresByChunk = new Map<string, MaterialArtifacts["figures"]>();
-      for (const figure of artifacts.figures || []) {
-        for (const chunkId of figure.sourceChunkIds) {
-          const group = figuresByChunk.get(chunkId) || [];
-          group.push(figure);
-          figuresByChunk.set(chunkId, group);
-        }
-      }
+      const figuresByChunk = groupFiguresByCanonicalChunk(
+        artifacts.figures || [],
+        artifacts.sourceChunks.map((chunk) => chunk.id)
+      );
       for (const chunk of artifacts.sourceChunks) {
         const meta = artifacts.sourceIndex[chunk.id];
         refs.set(chunk.id, {
@@ -2455,9 +2499,9 @@ export function App({ request }: { request: RpcRequest }) {
   const batchGenerating = activeMessageSet?.status === "generating" || activeMessageSet?.status === "queued" || activeMessageSet?.status === "interrupted";
   const learningModelReady = Boolean(providerStatus?.hasApiKey && providerStatus.selectedModel);
   const batchButtonLabel = batchGenerating
-    ? `준비 중 ${activeMessageSet?.completedMessages || 0}/${activeMessageSet?.totalMessages || "?"}`
-    : activeMessageSet?.status === "ready"
-      ? `${activeMessageSet.completedMessages}개 준비됨`
+    ? `준비 중지 · ${activeMessageSet?.completedMessages || 0}/${activeMessageSet?.totalMessages || "?"}`
+    : preparationComplete || activeMessageSet?.status === "ready"
+      ? `${activeMessageSet?.completedMessages || 0}개 준비 완료`
       : activeMessageSet?.status === "paused" || activeMessageSet?.status === "partial"
         ? activeMessageSet.completedMessages > 0
           ? `${activeMessageSet.completedMessages}개 준비됨 · 이어서 만들기`
@@ -2468,10 +2512,13 @@ export function App({ request }: { request: RpcRequest }) {
       activeMaterial.status !== "ready" ||
       batchActionBusy ||
       (!batchGenerating && !learningModelReady) ||
+      preparationComplete ||
       activeMessageSet?.status === "ready"
   );
   const batchButtonTitle = batchGenerating
     ? "현재 준비 작업을 일시 중지합니다. 다음 실행에서도 자동 재개하지 않습니다."
+    : preparationComplete || activeMessageSet?.status === "ready"
+    ? `${activeMessageSet?.completedMessages || 0}개 메시지 준비가 완료되었습니다.`
     : !learningModelReady
     ? "Settings에서 learning model과 API key를 먼저 설정하세요."
     : activeMessageSet?.status === "partial" || activeMessageSet?.status === "paused"
@@ -2514,6 +2561,9 @@ export function App({ request }: { request: RpcRequest }) {
       setWorkspaceRoute("learning");
     }
   }, [selectedDocumentId, state.sources]);
+  const sidebarSources = selectedDocumentId
+    ? state.sources.filter((source) => source.documentId === selectedDocumentId)
+    : state.sources;
 
   return (
     <div className={shellClassName} style={shellStyle}>
@@ -2564,18 +2614,6 @@ export function App({ request }: { request: RpcRequest }) {
               />
             )}
           </section>
-          {workspaceRoute === "learning" ? (
-            <section className="pane-section learning-source-picker">
-              <div className="section-heading"><h2>Source</h2></div>
-              <SourceDropdown
-                sources={selectedDocumentId ? state.sources.filter((source) => source.documentId === selectedDocumentId) : []}
-                activeSourceId={activeSourceId || null}
-                busy={busy}
-                onSelect={(source) => void learnFromSource(source.id)}
-              />
-            </section>
-          ) : null}
-
           <nav className="workspace-navigation" aria-label="Workspace">
             <p>Workspace</p>
             <button type="button" className={workspaceRoute === "library" ? "active" : ""} onClick={() => setWorkspaceRoute("library")}>
@@ -2592,16 +2630,17 @@ export function App({ request }: { request: RpcRequest }) {
             </button>
           </nav>
 
-          <section className="pane-section sources-section legacy-source-section" aria-hidden="true">
+          {workspaceRoute === "learning" ? (
+          <section className="pane-section sources-section workspace-source-section" aria-labelledby="workspace-sources-title">
             <div className="section-heading">
-              <h2>Sources</h2>
-              <button className="icon-button ghost" onClick={chooseAndImportSources} disabled={!activeProject || busy} title="소스 추가">
+              <h2 id="workspace-sources-title">Sources <span>{sidebarSources.length}</span></h2>
+              <button className="icon-button ghost workspace-source-add" onClick={chooseAndImportSources} disabled={!activeProject || busy} title="소스 추가" aria-label="소스 추가">
                 <Upload size={16} />
               </button>
             </div>
             {sourceNotice ? <p className="source-notice">{sourceNotice}</p> : null}
-            <div className="list source-list-fill">
-              {state.sources.map((source, sourceIndex) => {
+            <div className="list source-list-fill" role="list" aria-label="선택한 책의 Sources">
+              {sidebarSources.map((source, sourceIndex) => {
                 const isActive = activeSourceId === source.id;
                 const sourceName = displayableSourceName(source);
                 const learningStatusLabel = sourceLearningStatusLabel(source.learningStatus);
@@ -2611,8 +2650,9 @@ export function App({ request }: { request: RpcRequest }) {
                   ? (messageSetsByMaterial[sourceMaterial.id] || []).find((item) => item.status !== "cancelled" && item.status !== "superseded") || null
                   : null;
                 const sourcePreparing = sourceMessageSet?.status === "generating" || sourceMessageSet?.status === "queued" || sourceMessageSet?.status === "interrupted";
-                const sourcePreparationTitle = sourceMessageSet?.status === "ready"
-                  ? `${sourceName}: ${sourceMessageSet.completedMessages}개 메시지 준비됨`
+                const sourcePreparationComplete = isMessageSetPreparationComplete(sourceMessageSet);
+                const sourcePreparationTitle = sourcePreparationComplete || sourceMessageSet?.status === "ready"
+                  ? `${sourceName}: ${sourceMessageSet?.completedMessages || 0}개 메시지 준비 완료`
                   : sourcePreparing
                     ? `${sourceName}: 준비 중 ${sourceMessageSet?.completedMessages || 0}/${sourceMessageSet?.totalMessages || "?"}`
                     : `${sourceName} 학습 메시지를 background에서 준비`;
@@ -2621,6 +2661,7 @@ export function App({ request }: { request: RpcRequest }) {
                     key={source.id}
                     className={`list-item source-learn-row ${isActive ? "active" : ""} ${editingSourceId === source.id ? "editing" : ""}`}
                     title={editingSourceId === source.id ? undefined : sourceTitle}
+                    role="listitem"
                   >
                     {editingSourceId === source.id ? (
                       <form className="source-title-edit" onSubmit={(event) => { event.preventDefault(); void saveSourceTitle(source); }}>
@@ -2656,18 +2697,23 @@ export function App({ request }: { request: RpcRequest }) {
                           aria-label={sourceTitle}
                         >
                           <span className="source-row-index">{sourceIndex + 1}</span>
-                          <span className={`source-status-dot ${source.learningStatus}`} aria-hidden="true" />
-                          <span className="source-row-title">{sourceName}</span>
+                          <span className="source-row-copy">
+                            <span className="source-row-title">{sourceName}</span>
+                            <small className={`source-status-text ${source.learningStatus}`}>
+                              <span className={`source-status-dot ${source.learningStatus}`} aria-hidden="true" />
+                              {learningStatusLabel}
+                            </small>
+                          </span>
                         </button>
                         <button
                           type="button"
-                          className={`source-prepare-button ${sourceMessageSet?.status || "idle"}`}
+                          className={`source-prepare-button ${sourcePreparationComplete ? "complete" : sourceMessageSet?.status || "idle"}`}
                           onClick={() => void prepareSourceInBackground(source)}
-                          disabled={!activeProject || batchActionBusy || !learningModelReady}
+                          disabled={!activeProject || batchActionBusy || !learningModelReady || sourcePreparationComplete || sourceMessageSet?.status === "ready"}
                           title={sourcePreparationTitle}
                           aria-label={sourcePreparationTitle}
                         >
-                          {sourcePreparing ? <Loader2 size={13} className="spin" /> : sourceMessageSet?.status === "ready" ? <Check size={13} /> : <Sparkles size={13} />}
+                          {sourcePreparing ? <Loader2 size={13} className="spin" /> : sourcePreparationComplete || sourceMessageSet?.status === "ready" ? <Check size={13} /> : <Sparkles size={13} />}
                         </button>
                         <button
                           type="button"
@@ -2694,11 +2740,12 @@ export function App({ request }: { request: RpcRequest }) {
                   </div>
                 );
               })}
-              {!state.sources.length ? (
-                <p className="muted-copy">{activeProject ? "아직 가져온 소스가 없습니다. + 버튼으로 소스를 추가하세요." : "프로젝트를 열면 소스를 추가할 수 있습니다."}</p>
+              {!sidebarSources.length ? (
+                <p className="workspace-source-empty">{activeProject ? "선택한 책에 아직 Source가 없습니다." : "프로젝트를 열면 Source가 표시됩니다."}</p>
               ) : null}
             </div>
           </section>
+          ) : null}
 
           <div className="sidebar-footer">
             <button className="wide-button settings-button" onClick={() => setSettingsOpen(true)}>
@@ -2859,15 +2906,19 @@ export function App({ request }: { request: RpcRequest }) {
                 </button>
               </div>
               <button
-                className={`wide-button topbar-button batch-button ${batchGenerating ? "generating" : activeMessageSet?.status || "idle"}`}
+                className={`wide-button topbar-button batch-button ${batchGenerating ? "generating" : preparationComplete ? "complete" : activeMessageSet?.status || "idle"}`}
                 onClick={() => void (batchGenerating ? cancelBatchMessages() : startBatchMessages())}
                 disabled={batchButtonDisabled}
                 title={batchButtonTitle}
               >
-                {batchActionBusy || batchGenerating ? <Loader2 size={16} className="spin" /> : <MessageSquare size={16} />}
+                {batchActionBusy || batchGenerating
+                  ? <Loader2 size={16} className="spin" />
+                  : preparationComplete || activeMessageSet?.status === "ready"
+                    ? <Check size={16} />
+                    : <MessageSquare size={16} />}
                 {batchButtonLabel}
               </button>
-              {!session ? (
+              {!session && (resumableSession || state.sessions.length === 0) ? (
                 <button className="wide-button topbar-button primary" onClick={() => void startOrContinueSession()} disabled={busy || sessionStartBusy}>
                   <MessageSquare size={16} /> {resumableSession ? "학습 이어가기" : "학습시작"}
                 </button>
@@ -3113,6 +3164,16 @@ export function App({ request }: { request: RpcRequest }) {
                 </section>
               ) : (
                 <section className="inspector-section inspector-tab-panel" id="inspector-sessions-panel" role="tabpanel">
+                  {state.sessions.length > 0 ? (
+                    <button
+                      className="wide-button inspector-new-session-button"
+                      onClick={() => void startSession("new")}
+                      disabled={busy || sessionStartBusy}
+                      title="기존 세션과 대화는 아래 목록에 그대로 보존됩니다."
+                    >
+                      <MessageSquare size={15} /> 새 세션 시작
+                    </button>
+                  ) : null}
                   <p className="inspector-count">{state.sessions.length} session{state.sessions.length === 1 ? "" : "s"}</p>
                   <div className="session-list">
                     {state.sessions.length ? (
@@ -3227,6 +3288,15 @@ export function App({ request }: { request: RpcRequest }) {
           busy={busy}
           onCancel={() => void cancelProjectTransfer()}
           onConfirm={() => void commitProjectTransfer()}
+        />
+      ) : null}
+      {documentTransferPreview || documentTransferError ? (
+        <DocumentTransferImportModal
+          preview={documentTransferPreview}
+          error={documentTransferError}
+          busy={busy}
+          onCancel={() => void cancelDocumentTransfer()}
+          onConfirm={() => void commitDocumentTransfer()}
         />
       ) : null}
       {preparedImport ? (

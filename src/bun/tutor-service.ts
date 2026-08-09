@@ -14,6 +14,8 @@ import type { CourseModule, LectureModulePlan, MaterialArtifacts, PresentationMo
 import type { LearningMessageBatchStatus, LearningMessageSetStatus, LearningMessageSetSummary, SessionSnapshot, SessionSummary, SourceRef, TutorContentBlock, TutorContext, TutorIntent, TutorMessage, TutorPrefetchStatus, TutorStateUpdate, TutorTurnOutput } from "../shared/tutor-types";
 import { normalizeLearningLevel, tutorLevelInstruction, type LearningLevel } from "../shared/learning-levels";
 import type { AiProviderId, TutorLanguage } from "../shared/settings-types";
+import { canonicalFigureChunkId } from "../shared/source-figure-placement";
+import { stripMarkdownImageTokens } from "../shared/markdown-image-text";
 
 // "start_module": open the first source chunk of a (new) module with a content summary.
 // "continue_chunk": keep the cursor on the current source chunk and continue teaching it.
@@ -3524,7 +3526,7 @@ export class TutorService {
     // The chunk the learner is on right now. Teaching stays anchored to THIS chunk so the
     // lesson walks the source one semantic chunk at a time instead of dumping the whole module.
     const focusLine = focusChunk
-      ? `Current source chunk to teach now (focus on THIS chunk, do not jump ahead): [${focusChunk.id}] ${focusChunk.text}`
+      ? `Current source chunk to teach now (focus on THIS chunk, do not jump ahead): [${focusChunk.id}] ${stripMarkdownImageTokens(focusChunk.text)}`
       : "";
     // The very first turn of a brand-new session: the big opening block should preview the WHOLE
     // source's content (so the learner knows what they will learn), not give study advice.
@@ -3598,7 +3600,7 @@ Concepts: ${concepts.map((concept) => `${concept.name}: ${concept.definition}`).
 ${courseOverviewLine}
 	${focusLine}
 	${annotationContext}
-	Surrounding source chunks (context only — teach the current chunk above): ${chunks.map((chunk) => `[${chunk.id}] ${chunk.text}`).join("\n\n")}
+	Surrounding source chunks (context only — teach the current chunk above): ${chunks.map((chunk) => `[${chunk.id}] ${stripMarkdownImageTokens(chunk.text)}`).join("\n\n")}
 Available visual ids: ${visualIds.join(", ")}
 Block schema:
 - hook: {"type":"hook","body":"short intriguing opening"}
@@ -3680,7 +3682,7 @@ Output schema: {"message":"plain text fallback summary","blocks":[/* 2-4 blocks 
     const intent = classifyIntent(payload.userText || "", payload.event);
     const isDigression = DIGRESSION_INTENTS.has(intent);
     const ready = payload.event === "user_message" && intent === "satisfied";
-    const focusLine = focusChunk ? `Current source chunk to teach now: [${focusChunk.id}] ${focusChunk.text}` : "";
+    const focusLine = focusChunk ? `Current source chunk to teach now: [${focusChunk.id}] ${stripMarkdownImageTokens(focusChunk.text)}` : "";
     const text = await client.chatText({
       temperature: 0.5,
       messages: [
@@ -3702,7 +3704,7 @@ Internal objective: ${module.learningGoal}
 Concepts: ${concepts.map((concept) => `${concept.name}: ${concept.definition}`).join("\n")}
 ${focusLine}
 ${annotationContext}
-Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${chunk.text}`).join("\n\n")}`,
+Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${stripMarkdownImageTokens(chunk.text)}`).join("\n\n")}`,
         },
         ...clampHistory(session.messages),
         {
@@ -3867,7 +3869,7 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${chunk.text}`
       requiredStartBlocks.push({
         type: "guided_reading",
         sourceRef: firstChunk?.id,
-        body: trimSentence(firstChunk?.text || lecturePlan?.guidedReading.plainParaphrase || String(fallbackMessage || module.learningGoal)),
+        body: trimSentence(stripMarkdownImageTokens(firstChunk?.text || "") || lecturePlan?.guidedReading.plainParaphrase || String(fallbackMessage || module.learningGoal)),
       });
     }
 
@@ -3920,7 +3922,7 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${chunk.text}`
 
   private ensureReflectionAiView(block: TutorContentBlock, focusChunk: SourceChunk | undefined, lecturePlan: LectureModulePlan | undefined): TutorContentBlock {
     if (block.type !== "reflection" || block.aiView?.trim()) return block;
-    const basis = lecturePlan?.guidedReading.plainParaphrase || focusChunk?.text || "";
+    const basis = lecturePlan?.guidedReading.plainParaphrase || stripMarkdownImageTokens(focusChunk?.text || "");
     const view = trimSentence(
       basis
         ? `저라면 이 질문을 이렇게 보겠습니다. ${basis.replace(/\s+/g, " ")}`
@@ -3931,7 +3933,7 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${chunk.text}`
   }
 
   private moduleContentSummary(module: CourseModule, focusChunk: SourceChunk | undefined, lecturePlan: LectureModulePlan | undefined) {
-    const basis = lecturePlan?.guidedReading.plainParaphrase || focusChunk?.text || module.learningGoal || module.title;
+    const basis = lecturePlan?.guidedReading.plainParaphrase || stripMarkdownImageTokens(focusChunk?.text || "") || module.learningGoal || module.title;
     return stripTldrLead(trimSentence(basis.replace(/\s+/g, " "), 230));
   }
 
@@ -3990,9 +3992,11 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${chunk.text}`
     if (type === "source_quote") {
       const sourceRef = String(raw.sourceRef || "");
       if (!allowedRefs.has(sourceRef)) return null;
+      const quote = safeQuote(stripMarkdownImageTokens(String(raw.quote || "")), 25);
+      if (!quote) return null;
       return {
         type,
-        quote: safeQuote(String(raw.quote || ""), 25),
+        quote,
         sourceRef,
         attribution: raw.attribution ? String(raw.attribution).slice(0, 90) : undefined,
         showToLearner: showSourceQuote,
@@ -4036,22 +4040,23 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${chunk.text}`
   }
 
   private scrubBlock(block: TutorContentBlock): TutorContentBlock {
-    if (block.type === "bullets") return { ...block, items: block.items.map((item) => this.scrubExamLanguage(item)) };
-    if (block.type === "flow") return { ...block, steps: block.steps.map((step) => this.scrubExamLanguage(step)) };
+    const clean = (text: string) => this.scrubExamLanguage(stripMarkdownImageTokens(text));
+    if (block.type === "bullets") return { ...block, items: block.items.map(clean).filter(Boolean) };
+    if (block.type === "flow") return { ...block, steps: block.steps.map(clean).filter(Boolean) };
     if (block.type === "compare_table") {
       return {
         ...block,
-        rows: block.rows.map((row) => Object.fromEntries(block.columns.map((column) => [column, this.scrubExamLanguage(row[column] || "")]))),
+        rows: block.rows.map((row) => Object.fromEntries(block.columns.map((column) => [column, clean(row[column] || "")]))),
       };
     }
-    if (block.type === "source_quote") return block;
+    if (block.type === "source_quote") return { ...block, quote: stripMarkdownImageTokens(block.quote) };
     if (block.type === "misconception") {
-      return { ...block, body: this.scrubExamLanguage(block.body), repair: this.scrubExamLanguage(block.repair) };
+      return { ...block, body: clean(block.body), repair: clean(block.repair) };
     }
     if (block.type === "reflection") {
-      return { ...block, body: this.scrubExamLanguage(block.body), aiView: block.aiView ? this.scrubExamLanguage(block.aiView) : undefined };
+      return { ...block, body: clean(block.body), aiView: block.aiView ? clean(block.aiView) : undefined };
     }
-    return { ...block, body: this.scrubExamLanguage(block.body) };
+    return { ...block, body: clean(block.body) };
   }
 
   private sanitizeState(
@@ -4223,12 +4228,13 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${chunk.text}`
 
   private sourceRef(artifacts: MaterialArtifacts, chunk: SourceChunk): SourceRef {
     const meta = artifacts.sourceIndex[chunk.id];
+    const validChunkIds = new Set(artifacts.sourceChunks.map((item) => item.id));
     return {
       chunkId: chunk.id,
       title: meta?.title || chunk.headingPath.join(" > ") || "Source",
       locator: meta?.locator || chunk.locator,
       text: chunk.text,
-      figures: artifacts.figures.filter((figure) => figure.sourceChunkIds.includes(chunk.id)),
+      figures: artifacts.figures.filter((figure) => canonicalFigureChunkId(figure, validChunkIds) === chunk.id),
     };
   }
 

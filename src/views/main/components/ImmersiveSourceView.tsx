@@ -12,6 +12,7 @@ import { shouldSubmitTextArea } from "../submit-shortcut";
 import { AnnotationInlineScope } from "./AnnotationInlineScope";
 import { MarkdownContent } from "./MarkdownContent";
 import { SourceFigureCard } from "./SourceFigureCard";
+import { groupFiguresByCanonicalChunk } from "../../../shared/source-figure-placement";
 import { QuestionWebSources } from "./QuestionWebSources";
 import { HighlightStylePicker } from "./HighlightStylePicker";
 import { HighlightRemoveMenu, type HighlightMenuTarget } from "./HighlightRemoveMenu";
@@ -233,16 +234,10 @@ export function ImmersiveSourceView({
     return groups;
   }, [annotations]);
   const displayFiguresByChunk = useMemo(() => {
-    const chunkIds = new Set(artifacts.sourceChunks.map((chunk) => chunk.id));
-    const groups = new Map<string, typeof artifacts.figures>();
-    for (const figure of artifacts.figures || []) {
-      const firstChunkId = figure.sourceChunkIds.find((chunkId) => chunkIds.has(chunkId)) || artifacts.sourceChunks[0]?.id;
-      if (!firstChunkId) continue;
-      const group = groups.get(firstChunkId) || [];
-      group.push(figure);
-      groups.set(firstChunkId, group);
-    }
-    return groups;
+    return groupFiguresByCanonicalChunk(
+      artifacts.figures || [],
+      artifacts.sourceChunks.map((chunk) => chunk.id)
+    );
   }, [artifacts.figures, artifacts.sourceChunks]);
   const noteCount = annotations.filter((annotation) => annotation.kind === "note").length;
   const highlightCount = annotations.filter((annotation) => annotation.kind === "highlight").length;
