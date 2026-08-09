@@ -233,10 +233,10 @@ export function ImmersiveSourceView({
     return groups;
   }, [annotations]);
   const displayFiguresByChunk = useMemo(() => {
-    const chunkOrder = new Map(artifacts.sourceChunks.map((chunk, index) => [chunk.id, index]));
+    const chunkIds = new Set(artifacts.sourceChunks.map((chunk) => chunk.id));
     const groups = new Map<string, typeof artifacts.figures>();
     for (const figure of artifacts.figures || []) {
-      const firstChunkId = [...figure.sourceChunkIds].sort((a, b) => (chunkOrder.get(a) ?? 0) - (chunkOrder.get(b) ?? 0))[0] || artifacts.sourceChunks[0]?.id;
+      const firstChunkId = figure.sourceChunkIds.find((chunkId) => chunkIds.has(chunkId)) || artifacts.sourceChunks[0]?.id;
       if (!firstChunkId) continue;
       const group = groups.get(firstChunkId) || [];
       group.push(figure);

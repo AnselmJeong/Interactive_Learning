@@ -41,6 +41,7 @@ type DocumentRow = {
 type SourceRow = {
   id: string;
   project_id: string;
+  document_id: string | null;
   title: string;
   source_type: SourceType;
   document_type: DocumentType;
@@ -107,6 +108,7 @@ function toSource(row: SourceRow): SourceSummary {
   return {
     id: row.id,
     projectId: row.project_id,
+    documentId: row.document_id,
     title: row.title,
     sourceType: row.source_type,
     documentType: row.document_type,
@@ -271,7 +273,7 @@ export class DocumentService {
     this.get(projectId, documentId);
     return getDb()
       .query<SourceRow, [string]>(`
-        SELECT id, project_id, title, source_type, document_type, original_file_name,
+        SELECT id, project_id, document_id, title, source_type, document_type, original_file_name,
                quality_status, created_at, updated_at
         FROM project_sources
         WHERE document_id = ?

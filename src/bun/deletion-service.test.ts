@@ -37,6 +37,21 @@ function insertMaterial(projectId: string, materialId = "material-1") {
   return materialId;
 }
 
+function insertMessageSet(materialId: string, messageSetId = "message-set-1") {
+  const now = Date.now();
+  getDb()
+    .query(
+      `INSERT INTO learning_message_sets
+       (id, material_id, status, provider, model, tutor_language, learning_level, material_fingerprint,
+        annotation_snapshot_hash, annotation_snapshot_json, prompt_version, generation_context_hash,
+        total_messages, completed_messages, next_route_index, created_at, updated_at)
+       VALUES (?, ?, 'ready', 'openai', 'test-model', 'ko', 'medium', 'material-hash',
+               'annotation-hash', '[]', 'tutor-default-continue-test', 'context-hash', 9, 9, 9, ?, ?)`
+    )
+    .run(messageSetId, materialId, now, now);
+  return messageSetId;
+}
+
 describe("deletion services", () => {
   test("project deletion removes the project row, dependent rows, and project folder", async () => {
     const service = new ProjectService();
@@ -94,6 +109,7 @@ describe("deletion services", () => {
     const project = await new ProjectService().create({ title: "Session Delete" });
     const materialId = insertMaterial(project.id);
     const sessionId = "session-to-delete";
+    const messageSetId = insertMessageSet(materialId);
     const now = Date.now();
     const snapshotDir = join(project.rootPath, project.id, "sessions", sessionId);
 
@@ -101,10 +117,10 @@ describe("deletion services", () => {
       .query(
         `INSERT INTO learning_sessions
          (id, project_id, material_id, title, status, current_module_id, completed_module_ids_json,
-          current_chunk_id, covered_chunk_ids_json, created_at, updated_at)
-         VALUES (?, ?, ?, 'Session', 'active', 'module-1', '[]', 'chunk-1', '[]', ?, ?)`
+          current_chunk_id, covered_chunk_ids_json, message_set_id, created_at, updated_at)
+         VALUES (?, ?, ?, 'Session', 'active', 'module-1', '[]', 'chunk-1', '[]', ?, ?, ?)`
       )
-      .run(sessionId, project.id, materialId, now, now);
+      .run(sessionId, project.id, materialId, messageSetId, now, now);
     getDb()
       .query(
         `INSERT INTO learning_messages
@@ -120,6 +136,40 @@ describe("deletion services", () => {
     expect(deleted).toBe(true);
     expect(rowCount("learning_sessions", `id = '${sessionId}'`)).toBe(0);
     expect(rowCount("learning_messages", `session_id = '${sessionId}'`)).toBe(0);
+    expect(getDb().query<{ status: string }, [string]>("SELECT status FROM learning_message_sets WHERE id = ?").get(messageSetId)?.status).toBe("superseded");
     expect(existsSync(snapshotDir)).toBe(false);
+  });
+
+  test("session deletion keeps a prepared set while another session still references it", async () => {
+    const project = await new ProjectService().create({ title: "Shared Session Delete" });
+    const materialId = insertMaterial(project.id);
+    const messageSetId = insertMessageSet(materialId);
+    const now = Date.now();
+    for (const sessionId of ["session-old", "session-current"]) {
+      getDb()
+        .query(
+          `INSERT INTO learning_sessions
+           (id, project_id, material_id, title, status, current_module_id, completed_module_ids_json,
+            current_chunk_id, covered_chunk_ids_json, message_set_id, created_at, updated_at)
+           VALUES (?, ?, ?, 'Session', 'active', 'module-1', '[]', 'chunk-1', '[]', ?, ?, ?)`
+        )
+        .run(sessionId, project.id, materialId, messageSetId, now, now);
+    }
+
+    const deleted = await new TutorService().deleteSession("session-current");
+
+    expect(deleted).toBe(true);
+    expect(rowCount("learning_sessions", `message_set_id = '${messageSetId}'`)).toBe(1);
+    expect(getDb().query<{ status: string }, [string]>("SELECT status FROM learning_message_sets WHERE id = ?").get(messageSetId)?.status).toBe("ready");
+  });
+
+  test("message-set status retires an obsolete prepared version left by an earlier app build", async () => {
+    const project = await new ProjectService().create({ title: "Obsolete Prepared Set" });
+    const materialId = insertMaterial(project.id);
+    const messageSetId = insertMessageSet(materialId);
+
+    const sets = await new TutorService().messageSetStatus(materialId);
+
+    expect(sets.find((set) => set.id === messageSetId)?.status).toBe("superseded");
   });
 });

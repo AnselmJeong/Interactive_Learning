@@ -34,7 +34,8 @@ const VALID_INTENTS: TutorIntent[] = ["start", "answer", "question", "off_topic"
 const DIGRESSION_INTENTS = new Set<TutorIntent>(["question", "off_topic", "deeper", "meta_complaint"]);
 const MAX_HISTORY_TURNS = 8;
 const MAX_HISTORY_CHARS = 1200;
-const PREFETCH_PROMPT_VERSION = "tutor-default-continue-v3-learning-level";
+const MANAGED_MESSAGE_SET_PROMPT_PREFIX = "tutor-default-continue-";
+const PREFETCH_PROMPT_VERSION = "tutor-default-continue-v4-sequential-source-context";
 const MESSAGE_BATCH_PROMPT_VERSION = PREFETCH_PROMPT_VERSION;
 const PREFETCH_TTL_MS = 20 * 60 * 1000;
 const PREFETCH_PROVIDER_TIMEOUT_MS = 120 * 1000;
@@ -679,8 +680,29 @@ function uniqueStrings(values: string[]) {
 }
 
 function retrievalTokens(text: string) {
+  const searchable = text
+    .replace(/!\[([^\]]*)]\([^)]+\)/g, "$1")
+    .replace(/(?:https?|file):\/\/\S+/gi, " ");
   const stop = new Set(["그리고", "그러나", "합니다", "있는", "없는", "것이다", "것은", "에서", "으로", "에게", "the", "and", "that", "with"]);
-  return Array.from(new Set((text.match(/[가-힣A-Za-z0-9]{2,}/g) || []).map((item) => item.toLowerCase()).filter((item) => !stop.has(item)))).slice(0, 60);
+  return Array.from(new Set((searchable.match(/[가-힣A-Za-z0-9]{2,}/g) || []).map((item) => item.toLowerCase()).filter((item) => !stop.has(item)))).slice(0, 60);
+}
+
+export function sequentialTutorContext(chunks: SourceChunk[], focusChunkId: string | undefined, limit = 3) {
+  if (!focusChunkId || limit <= 0) return [];
+  const focusIndex = chunks.findIndex((chunk) => chunk.id === focusChunkId);
+  if (focusIndex < 0) return [];
+  const previous = chunks.slice(Math.max(0, focusIndex - Math.max(0, limit - 1)), focusIndex).reverse();
+  return [chunks[focusIndex]!, ...previous].slice(0, limit);
+}
+
+function figureNumbers(text: string) {
+  return Array.from(text.matchAll(/(?:figure|fig\.?|그림)\s*(\d+(?:\.\d+)?)/gi), (match) => match[1]!);
+}
+
+export function outOfFocusFigureNumbers(output: Partial<TutorTurnOutput>, focusChunk: SourceChunk | undefined) {
+  const allowed = new Set(figureNumbers(focusChunk?.text || ""));
+  const rendered = [String(output.message || ""), JSON.stringify(output.blocks || [])].join("\n");
+  return uniqueStrings(figureNumbers(rendered).filter((figureNumber) => !allowed.has(figureNumber)));
 }
 
 function hasHangulFinalConsonant(text: string) {
@@ -822,6 +844,30 @@ export class TutorService {
   }
 
   async messageSetStatus(materialId: string): Promise<LearningMessageSetSummary[]> {
+    const obsolete = getDb()
+      .query<LearningMessageSetRow, [string, string, string]>(
+        `SELECT * FROM learning_message_sets
+         WHERE material_id = ? AND prompt_version LIKE ? AND prompt_version != ?
+           AND status NOT IN ('cancelled', 'superseded')`
+      )
+      .all(materialId, `${MANAGED_MESSAGE_SET_PROMPT_PREFIX}%`, MESSAGE_BATCH_PROMPT_VERSION);
+    for (const row of obsolete) {
+      const retired = getDb()
+        .query(
+          `UPDATE learning_message_sets
+           SET status = 'superseded', generation_owner_id = NULL, lease_expires_at = NULL,
+               error = '학습 경로가 갱신되어 이 prepared version을 종료했습니다.', updated_at = ?
+           WHERE id = ? AND status NOT IN ('cancelled', 'superseded')`
+        )
+        .run(Date.now(), row.id).changes > 0;
+      if (!retired) continue;
+      this.pausedMessageSets.add(row.id);
+      this.recordMessageSetEvent(row.id, "superseded", "prompt_version_changed", "materials.messageSetStatus", {
+        previousPromptVersion: row.prompt_version,
+        currentPromptVersion: MESSAGE_BATCH_PROMPT_VERSION,
+      });
+      this.emitMessageSet(row.id);
+    }
     return getDb()
       .query<LearningMessageSetRow, [string]>(
         "SELECT * FROM learning_message_sets WHERE material_id = ? ORDER BY updated_at DESC, created_at DESC"
@@ -1381,7 +1427,28 @@ export class TutorService {
 
   private async ensureSessionMessageSet(sessionId: string) {
     const row = this.getSessionRow(sessionId);
-    if (row.message_set_id) return this.messageSetSummary(this.getMessageSetRow(row.message_set_id));
+    if (row.message_set_id) {
+      const bound = this.getMessageSetRow(row.message_set_id);
+      if (
+        bound.prompt_version === MESSAGE_BATCH_PROMPT_VERSION ||
+        !bound.prompt_version.startsWith(MANAGED_MESSAGE_SET_PROMPT_PREFIX)
+      ) return this.messageSetSummary(bound);
+
+      const replacement = await this.prepareMessages(row.material_id, false, false);
+      getDb().transaction(() => {
+        const current = this.getSessionRow(sessionId);
+        if (current.message_set_id !== bound.id) return;
+        getDb().query("UPDATE learning_sessions SET message_set_id = ?, model = ?, updated_at = ? WHERE id = ?")
+          .run(replacement.id, replacement.model, Date.now(), sessionId);
+        this.recordMessageSetEvent(bound.id, "session_rebound", "prompt_version_changed", "tutor.ensureSessionMessageSet", {
+          sessionId,
+          replacementMessageSetId: replacement.id,
+          previousPromptVersion: bound.prompt_version,
+          currentPromptVersion: MESSAGE_BATCH_PROMPT_VERSION,
+        });
+      })();
+      return replacement;
+    }
     const set = await this.prepareMessages(row.material_id, false, false);
     getDb().query("UPDATE learning_sessions SET message_set_id = ?, model = ?, updated_at = ? WHERE id = ?")
       .run(set.id, set.model, Date.now(), sessionId);
@@ -1432,7 +1499,34 @@ export class TutorService {
   private async deleteSessionUnlocked(sessionId: string) {
     const row = this.getSessionRow(sessionId);
     this.markPrefetchesStale(sessionId);
-    const deleted = getDb().query("DELETE FROM learning_sessions WHERE id = ?").run(sessionId).changes > 0;
+    let retiredMessageSetId: string | null = null;
+    const deleted = getDb().transaction(() => {
+      const didDelete = getDb().query("DELETE FROM learning_sessions WHERE id = ?").run(sessionId).changes > 0;
+      if (!didDelete || !row.message_set_id) return didDelete;
+
+      const remainingReferences = getDb()
+        .query<{ count: number }, [string]>("SELECT COUNT(*) AS count FROM learning_sessions WHERE message_set_id = ?")
+        .get(row.message_set_id)?.count || 0;
+      if (remainingReferences > 0) return didDelete;
+
+      const retired = getDb()
+        .query(
+          `UPDATE learning_message_sets
+           SET status = 'superseded', generation_owner_id = NULL, lease_expires_at = NULL,
+               error = '마지막으로 연결된 session이 삭제되어 이 prepared version을 종료했습니다.', updated_at = ?
+           WHERE id = ? AND status NOT IN ('cancelled', 'superseded')`
+        )
+        .run(Date.now(), row.message_set_id).changes > 0;
+      if (retired) {
+        retiredMessageSetId = row.message_set_id;
+        this.recordMessageSetEvent(row.message_set_id, "superseded", "last_session_deleted", "sessions.delete", { sessionId });
+      }
+      return didDelete;
+    }).immediate();
+    if (retiredMessageSetId) {
+      this.pausedMessageSets.add(retiredMessageSetId);
+      this.emitMessageSet(retiredMessageSetId);
+    }
     if (deleted) {
       await deleteSessionSnapshot(this.projectRoot(row.project_id), row.project_id, sessionId);
     }
@@ -2033,7 +2127,12 @@ export class TutorService {
     let connectionFailed = false;
     for (let attempt = 0; attempt < 2 && !output && !connectionFailed; attempt += 1) {
       try {
-        output = await this.aiTutorOutput(artifacts, currentModule, focusChunk, session, payload, attempt);
+        const candidate = await this.aiTutorOutput(artifacts, currentModule, focusChunk, session, payload, attempt);
+        const unsupportedFigures = isProgressTurnEvent(payload.event) ? outOfFocusFigureNumbers(candidate, focusChunk) : [];
+        if (unsupportedFigures.length) {
+          throw new Error(`Tutor jumped to figure ${unsupportedFigures.join(", ")} outside the current source chunk`);
+        }
+        output = candidate;
       } catch (error) {
         lastAiError = error;
         connectionFailed = isProviderConnectionError(error);
@@ -2046,7 +2145,12 @@ export class TutorService {
     }
     if (!output && !connectionFailed) {
       try {
-        output = await this.aiTutorTextRepairOutput(artifacts, currentModule, focusChunk, session, payload);
+        const candidate = await this.aiTutorTextRepairOutput(artifacts, currentModule, focusChunk, session, payload);
+        const unsupportedFigures = isProgressTurnEvent(payload.event) ? outOfFocusFigureNumbers(candidate, focusChunk) : [];
+        if (unsupportedFigures.length) {
+          throw new Error(`Tutor repair jumped to figure ${unsupportedFigures.join(", ")} outside the current source chunk`);
+        }
+        output = candidate;
       } catch (error) {
         lastAiError = error;
         connectionFailed = isProviderConnectionError(error);
@@ -3398,7 +3502,7 @@ export class TutorService {
     const runtime = await this.tutorProviderRuntime(session);
     const { settings, client } = runtime;
     const languageInstruction = tutorLanguageInstruction(settings.tutorLanguage);
-    const chunks = this.contextualChunks(artifacts, module, payload.userText, focusChunk?.id);
+    const chunks = this.contextualChunks(artifacts, module, payload.userText, focusChunk?.id, 6, isProgressTurnEvent(payload.event));
     const concepts = artifacts.conceptMap.filter((concept) => module.conceptIds.includes(concept.id));
     const originalTerms = originalTermCandidates(focusChunk ? [focusChunk, ...chunks] : chunks);
     const originalTermLine = originalTerms.length
@@ -3480,6 +3584,7 @@ Return 2-4 content blocks. Do not return paragraph-only output unless the learne
 Never simulate a flow, bullet list, or table inside paragraph or guided_reading text. If you are tempted to write "A | B | C", "1. A 2. B", or "- A - B", stop and emit either a flow, bullets, or compare_table block.
 Reflection blocks should not trap the learner before progress can continue. Whenever you emit a reflection block, include aiView: your own concise answer or interpretive stance, grounded in the current source, so the learner can reveal it without typing a reply.
 	You teach the source ONE SOURCE CHUNK AT A TIME, in order. Teach only the current chunk below this turn; do not summarize or race ahead to later chunks. The learner steps to the next chunk by choosing the progression option.
+	On a start/continue/next/return progression turn, never mention a numbered figure unless that exact figure number appears in the current source chunk. A figure found only in surrounding context belongs to another point in the reading and must not be taught yet.
 	If the learner asks a detour question, answer it fully while preserving the current source chunk as the lesson anchor. When returning from a detour, continue from the next active chunk; do not replay the pre-detour explanation.
 	When starting a new module (or the very first chunk), open with a hook block that naturally summarizes the module's actual content without formulaic labels such as "핵심은", "요약하면", or "TLDR". It must NOT give study advice or talk about how to read. Then provide guided_reading before any reflective question. When simply continuing to the next chunk of the same module, open with a one-line bridge and a guided_reading of the new chunk — do not repeat a hook every time. When continuing the same chunk, do not replay the same explanation; teach the still-undiscussed details, examples, mechanism, contrast, or implication inside the current chunk. Do not open by showing a raw source sentence unless the learner explicitly asks for the exact wording.
 	Always provide exactly 3 choices that work as complete learner replies or exploration paths, phrased as learner continuations, not exam answers or UI commands. Do NOT include progression commands such as "다음 대목으로", "다음 문단으로", "다음 모듈로", or "다음 진도로"; the app shows those separately.
@@ -3564,7 +3669,7 @@ Output schema: {"message":"plain text fallback summary","blocks":[/* 2-4 blocks 
     const runtime = await this.tutorProviderRuntime(session);
     const { settings, client } = runtime;
     const languageInstruction = tutorLanguageInstruction(settings.tutorLanguage);
-    const chunks = this.contextualChunks(artifacts, module, payload.userText, focusChunk?.id);
+    const chunks = this.contextualChunks(artifacts, module, payload.userText, focusChunk?.id, 6, isProgressTurnEvent(payload.event));
     const concepts = artifacts.conceptMap.filter((concept) => module.conceptIds.includes(concept.id));
     const originalTerms = originalTermCandidates(focusChunk ? [focusChunk, ...chunks] : chunks);
     const originalTermLine = originalTerms.length
@@ -4001,7 +4106,17 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${chunk.text}`
     return module.sourceChunkIds.map((id) => byId.get(id)).filter((chunk): chunk is SourceChunk => Boolean(chunk));
   }
 
-  private contextualChunks(artifacts: MaterialArtifacts, module: CourseModule, userText = "", focusChunkId?: string, limit = 6): SourceChunk[] {
+  private contextualChunks(
+    artifacts: MaterialArtifacts,
+    module: CourseModule,
+    userText = "",
+    focusChunkId?: string,
+    limit = 6,
+    sequentialOnly = false
+  ): SourceChunk[] {
+    if (sequentialOnly && focusChunkId) {
+      return sequentialTutorContext(artifacts.sourceChunks, focusChunkId, Math.min(limit, 3));
+    }
     const primary = this.moduleChunks(artifacts, module);
     const primaryIds = new Set(primary.map((chunk) => chunk.id));
     const concepts = artifacts.conceptMap.filter((concept) => module.conceptIds.includes(concept.id));

@@ -3,7 +3,16 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { closeDbForTests, getDb } from "./project-db";
-import { SessionMutationQueue, prefetchConsumeWaitMs, repairedCurrentChunkId, repairedModuleCurrentChunkId, tutorLanguageInstruction } from "./tutor-service";
+import type { SourceChunk } from "../shared/artifact-types";
+import {
+  outOfFocusFigureNumbers,
+  SessionMutationQueue,
+  prefetchConsumeWaitMs,
+  repairedCurrentChunkId,
+  repairedModuleCurrentChunkId,
+  sequentialTutorContext,
+  tutorLanguageInstruction,
+} from "./tutor-service";
 import { TutorService } from "./tutor-service";
 
 describe("prefetch consume wait policy", () => {
@@ -58,6 +67,33 @@ describe("tutor language instruction", () => {
     expect(instruction).toContain("Keep JSON keys");
     expect(instruction).toContain("source_quote.quote");
     expect(instruction).toContain("original spelling in parentheses");
+  });
+});
+
+describe("sequential tutor grounding", () => {
+  const chunk = (id: string, text: string): SourceChunk => ({
+    id,
+    headingPath: ["Paper"],
+    locator: id,
+    kind: "body",
+    text,
+    confidence: 1,
+  });
+  const chunks = [
+    chunk("chunk-001", "Opening image and quotation."),
+    chunk("chunk-002", "Cajal compares neurons to butterflies of the soul."),
+    chunk("chunk-003", "The introduction begins with neurons and synapses."),
+    chunk("chunk-050", "Figure 2.7 shows Hodgkin-Huxley gating variables."),
+  ];
+
+  test("gives a progression turn only the focus chunk and preceding local context", () => {
+    expect(sequentialTutorContext(chunks, "chunk-002").map((item) => item.id)).toEqual(["chunk-002", "chunk-001"]);
+    expect(sequentialTutorContext(chunks, "chunk-002").map((item) => item.id)).not.toContain("chunk-050");
+  });
+
+  test("rejects a numbered figure that is absent from the current chunk", () => {
+    expect(outOfFocusFigureNumbers({ message: "이제 Figure 2.7을 보겠습니다." }, chunks[1])).toEqual(["2.7"]);
+    expect(outOfFocusFigureNumbers({ message: "Figure 2.7의 변수를 봅니다." }, chunks[3])).toEqual([]);
   });
 });
 

@@ -180,6 +180,21 @@ export type SourceRemovalImpact = {
   impactToken: string;
 };
 
+export type DocumentRemovalImpact = {
+  projectId: string;
+  documentId: string;
+  documentTitle: string;
+  documentType: DocumentType;
+  sources: number;
+  exclusiveMaterials: number;
+  sharedMaterials: number;
+  sessions: number;
+  messages: number;
+  preparedMessages: number;
+  annotations: number;
+  impactToken: string;
+};
+
 export type AnnotationReadableExport = {
   zipPath: string;
   fileName: string;
@@ -277,6 +292,8 @@ export type AppRPC = {
       "documents.refreshProjectMetadata": { params: { projectId: string }; response: DocumentSummary[] };
       "documents.searchMetadata": { params: { projectId: string; documentId: string; input: BookMetadataSearchInput }; response: BookMetadataCandidate[] };
       "documents.applyMetadata": { params: { projectId: string; documentId: string; metadata: BookMetadataCandidate }; response: DocumentSummary };
+      "documents.previewRemoval": { params: { projectId: string; documentId: string }; response: DocumentRemovalImpact };
+      "documents.remove": { params: { projectId: string; documentId: string; impactToken: string }; response: { removed: boolean; documentId: string } };
       "documents.previewSourceRemoval": { params: { projectId: string; documentId: string; sourceId: string }; response: SourceRemovalImpact };
       "documents.removeSource": { params: { projectId: string; documentId: string; sourceId: string; impactToken: string }; response: { removed: boolean; documentId: string } };
       "documents.previewTransfer": { params: { projectId: string; documentId: string }; response: DocumentTransferPreview };

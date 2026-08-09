@@ -5407,9 +5407,12 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
 .document-tile:hover,
 .document-tile:focus-within,
 .document-tile.selected { background: var(--surface-soft); }
-.document-metadata-action { position: absolute; top: 14px; right: 14px; display: grid; width: 32px; height: 32px; place-items: center; border: 1px solid transparent; border-radius: 50%; background: transparent; color: var(--muted); cursor: pointer; }
+.document-tile-actions { position: absolute; top: 14px; right: 14px; display: flex; flex-direction: column; gap: 4px; }
+.document-tile-action { display: grid; width: 32px; height: 32px; place-items: center; border: 1px solid transparent; border-radius: 50%; background: transparent; color: var(--muted); cursor: pointer; }
 .document-metadata-action:hover,
 .document-metadata-action:focus-visible { border-color: color-mix(in srgb, var(--accent) 38%, transparent); background: var(--panel); color: var(--accent); }
+.document-delete-action:hover,
+.document-delete-action:focus-visible { border-color: color-mix(in srgb, var(--danger) 38%, transparent); background: color-mix(in srgb, var(--danger) 7%, var(--panel)); color: var(--danger); }
 .book-cover { height: 132px; display: grid; place-items: center; overflow: hidden; padding: 12px; color: #f5efe4; box-shadow: 0 11px 22px rgba(25,20,13,.16); }
 .book-cover.ink { background: #181715; }
 .book-cover.forest { background: #26483b; }
@@ -5420,6 +5423,7 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
 .book-cover:empty { background: color-mix(in srgb, var(--line) 58%, var(--surface-soft)); box-shadow: none; }
 .document-copy { min-width: 0; display: flex; flex-direction: column; gap: 8px; }
 .document-copy strong { font: 700 20px/1.18 var(--editorial-serif); }
+.document-kind-line { color: var(--accent); font-size: 11px; font-weight: 800; letter-spacing: .025em; }
 .document-subtitle { display: -webkit-box; overflow: hidden; color: var(--ink); font: 500 13px/1.4 var(--sans); -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
 .document-copy small { color: var(--muted); font-size: 12px; line-height: 1.45; }
 .document-copy b { color: var(--muted); font: 600 11px ui-monospace, monospace; }

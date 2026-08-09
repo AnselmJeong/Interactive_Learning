@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import { BarChart3, BookOpen, Check, Download, Highlighter, Info, LibraryBig, Loader2, LocateFixed, MessageSquare, Moon, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Pencil, Play, Send, Settings, Sparkles, Sun, Trash2, Upload, X } from "lucide-react";
-import type { AnnotationReadableExport, BookMetadataCandidate, BookMetadataSearchInput, DocumentSummary, MaterialSummary, PreparedSourceImport, ProjectProgressSnapshot, ProjectSummary, SourceRemovalImpact, SourceSummary } from "../../shared/rpc-types";
+import type { AnnotationReadableExport, BookMetadataCandidate, BookMetadataSearchInput, DocumentRemovalImpact, DocumentSummary, MaterialSummary, PreparedSourceImport, ProjectProgressSnapshot, ProjectSummary, SourceRemovalImpact, SourceSummary } from "../../shared/rpc-types";
 import type { ProjectTransferExport, ProjectTransferPreview, SessionReadableExport } from "../../shared/project-transfer-types";
 import type { DocumentTransferExport, DocumentTransferImportPreview, DocumentTransferImportResult } from "../../shared/document-transfer-types";
 import type { AppSettings, AiProviderStatus, ChatSubmitShortcut, ProviderModel } from "../../shared/settings-types";
@@ -40,6 +40,7 @@ import { playAnswerReadySound, primeAnswerReadySound } from "./notification-soun
 import { continuePrefetchStateForPreparedRoute, continueReadyFocusKeyForPreparedRoute, nextPrefetchStatusForSession } from "./prefetch-status";
 import { hasExpandedTextSelection, isReadyActionActiveElementIdle, shouldAutoFocusReadyAction } from "./focus-management";
 import { shouldSubmitTextArea } from "./submit-shortcut";
+import { sessionDeletionTransition } from "./session-deletion-transition";
 import {
   additionalExplorationChoices,
   additionalExplorationContext,
@@ -1533,6 +1534,72 @@ export function App({ request }: { request: RpcRequest }) {
     setLeftPaneResizing(true);
   }
 
+  async function deleteDocument(document: DocumentSummary) {
+    if (!activeProject) return;
+    const kind = document.documentType === "book" ? "책" : "논문";
+    let impact: DocumentRemovalImpact;
+    try {
+      impact = (await request("documents.previewRemoval", {
+        projectId: activeProject.id,
+        documentId: document.id,
+      })) as DocumentRemovalImpact;
+    } catch (error) {
+      setStatus(`${kind} 삭제 영향 확인 실패: ${(error as Error).message}`);
+      return;
+    }
+    if (impact.sharedMaterials > 0) {
+      setStatus(`다른 책·논문의 Source도 사용하는 학습 자료 ${impact.sharedMaterials}개가 있어 이 ${kind}을 삭제할 수 없습니다.`);
+      return;
+    }
+    confirmDestructive({
+      title: `“${document.title}” ${kind}을 삭제할까요?`,
+      body: `이 ${kind}에 포함된 Source ${impact.sources}개와 학습 자료 ${impact.exclusiveMaterials}개가 함께 삭제됩니다.`,
+      detail: `session ${impact.sessions}개, message ${impact.messages}개, 준비 메시지 ${impact.preparedMessages}개, annotation ${impact.annotations}개도 삭제됩니다. 이 작업은 되돌릴 수 없습니다.`,
+      confirmLabel: `${kind}과 모든 Source 삭제`,
+      onConfirm: () => deleteDocumentConfirmed(document, impact),
+    });
+  }
+
+  async function deleteDocumentConfirmed(document: DocumentSummary, impact: DocumentRemovalImpact) {
+    if (!activeProject) return;
+    const kind = document.documentType === "book" ? "책" : "논문";
+    const removedSourceIds = new Set(state.sources.filter((source) => source.documentId === document.id).map((source) => source.id));
+    const activeMaterialWasRemoved = Boolean(activeMaterial?.sourceIds.some((sourceId) => removedSourceIds.has(sourceId)));
+    setBusy(true);
+    setStatus(`${kind} 삭제 중`);
+    try {
+      await request("documents.remove", {
+        projectId: activeProject.id,
+        documentId: document.id,
+        impactToken: impact.impactToken,
+      });
+      const [, materials] = await Promise.all([
+        refreshSources(activeProject.id),
+        request("materials.list", { projectId: activeProject.id }) as Promise<MaterialSummary[]>,
+      ]);
+      const remainingMaterialIds = new Set(materials.map((material) => material.id));
+      setState((current) => ({
+        ...current,
+        materials,
+        sessions: current.sessions.filter((item) => remainingMaterialIds.has(item.materialId)),
+      }));
+      if (activeMaterialWasRemoved) {
+        setActiveMaterial(null);
+        setArtifacts(null);
+        setSession(null);
+        setContext(null);
+        setPrefetchStatus(null);
+        setSelectedModuleId(null);
+        setWorkspaceRoute("library");
+      }
+      setStatus(`“${document.title}” ${kind}과 Source ${impact.sources}개를 삭제했습니다.`);
+    } catch (error) {
+      setStatus(`${kind} 삭제 실패: ${(error as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function deleteSource(source: SourceSummary) {
     if (!activeProject || !source.documentId) return;
     const sourceName = displayableSourceName(source);
@@ -1733,8 +1800,10 @@ export function App({ request }: { request: RpcRequest }) {
       void refreshPrefetchStatus(result.session.id);
       void refreshMessageSets(result.session.materialId);
       setStatus(READY_STATUS);
+      return result;
     } catch (error) {
       setStatus((error as Error).message);
+      return null;
     } finally {
       setBusy(false);
     }
@@ -1744,25 +1813,45 @@ export function App({ request }: { request: RpcRequest }) {
     confirmDestructive({
       title: `"${item.title}" session을 삭제할까요?`,
       body: "이 session의 대화 기록과 진행 상태가 삭제됩니다.",
-      detail: "Source와 material은 유지됩니다.",
+      detail: "Source와 material은 유지됩니다. 삭제 후 남아 있는 최근 session을 열며, 없으면 새 session을 시작합니다.",
       confirmLabel: "세션 삭제",
       onConfirm: () => deleteSessionConfirmed(item),
     });
   }
 
   async function deleteSessionConfirmed(item: SessionSummary) {
+    const activeSessionIdBeforeDelete = session?.id || null;
     setBusy(true);
     setStatus("세션 삭제 중");
     try {
       const deleted = (await request("sessions.delete", { sessionId: item.id })) as boolean;
       if (!deleted) throw new Error("Session not found");
-      await Promise.all([refreshSessions(item.materialId), refreshSources(item.projectId)]);
-      if (session?.id === item.id) {
+      if (activeSessionIdBeforeDelete === item.id) {
         setSession(null);
         setContext(null);
         setSelectedModuleId(null);
         setExpandedSourceMessages(new Set());
         setPrefetchStatus(null);
+      }
+
+      const [remainingSessions] = await Promise.all([
+        refreshSessions(item.materialId),
+        refreshSources(item.projectId),
+        refreshMessageSets(item.materialId),
+      ]);
+
+      const transition = sessionDeletionTransition(
+        activeSessionIdBeforeDelete,
+        item.id,
+        remainingSessions.map((remaining) => remaining.id)
+      );
+      if (transition.kind === "load_previous") {
+        const loaded = await loadSession(transition.sessionId);
+        if (!loaded) return;
+      } else if (transition.kind === "start_new") {
+        setSessionStartBusy(true);
+        const started = await beginSession(item.materialId, "new");
+        if (!started) return;
       }
       setStatus(READY_STATUS);
     } catch (error) {
@@ -2037,9 +2126,10 @@ export function App({ request }: { request: RpcRequest }) {
   const progressText = artifacts ? `${learningProgressValue}/${totalChunks}` : "0/0";
   const progressPercent = totalChunks ? Math.round((learningProgressValue / totalChunks) * 100) : 0;
   const materialMessageSets = activeMaterial ? messageSetsByMaterial[activeMaterial.id] || [] : [];
+  const availableMessageSets = materialMessageSets.filter((item) => item.status !== "cancelled" && item.status !== "superseded");
   const resumableSession = state.sessions.find((item) => item.status === "active") || null;
-  const activeMessageSet = (session?.messageSetId ? materialMessageSets.find((item) => item.id === session.messageSetId) : null)
-    || materialMessageSets.find((item) => item.status !== "cancelled" && item.status !== "superseded")
+  const activeMessageSet = (session?.messageSetId ? availableMessageSets.find((item) => item.id === session.messageSetId) : null)
+    || availableMessageSets[0]
     || null;
   const consumedPreparedMessages = session?.messages.filter((message) => Boolean(message.originPreparedMessageId)).length || 0;
   const unreadPreparedMessages = Math.max(0, (activeMessageSet?.completedMessages || 0) - consumedPreparedMessages);
@@ -2656,6 +2746,7 @@ export function App({ request }: { request: RpcRequest }) {
             onImport={() => void chooseAndImportSources()}
             onOpenDocument={learnFromDocument}
             onFindMetadata={setMetadataDocument}
+            onDeleteDocument={(document) => void deleteDocument(document)}
           />
         ) : workspaceRoute === "annotations" ? (
           <AnnotationPage

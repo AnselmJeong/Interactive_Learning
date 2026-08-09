@@ -2,7 +2,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { getDb } from "./project-db";
 import { dataPath, materialDirAt } from "./paths";
-import { SourceService } from "./source-service";
+import { normalizeSourceFigureChunkIds, SourceService } from "./source-service";
 import { listMaterialAnnotations } from "./annotation-store";
 import type {
   Concept,
@@ -687,7 +687,7 @@ export class CourseArtifactService {
         }
       : sanitizedPlan;
     const overview = await this.loadMaterialOverview(row, sourceChunks, documentType);
-    const figures = await this.loadMaterialFigures(row);
+    const figures = await this.loadMaterialFigures(row, sourceChunks);
     const figureIndex = await this.loadMaterialFigureIndex(row, figures);
     return {
       manifest,
@@ -774,16 +774,28 @@ export class CourseArtifactService {
     return sourceChunks;
   }
 
-  private async loadMaterialFigures(row: MaterialRow) {
+  private async loadMaterialFigures(row: MaterialRow, sourceChunks: SourceChunk[]) {
     if (row.manifest_path) {
       try {
         const figures = JSON.parse(await readFile(join(dirname(row.manifest_path), "figures.json"), "utf8")) as SourceFigure[];
-        if (figures.length) return figures;
+        if (figures.length) {
+          const normalized = normalizeSourceFigureChunkIds(figures, sourceChunks);
+          if (normalized.some((figure, index) => JSON.stringify(figure.sourceChunkIds) !== JSON.stringify(figures[index]?.sourceChunkIds))) {
+            await Promise.all([
+              writeFile(join(dirname(row.manifest_path), "figures.json"), `${JSON.stringify(normalized, null, 2)}\n`, "utf8"),
+              writeFile(join(dirname(row.manifest_path), "figure_index.json"), `${JSON.stringify(buildFigureIndex(normalized), null, 2)}\n`, "utf8"),
+            ]).catch(() => undefined);
+          }
+          return normalized;
+        }
       } catch {
         // Older materials did not persist figures; fall back to the current source artifacts.
       }
     }
-    const figures = (await Promise.all(this.sourceIds(row.id).map((sourceId) => this.sources.loadFigures(sourceId)))).flat();
+    const figures = normalizeSourceFigureChunkIds(
+      (await Promise.all(this.sourceIds(row.id).map((sourceId) => this.sources.loadFigures(sourceId)))).flat(),
+      sourceChunks
+    );
     if (figures.length && row.manifest_path) {
       await writeFile(join(dirname(row.manifest_path), "figures.json"), `${JSON.stringify(figures, null, 2)}\n`, "utf8").catch(() => undefined);
       await writeFile(join(dirname(row.manifest_path), "figure_index.json"), `${JSON.stringify(buildFigureIndex(figures), null, 2)}\n`, "utf8").catch(() => undefined);

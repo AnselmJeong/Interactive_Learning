@@ -8,7 +8,7 @@ import { buildPreppySourcePack } from "./preppy-service";
 import { SettingsService } from "./settings-service";
 import { writeProjectDocumentIndex } from "./project-bundle-sync";
 import type { DocumentType, SourceChunk, SourceFigure, SourceManifest, SourceType } from "../shared/artifact-types";
-import type { PreparedSourceImport, PreparedSourceImportItem, SourceRemovalImpact, SourceSummary } from "../shared/rpc-types";
+import type { DocumentRemovalImpact, PreparedSourceImport, PreparedSourceImportItem, SourceRemovalImpact, SourceSummary } from "../shared/rpc-types";
 
 type SourceRow = {
   id: string;
@@ -33,6 +33,17 @@ type MaterialDeletionRow = {
   id: string;
   manifest_path: string | null;
   source_count: number;
+};
+
+type DocumentMaterialDeletionRow = MaterialDeletionRow & {
+  document_source_count: number;
+};
+
+type DocumentDeletionRow = {
+  id: string;
+  title: string;
+  document_type: DocumentType;
+  cover_image_path: string | null;
 };
 
 type SourceLearningStatus = SourceSummary["learningStatus"];
@@ -438,10 +449,25 @@ function figureLabel(caption: string | null | undefined) {
   return /figure\s+\d+(?:\.\d+)*/i.exec(caption || "")?.[0] || null;
 }
 
-function chunkIdsForFigure(figure: PreppyFigure, chunks: SourceChunk[]) {
+function chunkContainsFigureAsset(chunk: SourceChunk, figure: Pick<SourceFigure, "assetPath" | "assetUrl">) {
+  const rawText = chunk.text.replaceAll("\\", "/");
+  const decodedText = decodePathPart(rawText);
+  const references = [figure.assetUrl, pathToFileURL(figure.assetPath).href, figure.assetPath]
+    .filter(Boolean)
+    .flatMap((value) => {
+      const normalized = value.replaceAll("\\", "/");
+      return [normalized, decodePathPart(normalized)];
+    });
+  return references.some((reference) => rawText.includes(reference) || decodedText.includes(reference));
+}
+
+function sourceChunkIdsForFigure(figure: SourceFigure, chunks: SourceChunk[]) {
   if (!chunks.length) return [];
   const ids: string[] = [];
-  const label = normalizedNeedle(figureLabel(figure.caption));
+  const canonicalImageChunk = chunks.find((chunk) => chunkContainsFigureAsset(chunk, figure));
+  if (canonicalImageChunk) ids.push(canonicalImageChunk.id);
+
+  const label = normalizedNeedle(figureLabel(figure.caption || figure.title));
   if (label) {
     const mention = chunks.find((chunk) => chunk.kind !== "caption" && normalizedNeedle(chunk.text).includes(label));
     if (mention) ids.push(mention.id);
@@ -451,9 +477,23 @@ function chunkIdsForFigure(figure: PreppyFigure, chunks: SourceChunk[]) {
     const match = chunks.find((chunk) => normalizedNeedle(chunk.text).includes(caption));
     if (match) ids.push(match.id);
   }
-  const captionChunk = chunks.find((chunk) => chunk.kind === "caption");
-  if (captionChunk) ids.push(captionChunk.id);
+  if (!canonicalImageChunk) {
+    const validChunkIds = new Set(chunks.map((chunk) => chunk.id));
+    for (const chunkId of Array.isArray(figure.sourceChunkIds) ? figure.sourceChunkIds : []) {
+      if (validChunkIds.has(chunkId)) ids.push(chunkId);
+    }
+  }
   return [...new Set(ids.length ? ids : [chunks[0]!.id])];
+}
+
+// The first sourceChunkId is the figure's canonical reading-order position.
+// Later ids are contextual text mentions that let tutor messages show the same
+// figure while discussing it without moving the figure in the source reader.
+export function normalizeSourceFigureChunkIds(figures: SourceFigure[], chunks: SourceChunk[]) {
+  return figures.map((figure) => ({
+    ...figure,
+    sourceChunkIds: sourceChunkIdsForFigure(figure, chunks),
+  }));
 }
 
 function toSourceFigures(input: {
@@ -464,7 +504,7 @@ function toSourceFigures(input: {
   figures: PreppyFigure[];
   chunks: SourceChunk[];
 }) {
-  return input.figures
+  const figures = input.figures
     .filter((figure) => figure.id && figure.asset_path && figure.chapter_index === input.chapterIndex)
     .map((figure, index): SourceFigure => {
       const assetPath = resolve(input.importedRoot, figure.asset_path!);
@@ -484,9 +524,10 @@ function toSourceFigures(input: {
         height: typeof figure.height === "number" ? figure.height : null,
         locator,
         pageRange,
-        sourceChunkIds: chunkIdsForFigure(figure, input.chunks),
+        sourceChunkIds: [],
       };
     });
+  return normalizeSourceFigureChunkIds(figures, input.chunks);
 }
 
 function sourcePackRelativePath(row: SourceRow) {
@@ -811,19 +852,38 @@ export class SourceService {
     );
     const createdSourceIds: string[] = [];
     try {
-      for (let ordinal = 0; ordinal < textFiles.length; ordinal += 1) {
-        const copiedFile = textFiles[ordinal]!;
-        const manifestPath = relativePortable(importedRoot, copiedFile);
-        const originalPath = await sourceChildPath(originalSourcePath, manifestPath);
-        const title = preppyManifest.chapterTitleByPath.get(manifestPath) || titleForPath(copiedFile);
-        const result = await this.importTextFileFromCopiedFolder(projectId, originalPath, copiedFile, title, {
-          importedRoot, manifestPath, chapterIndex: preppyManifest.chapterIndexByPath.get(manifestPath),
-          figures: preppyFigures, documentType, documentId, sourceOrdinal: ordinal,
+      if (documentType === "article" && textFiles.length) {
+        const result = await this.importArticleFromCopiedFolder({
+          projectId,
+          documentId,
+          title: titleForPath(originalSourcePath),
+          originalSourcePath,
+          importedRoot,
+          textFiles,
+          folderDigest,
+          preppyFigures,
+          chapterIndexByPath: preppyManifest.chapterIndexByPath,
         });
         imported.push(result.source);
         if (result.created) {
           createdCount += 1;
           createdSourceIds.push(result.source.id);
+        }
+      } else if (documentType === "book") {
+        for (let ordinal = 0; ordinal < textFiles.length; ordinal += 1) {
+          const copiedFile = textFiles[ordinal]!;
+          const manifestPath = relativePortable(importedRoot, copiedFile);
+          const originalPath = await sourceChildPath(originalSourcePath, manifestPath);
+          const title = preppyManifest.chapterTitleByPath.get(manifestPath) || titleForPath(copiedFile);
+          const result = await this.importTextFileFromCopiedFolder(projectId, originalPath, copiedFile, title, {
+            importedRoot, manifestPath, chapterIndex: preppyManifest.chapterIndexByPath.get(manifestPath),
+            figures: preppyFigures, documentType, documentId, sourceOrdinal: ordinal,
+          });
+          imported.push(result.source);
+          if (result.created) {
+            createdCount += 1;
+            createdSourceIds.push(result.source.id);
+          }
         }
       }
     } catch (error) {
@@ -838,6 +898,57 @@ export class SourceService {
       await rm(folderDir, { recursive: true, force: true });
     }
     return imported;
+  }
+
+  private async importArticleFromCopiedFolder(input: {
+    projectId: string;
+    documentId: string;
+    title: string;
+    originalSourcePath: string;
+    importedRoot: string;
+    textFiles: string[];
+    folderDigest: string;
+    preppyFigures: PreppyFigure[];
+    chapterIndexByPath: Map<string, number>;
+  }) {
+    const id = crypto.randomUUID();
+    const parts = await Promise.all(input.textFiles.map(async (file) =>
+      rewriteLocalMarkdownImageLinks(file, await readFile(file, "utf8"))
+    ));
+    const mergedText = parts.filter((part) => part.trim()).join("\n\n");
+    const importedPath = join(input.importedRoot, ".learnie-article-source.md");
+    await writeFile(importedPath, `${mergedText.trim()}\n`, "utf8");
+    const chunks = normalizeMarkdownChunks(id, mergedText);
+    const figures = input.textFiles.flatMap((file) => {
+      const manifestPath = relativePortable(input.importedRoot, file);
+      return toSourceFigures({
+        sourceId: id,
+        importedRoot: input.importedRoot,
+        manifestPath,
+        chapterIndex: input.chapterIndexByPath.get(manifestPath),
+        figures: input.preppyFigures,
+        chunks,
+      });
+    });
+    const source = await this.persistSource({
+      id,
+      projectId: input.projectId,
+      title: input.title,
+      type: "markdown",
+      documentType: "article",
+      documentId: input.documentId,
+      sourceOrdinal: 0,
+      originalPath: input.originalSourcePath,
+      originalFileName: basename(input.originalSourcePath),
+      importedPath,
+      digest: input.folderDigest,
+      chunks,
+      figures,
+      extractionMethod: "preppy-article-normalizer",
+      status: chunks.length ? "good" : "poor",
+      warnings: [],
+    });
+    return { source, created: true };
   }
 
   private async removeLegacyFolderAggregate(projectId: string, originalPath: string) {
@@ -1218,6 +1329,144 @@ export class SourceService {
     return { removed: true, documentId };
   }
 
+  previewDocumentRemoval(projectId: string, documentId: string): DocumentRemovalImpact {
+    const db = getDb();
+    const document = db.query<DocumentDeletionRow, [string, string]>(
+      "SELECT id, title, document_type, cover_image_path FROM project_documents WHERE id = ? AND project_id = ?"
+    ).get(documentId, projectId);
+    if (!document) throw new Error("Document not found");
+    const sources = db.query<Pick<SourceRow, "id" | "updated_at">, [string, string]>(
+      "SELECT id, updated_at FROM project_sources WHERE project_id = ? AND document_id = ? ORDER BY id"
+    ).all(projectId, documentId);
+    const materials = db.query<DocumentMaterialDeletionRow, [string, string]>(`
+      SELECT learning_materials.id, learning_materials.manifest_path,
+        COUNT(DISTINCT all_sources.source_id) AS source_count,
+        COUNT(DISTINCT CASE WHEN all_source_rows.document_id = ? THEN all_sources.source_id END) AS document_source_count
+      FROM learning_materials
+      JOIN material_sources linked_sources ON linked_sources.material_id = learning_materials.id
+      JOIN project_sources linked_source_rows ON linked_source_rows.id = linked_sources.source_id
+      JOIN material_sources all_sources ON all_sources.material_id = learning_materials.id
+      JOIN project_sources all_source_rows ON all_source_rows.id = all_sources.source_id
+      WHERE linked_source_rows.document_id = ?
+      GROUP BY learning_materials.id, learning_materials.manifest_path
+    `).all(documentId, documentId);
+    const exclusive = materials.filter((material) => material.source_count === material.document_source_count);
+    const shared = materials.filter((material) => material.source_count > material.document_source_count);
+    let sessions = 0;
+    let messages = 0;
+    let preparedMessages = 0;
+    let annotations = 0;
+    for (const material of exclusive) {
+      sessions += db.query<{ count: number }, [string]>("SELECT COUNT(*) AS count FROM learning_sessions WHERE material_id = ?").get(material.id)?.count || 0;
+      messages += db.query<{ count: number }, [string]>(`
+        SELECT COUNT(*) AS count FROM learning_messages
+        WHERE session_id IN (SELECT id FROM learning_sessions WHERE material_id = ?)
+      `).get(material.id)?.count || 0;
+      preparedMessages += db.query<{ count: number }, [string]>(`
+        SELECT COUNT(*) AS count FROM prepared_learning_messages
+        WHERE message_set_id IN (SELECT id FROM learning_message_sets WHERE material_id = ?)
+      `).get(material.id)?.count || 0;
+      annotations += db.query<{ count: number }, [string]>("SELECT COUNT(*) AS count FROM material_annotations WHERE material_id = ?").get(material.id)?.count || 0;
+    }
+    const tokenPayload = {
+      projectId,
+      documentId,
+      documentType: document.document_type,
+      sourceVersions: sources.map((source) => `${source.id}:${source.updated_at}`),
+      materialIds: materials.map((material) => `${material.id}:${material.source_count}:${material.document_source_count}`).sort(),
+      sessions,
+      messages,
+      preparedMessages,
+      annotations,
+    };
+    return {
+      projectId,
+      documentId,
+      documentTitle: document.title,
+      documentType: document.document_type,
+      sources: sources.length,
+      exclusiveMaterials: exclusive.length,
+      sharedMaterials: shared.length,
+      sessions,
+      messages,
+      preparedMessages,
+      annotations,
+      impactToken: createHash("sha256").update(JSON.stringify(tokenPayload)).digest("hex").slice(0, 24),
+    };
+  }
+
+  async removeDocument(projectId: string, documentId: string, impactToken: string) {
+    const impact = this.previewDocumentRemoval(projectId, documentId);
+    if (impact.impactToken !== impactToken) throw new Error("Document removal impact changed. Review the updated counts and try again.");
+    if (impact.sharedMaterials > 0) throw new Error("This document belongs to a learning material that also uses a source from another book or article. Remove that material first.");
+
+    const db = getDb();
+    const document = db.query<DocumentDeletionRow, [string, string]>(
+      "SELECT id, title, document_type, cover_image_path FROM project_documents WHERE id = ? AND project_id = ?"
+    ).get(documentId, projectId);
+    if (!document) throw new Error("Document not found");
+    const sources = db.query<SourceRow, [string, string]>(
+      "SELECT * FROM project_sources WHERE project_id = ? AND document_id = ? ORDER BY id"
+    ).all(projectId, documentId);
+    const materials = db.query<DocumentMaterialDeletionRow, [string, string]>(`
+      SELECT learning_materials.id, learning_materials.manifest_path,
+        COUNT(DISTINCT all_sources.source_id) AS source_count,
+        COUNT(DISTINCT CASE WHEN all_source_rows.document_id = ? THEN all_sources.source_id END) AS document_source_count
+      FROM learning_materials
+      JOIN material_sources linked_sources ON linked_sources.material_id = learning_materials.id
+      JOIN project_sources linked_source_rows ON linked_source_rows.id = linked_sources.source_id
+      JOIN material_sources all_sources ON all_sources.material_id = learning_materials.id
+      JOIN project_sources all_source_rows ON all_source_rows.id = all_sources.source_id
+      WHERE linked_source_rows.document_id = ?
+      GROUP BY learning_materials.id, learning_materials.manifest_path
+    `).all(documentId, documentId);
+
+    const root = this.projectRoot(projectId);
+    const projectPath = join(root, projectId);
+    const pathsToMove = new Set<string>();
+    for (const material of materials) pathsToMove.add(material.manifest_path ? dirname(material.manifest_path) : join(projectPath, "materials", material.id));
+    for (const source of sources) pathsToMove.add(source.manifest_path ? dirname(source.manifest_path) : join(projectPath, "sources", source.id));
+    pathsToMove.add(join(projectPath, "documents", documentId));
+
+    const remainingSources = db.query<SourceRow, [string, string]>(
+      "SELECT * FROM project_sources WHERE project_id = ? AND COALESCE(document_id, '') != ?"
+    ).all(projectId, documentId);
+    const sourceFolders = new Set(sources.map((source) => sourceFolderDirFor(root, projectId, source.imported_file_path)).filter((path): path is string => Boolean(path)));
+    for (const sourceFolder of sourceFolders) {
+      if (remainingSources.some((source) => isInsidePath(sourceFolder, source.imported_file_path))) continue;
+      pathsToMove.add(sourceFolder);
+    }
+
+    const safePaths = [...pathsToMove]
+      .filter((path) => path !== projectPath && isInsidePath(projectPath, path))
+      .sort((a, b) => a.length - b.length)
+      .filter((path, index, paths) => !paths.slice(0, index).some((parent) => isInsidePath(parent, path)));
+    const quarantineRoot = join(projectPath, ".quarantine", `document-${documentId}-${Date.now()}`);
+    const moved: Array<{ from: string; to: string }> = [];
+    try {
+      for (const path of safePaths) {
+        if (!(await stat(path).then(() => true).catch(() => false))) continue;
+        const target = join(quarantineRoot, relative(projectPath, path));
+        await mkdir(dirname(target), { recursive: true });
+        await rename(path, target);
+        moved.push({ from: path, to: target });
+      }
+      db.transaction(() => {
+        for (const material of materials) db.query("DELETE FROM learning_materials WHERE id = ? AND project_id = ?").run(material.id, projectId);
+        db.query("DELETE FROM project_documents WHERE id = ? AND project_id = ?").run(documentId, projectId);
+      })();
+    } catch (error) {
+      for (const item of moved.reverse()) {
+        await mkdir(dirname(item.from), { recursive: true }).catch(() => undefined);
+        await rename(item.to, item.from).catch(() => undefined);
+      }
+      throw error;
+    }
+    await rm(quarantineRoot, { recursive: true, force: true }).catch(() => undefined);
+    await writeProjectDocumentIndex(projectId, root);
+    return { removed: true, documentId };
+  }
+
   async delete(projectId: string, sourceId: string) {
     const row = this.getRow(sourceId);
     if (!row.document_id) throw new Error("Source has no document context");
@@ -1243,7 +1492,14 @@ export class SourceService {
     const figuresPath = join(dirname(row.chunks_path), "source_figures.json");
     try {
       const figures = JSON.parse(await readFile(figuresPath, "utf8")) as SourceFigure[];
-      if (figures.length) return figures;
+      if (figures.length) {
+        const chunks = await this.loadChunks(sourceId);
+        const normalized = normalizeSourceFigureChunkIds(figures, chunks);
+        if (normalized.some((figure, index) => JSON.stringify(figure.sourceChunkIds) !== JSON.stringify(figures[index]?.sourceChunkIds))) {
+          await writeFile(figuresPath, `${JSON.stringify(normalized, null, 2)}\n`, "utf8").catch(() => undefined);
+        }
+        return normalized;
+      }
     } catch {
       // Older imports predate source_figures.json.
     }

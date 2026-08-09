@@ -60,9 +60,9 @@ export function SourceImportModal({
       <div className="modal source-import-modal">
         <header className="modal-header">
           <div>
-            <p className="eyebrow">Import Sources</p>
+            <p className="eyebrow">책·논문 가져오기</p>
             <h2>{prepared.sourceName}</h2>
-            <p>{isArticle ? `${prepared.itemCount} article${prepared.itemCount === 1 ? "" : "s"} prepared` : `${prepared.itemCount} markdown files prepared`}</p>
+            <p>{isArticle ? `${prepared.itemCount}개 대목을 하나의 Source로 준비했습니다.` : `${prepared.itemCount}개 Source 후보를 준비했습니다.`}</p>
           </div>
           <button className="icon-button" onClick={() => void onCancel()} disabled={busy} title="닫기">
             <X size={18} />
@@ -147,7 +147,7 @@ export function SourceImportModal({
             취소
           </button>
           <button className="wide-button primary" onClick={() => void commit()} disabled={busy || selectedCount === 0}>
-            {busy ? <Loader2 size={16} className="spin" /> : <Check size={16} />} {isArticle ? "선택 논문 가져오기" : "선택 소스 가져오기"}
+            {busy ? <Loader2 size={16} className="spin" /> : <Check size={16} />} {isArticle ? "논문 가져오기" : "선택한 Source로 책 가져오기"}
           </button>
         </footer>
       </div>

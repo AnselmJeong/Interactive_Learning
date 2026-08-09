@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ArrowRight, BookOpen, Download, Search, Upload } from "lucide-react";
+import { ArrowRight, BookOpen, Download, Search, Trash2, Upload } from "lucide-react";
 import type { DocumentProgressSnapshot, DocumentSummary, LearningActivityDay, ProjectProgressSnapshot, ProjectSummary, SourceSummary } from "../../../shared/rpc-types";
 import type { MaterialAnnotation } from "../../../shared/artifact-types";
 import type { TutorMessage } from "../../../shared/tutor-types";
@@ -16,6 +16,7 @@ type LibraryPageProps = {
   onImport: () => void;
   onOpenDocument: (documentId: string) => void;
   onFindMetadata: (document: DocumentSummary) => void;
+  onDeleteDocument: (document: DocumentSummary) => void;
 };
 
 function formatRelativeTime(timestamp: number | null) {
@@ -44,7 +45,7 @@ function withoutLeadingIndex(title: string) {
   return title.replace(/^\s*\d+[.)]?\s+/, "").trim() || title;
 }
 
-export function LibraryPage({ project, documents, sources, selectedDocumentId, progress, onImport, onOpenDocument, onFindMetadata }: LibraryPageProps) {
+export function LibraryPage({ project, documents, sources, selectedDocumentId, progress, onImport, onOpenDocument, onFindMetadata, onDeleteDocument }: LibraryPageProps) {
   const [query, setQuery] = useState("");
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const filteredDocuments = documents.filter((document) => {
@@ -85,10 +86,10 @@ export function LibraryPage({ project, documents, sources, selectedDocumentId, p
         <section className="library-collection">
           <div className="renovation-section-heading">
             <div>
-              <h3>{documents.every((document) => document.documentType === "book") ? "학습 중인 책" : "학습 중인 자료"}</h3>
+              <h3>학습 중인 책·논문</h3>
               <p>읽은 양보다 이해한 지점을 기준으로 정리합니다.</p>
             </div>
-            <button type="button" className="text-action" onClick={onImport}><Upload size={15} /> 새 소스 가져오기</button>
+            <button type="button" className="text-action" onClick={onImport}><Upload size={15} /> 새 책·논문 가져오기</button>
           </div>
           {filteredDocuments.length ? (
             <div className="document-grid">
@@ -107,20 +108,30 @@ export function LibraryPage({ project, documents, sources, selectedDocumentId, p
                       </span>
                       <span className="document-copy">
                         <strong>{title}</strong>
+                        <span className="document-kind-line">{document.documentType === "book" ? "책" : "논문"} · Source {document.sourceCount}개</span>
                         {hasBibliography && document.subtitle ? <span className="document-subtitle">{document.subtitle}</span> : null}
                         <small>{bibliographicLine || "서지 정보 없음"}</small>
                         <b>{progressValue ? `${progressValue}% learned` : document.preparation.percent >= 100 ? "학습 준비 완료" : "아직 시작하지 않음"}</b>
                       </span>
                     </button>
-                    {document.documentType === "book" ? (
+                    <div className="document-tile-actions">
+                      {document.documentType === "book" ? (
+                        <button
+                          type="button"
+                          className="document-tile-action document-metadata-action"
+                          onClick={() => onFindMetadata(document)}
+                          aria-label={`${title} 서지 정보 찾기`}
+                          title="서지 정보 찾기"
+                        ><Search size={16} aria-hidden="true" /></button>
+                      ) : null}
                       <button
                         type="button"
-                        className="document-metadata-action"
-                        onClick={() => onFindMetadata(document)}
-                        aria-label={`${title} 서지 정보 찾기`}
-                        title="서지 정보 찾기"
-                      ><Search size={16} aria-hidden="true" /></button>
-                    ) : null}
+                        className="document-tile-action document-delete-action"
+                        onClick={() => onDeleteDocument(document)}
+                        aria-label={`${title} ${document.documentType === "book" ? "책" : "논문"} 삭제`}
+                        title={`${document.documentType === "book" ? "책" : "논문"} 전체 삭제`}
+                      ><Trash2 size={16} aria-hidden="true" /></button>
+                    </div>
                   </article>
                 );
               })}
@@ -130,7 +141,7 @@ export function LibraryPage({ project, documents, sources, selectedDocumentId, p
               <BookOpen size={28} />
               <h3>{query ? "검색 결과가 없습니다" : "첫 자료를 가져오세요"}</h3>
               <p>{query ? "다른 제목이나 저자로 검색해 보세요." : "PDF, EPUB, Markdown을 가져오면 하나의 책으로 묶어 정리합니다."}</p>
-              {!query ? <button type="button" className="renovation-primary" onClick={onImport}><Upload size={16} /> 자료 가져오기</button> : null}
+              {!query ? <button type="button" className="renovation-primary" onClick={onImport}><Upload size={16} /> 책·논문 가져오기</button> : null}
             </div>
           )}
         </section>
@@ -139,7 +150,7 @@ export function LibraryPage({ project, documents, sources, selectedDocumentId, p
           <section className="library-article-overview">
             <p className="renovation-kicker">Article</p>
             <h3>{activeDocument.title}</h3>
-            <p>{activeDocument.description || activeDocument.subtitle || [activeDocument.authors.join(", "), activeDocument.journal, activeDocument.publishedDate].filter(Boolean).join(" · ") || "이 논문은 하위 source 단계 없이 바로 학습할 수 있습니다."}</p>
+            <p>{activeDocument.description || activeDocument.subtitle || [activeDocument.authors.join(", "), activeDocument.journal, activeDocument.publishedDate].filter(Boolean).join(" · ") || "이 논문은 하나의 Source로 바로 학습할 수 있습니다."}</p>
             <button type="button" className="renovation-primary" onClick={() => {
               onOpenDocument(activeDocument.id);
             }}>논문 {activeProgress ? "계속 학습하기" : "학습 시작"} <ArrowRight size={16} /></button>
