@@ -176,6 +176,8 @@ describe("annotation side-chat service", () => {
       ["assistant", "첫 답변"],
       ["user", "그렇다면 다음은?"],
     ]);
+    expect(calls[0]?.messages[0]?.content).toContain("inline math with $...$");
+    expect(calls[0]?.messages[0]?.content).toContain("Never use \\(...\\)");
   });
 
   test("saves a chat note with its text anchor and snapshot payload", async () => {

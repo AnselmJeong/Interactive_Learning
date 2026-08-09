@@ -43,7 +43,7 @@ const PREFETCH_TTL_MS = 20 * 60 * 1000;
 const PREFETCH_PROVIDER_TIMEOUT_MS = 120 * 1000;
 const PREFETCH_CONSUME_MAX_WAIT_MS = 100 * 1000;
 const MAX_ACTIVE_PREFETCH_JOBS = 2;
-const MAX_BATCH_STEPS = 160;
+export const MESSAGE_SET_GENERATION_BATCH_SIZE = 50;
 const MESSAGE_SET_LEASE_MS = 30_000;
 const MESSAGE_SET_WAIT_MS = 120_000;
 const TERM_RENDERING_RULE = [
@@ -697,6 +697,14 @@ export function sequentialTutorContext(chunks: SourceChunk[], focusChunkId: stri
   return [chunks[focusIndex]!, ...previous].slice(0, limit);
 }
 
+export function repairTutorContextChunks(
+  contextualChunks: SourceChunk[],
+  focusChunk: SourceChunk | undefined,
+  progressTurn: boolean
+) {
+  return progressTurn && focusChunk ? [focusChunk] : contextualChunks;
+}
+
 function figureNumbers(text: string) {
   return Array.from(text.matchAll(/(?:figure|fig\.?|그림)\s*(\d+(?:\.\d+)?)/gi), (match) => match[1]!);
 }
@@ -766,6 +774,17 @@ export function prefetchConsumeWaitMs(
   const elapsedMs = Math.max(0, now - prefetchCreatedAt);
   const providerRemainingMs = Math.max(0, providerTimeoutMs - elapsedMs + 1000);
   return Math.min(maxWaitMs, providerRemainingMs);
+}
+
+export function requiredTeachingTurnsForSourceChunk(chunk: SourceChunk) {
+  const length = chunk.text.replace(/\s+/g, " ").trim().length;
+  if (length <= 700) return 1;
+  if (length <= 1600) return 2;
+  return 3;
+}
+
+export function estimateInitialMessageSetSize(sourceChunks: SourceChunk[]) {
+  return sourceChunks.reduce((total, chunk) => total + requiredTeachingTurnsForSourceChunk(chunk), 1);
 }
 
 function sameStringSet(a: string[], b: string[]) {
@@ -870,6 +889,7 @@ export class TutorService {
       });
       this.emitMessageSet(row.id);
     }
+    await this.reconcileMessageSetTotals(materialId).catch(() => undefined);
     return getDb()
       .query<LearningMessageSetRow, [string]>(
         "SELECT * FROM learning_message_sets WHERE material_id = ? ORDER BY updated_at DESC, created_at DESC"
@@ -943,39 +963,29 @@ export class TutorService {
     };
   }
 
-  private estimateMessageSetSize(session: SessionSnapshot, artifacts: MaterialArtifacts) {
-    const firstChunk = this.currentChunkOf(artifacts, session);
-    const firstModule = this.ownerModuleOf(artifacts, firstChunk?.id);
-    const firstOutput = this.virtualOutputForPlan({
-      kind: "default_continue",
-      targetEvent: "start_module",
-      moduleId: firstModule.id,
-      baseCurrentChunkId: session.currentChunkId,
-      baseCoveredChunkIds: [],
-      targetChunkId: firstChunk?.id || null,
-      coveredChunkIdsAfter: [],
-      completedModuleIdsAfter: [],
-      cursorAfter: this.cursorFromSession(session),
-    });
-    const seeded = this.virtualSessionAfterOutput(session, {
-      kind: "default_continue",
-      targetEvent: "start_module",
-      moduleId: firstModule.id,
-      baseCurrentChunkId: session.currentChunkId,
-      baseCoveredChunkIds: [],
-      targetChunkId: firstChunk?.id || null,
-      coveredChunkIdsAfter: [],
-      completedModuleIdsAfter: [],
-      cursorAfter: this.cursorFromSession(session),
-    }, firstOutput);
-    return Math.min(MAX_BATCH_STEPS, 1 + this.estimateDefaultContinueSteps(seeded, artifacts));
+  private estimateMessageSetSize(artifacts: MaterialArtifacts) {
+    return estimateInitialMessageSetSize(artifacts.sourceChunks);
+  }
+
+  private async reconcileMessageSetTotals(materialId: string, artifacts?: MaterialArtifacts) {
+    const resolvedArtifacts = artifacts || await this.artifacts.getArtifacts(materialId);
+    const totalMessages = this.estimateMessageSetSize(resolvedArtifacts);
+    getDb()
+      .query(
+        `UPDATE learning_message_sets
+         SET total_messages = ?, updated_at = ?
+         WHERE material_id = ? AND total_messages != ?
+           AND status NOT IN ('ready', 'cancelled', 'superseded')`
+      )
+      .run(totalMessages, Date.now(), materialId, totalMessages);
+    return totalMessages;
   }
 
   async prepareMessages(materialId: string, forceNewVersion = false, ensureFirstMessage = false): Promise<LearningMessageSetSummary> {
-    const material = this.artifacts.getRow(materialId);
     const artifacts = await this.artifacts.getArtifacts(materialId);
     const runtime = await this.messageSetRuntime(materialId, artifacts, true);
     if (!runtime) throw new Error("Settings에서 learning model과 API key를 먼저 설정하세요.");
+    const totalMessages = await this.reconcileMessageSetTotals(materialId, artifacts);
 
     const compatible = getDb()
       .query<LearningMessageSetRow, [string, string]>(
@@ -1002,8 +1012,6 @@ export class TutorService {
 
     const id = crypto.randomUUID();
     const now = Date.now();
-    const initial = this.initialRouteSession(materialId, material.project_id, material.title, runtime.model, artifacts);
-    const totalMessages = this.estimateMessageSetSize(initial, artifacts);
     getDb()
       .query(
         `INSERT INTO learning_message_sets
@@ -1075,12 +1083,7 @@ export class TutorService {
     }
     this.recordMessageSetEvent(messageSetId, row.next_route_index > 0 ? "resumed" : "generation_started", null, "message_set_generator");
     this.emitMessageSet(messageSetId);
-    const generation = (async () => {
-      if (ensureFirstMessage && row.next_route_index === 0) {
-        await this.generateMessageSet(messageSetId, 1);
-      }
-      await this.generateMessageSet(messageSetId, MAX_BATCH_STEPS);
-    })()
+    const generation = this.generateMessageSet(messageSetId, MESSAGE_SET_GENERATION_BATCH_SIZE)
       .finally(() => {
         if (this.activeMessageSetRuns.get(messageSetId) === generation) this.activeMessageSetRuns.delete(messageSetId);
         void this.launchNextQueuedMessageSet();
@@ -1134,13 +1137,6 @@ export class TutorService {
       while (generated < routeLimit) {
         const set = this.getMessageSetRow(messageSetId);
         if (set.status !== "generating" || this.pausedMessageSets.has(messageSetId)) return;
-        if (set.next_route_index >= MAX_BATCH_STEPS) {
-          getDb().query("UPDATE learning_message_sets SET status = 'partial', error = ?, generation_owner_id = NULL, lease_expires_at = NULL, updated_at = ? WHERE id = ?")
-            .run("안전 한도까지 준비했습니다. 이어서 만들 수 있습니다.", Date.now(), messageSetId);
-          this.recordMessageSetEvent(messageSetId, "partial", "route_limit", "message_set_generator");
-          this.emitMessageSet(messageSetId);
-          return;
-        }
         const currentArtifacts = await this.artifacts.getArtifacts(set.material_id);
         const materialFingerprint = this.materialFingerprint(currentArtifacts);
         const key = await this.secrets.getApiKey(set.provider);
@@ -1251,11 +1247,20 @@ export class TutorService {
         }
       }
       const latest = this.getMessageSetRow(messageSetId);
-      if (latest.status === "generating" && latest.next_route_index >= MAX_BATCH_STEPS) {
-        getDb().query("UPDATE learning_message_sets SET status = 'partial', error = ?, updated_at = ? WHERE id = ?")
-          .run("안전 한도까지 준비했습니다. 이어서 만들 수 있습니다.", Date.now(), messageSetId);
-        this.recordMessageSetEvent(messageSetId, "partial", "route_limit", "message_set_generator");
-        this.emitMessageSet(messageSetId);
+      if (latest.status === "generating") {
+        const queued = getDb().query(
+          `UPDATE learning_message_sets
+           SET status = 'queued', error = NULL, generation_owner_id = NULL, lease_expires_at = NULL, updated_at = ?
+           WHERE id = ? AND status = 'generating' AND generation_owner_id = ?`
+        ).run(Date.now(), messageSetId, this.generationOwnerId).changes > 0;
+        if (queued) {
+          this.recordMessageSetEvent(messageSetId, "batch_completed", "batch_size_reached", "message_set_generator", {
+            batchSize: routeLimit,
+            completedMessages: latest.completed_messages,
+            totalMessages: latest.total_messages,
+          });
+          this.emitMessageSet(messageSetId);
+        }
       }
     } catch (error) {
       const row = this.getMessageSetRow(messageSetId);
@@ -1273,8 +1278,10 @@ export class TutorService {
   }
 
   async resumeMessageSetGeneration(messageSetId: string) {
-    const row = this.getMessageSetRow(messageSetId);
+    let row = this.getMessageSetRow(messageSetId);
     if (["ready", "cancelled", "superseded"].includes(row.status)) return this.messageSetSummary(row);
+    await this.reconcileMessageSetTotals(row.material_id).catch(() => undefined);
+    row = this.getMessageSetRow(messageSetId);
     this.pausedMessageSets.delete(messageSetId);
     if (row.status === "paused") {
       getDb().query("UPDATE learning_message_sets SET status = 'interrupted', updated_at = ? WHERE id = ?").run(Date.now(), messageSetId);
@@ -1306,7 +1313,7 @@ export class TutorService {
     const candidates = getDb()
       .query<{ id: string }, []>(
         `SELECT id FROM learning_message_sets
-         WHERE status IN ('interrupted', 'waiting_for_provider')
+         WHERE status IN ('queued', 'interrupted', 'waiting_for_provider')
          ORDER BY CASE WHEN EXISTS (
            SELECT 1 FROM learning_sessions session
            WHERE session.message_set_id = learning_message_sets.id AND session.status = 'active'
@@ -2380,10 +2387,7 @@ export class TutorService {
   }
 
   private requiredTeachingTurnsForChunk(chunk: SourceChunk): number {
-    const length = chunk.text.replace(/\s+/g, " ").trim().length;
-    if (length <= 700) return 1;
-    if (length <= 1600) return 2;
-    return 3;
+    return requiredTeachingTurnsForSourceChunk(chunk);
   }
 
   private currentChunkTeachingTurnCount(session: SessionSnapshot, chunkId: string, curriculum: SourceChunk[]): number {
@@ -2718,13 +2722,14 @@ export class TutorService {
   private estimateDefaultContinueSteps(session: SessionSnapshot, artifacts: MaterialArtifacts) {
     let virtualSession = { ...session, messages: [...session.messages] };
     let count = 0;
-    while (count < MAX_BATCH_STEPS) {
+    const routeSafetyBound = estimateInitialMessageSetSize(artifacts.sourceChunks);
+    while (count <= routeSafetyBound) {
       const plan = this.planDefaultContinue(virtualSession, artifacts);
       count += 1;
       virtualSession = this.virtualSessionAfterOutput(virtualSession, plan, this.virtualOutputForPlan(plan));
-      if (plan.targetEvent === "finish_prompt") break;
+      if (plan.targetEvent === "finish_prompt") return count;
     }
-    return count;
+    throw new Error("Prepared route planning did not reach the finish prompt within the source-derived route size");
   }
 
   private async generateBatchMessages(sessionId: string, runId: string) {
@@ -2735,7 +2740,7 @@ export class TutorService {
     try {
       const artifacts = await this.artifacts.getArtifacts(run.material_id);
       let virtualSession = this.snapshot(sessionId);
-      while (completedSteps < MAX_BATCH_STEPS) {
+      while (completedSteps < run.total_steps) {
         if (this.cancelledBatchRuns.has(runId)) break;
         run = getDb().query<LearningMessageBatchRunRow, [string]>("SELECT * FROM learning_message_batch_runs WHERE id = ?").get(runId);
         if (!run || run.status !== "generating") break;
@@ -3671,7 +3676,14 @@ Output schema: {"message":"plain text fallback summary","blocks":[/* 2-4 blocks 
     const runtime = await this.tutorProviderRuntime(session);
     const { settings, client } = runtime;
     const languageInstruction = tutorLanguageInstruction(settings.tutorLanguage);
-    const chunks = this.contextualChunks(artifacts, module, payload.userText, focusChunk?.id, 6, isProgressTurnEvent(payload.event));
+    // The repair pass is the final fallback after structured generation failed. For a progression
+    // turn, constrain it to the one chunk being taught so text from the preceding chunk cannot
+    // reintroduce an out-of-focus numbered figure and fail the same route repeatedly.
+    const chunks = repairTutorContextChunks(
+      this.contextualChunks(artifacts, module, payload.userText, focusChunk?.id, 6, false),
+      focusChunk,
+      isProgressTurnEvent(payload.event)
+    );
     const concepts = artifacts.conceptMap.filter((concept) => module.conceptIds.includes(concept.id));
     const originalTerms = originalTermCandidates(focusChunk ? [focusChunk, ...chunks] : chunks);
     const originalTermLine = originalTerms.length

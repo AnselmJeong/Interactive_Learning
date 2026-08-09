@@ -940,6 +940,11 @@ function normalizeWebCitationMarkers(value: string) {
     .replace(/\[\s*(s\d+)\s*\]/gi, (_, id: string) => `[${id.toUpperCase()}]`);
 }
 
+const MATH_RENDERING_RULE = [
+  "When an answer contains math, format inline math with $...$ and display math with $$...$$ so the app can render it with KaTeX.",
+  "Never use \\(...\\) or \\[...\\] as math delimiters, and never leave LaTeX commands such as \\lambda outside math delimiters.",
+].join(" ");
+
 function citedWebSourceIds(value: string) {
   return new Set(
     [...value.matchAll(/\[(S\d+)\]/gi)]
@@ -1259,6 +1264,7 @@ export class AnnotationService {
       "Answer the learner's exact question first, then connect it back to the selected text.",
       "Write in Korean unless the learner's question is clearly in another language.",
       TERM_RENDERING_RULE,
+      MATH_RENDERING_RULE,
       "Use 2-4 short paragraphs or a compact bullet list when that is clearer.",
       "Do not mention internal app terms such as module ids, chunks, annotations, or lookup.",
       "Keep the answer complete and substantive; do not stop mid-sentence.",
@@ -1331,6 +1337,7 @@ export class AnnotationService {
       "Answer the learner's exact question first and connect it back to the selected text.",
       "Write in Korean unless the learner clearly uses another language.",
       TERM_RENDERING_RULE,
+      MATH_RENDERING_RULE,
       "Use short paragraphs or a compact list when clearer. Do not expose internal app terminology.",
       "Keep the answer complete and substantive; do not stop mid-sentence.",
       referenceContext,

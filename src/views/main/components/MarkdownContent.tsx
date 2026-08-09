@@ -13,6 +13,8 @@ export function normalizeMarkdownContent(content: string): string {
     .map((segment) => {
       if (segment.startsWith("```") || segment.startsWith("`")) return segment;
       return segment
+        .replace(/\\\[([\s\S]*?)\\\]/gu, (_, formula: string) => `\n$$\n${formula.trim()}\n$$\n`)
+        .replace(/\\\(([^\n]*?)\\\)/gu, (_, formula: string) => `$${formula.trim()}$`)
         .replace(/(\*{1,3})[\u200b\u200c\u200d\ufeff]+/gu, "$1")
         .replace(/[\u200b\u200c\u200d\ufeff]+(\*{1,3})/gu, "$1")
         .replace(/\\\*\\\*\\\*/gu, "***")

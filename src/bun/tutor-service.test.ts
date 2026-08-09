@@ -5,7 +5,10 @@ import { join } from "node:path";
 import { closeDbForTests, getDb } from "./project-db";
 import type { SourceChunk } from "../shared/artifact-types";
 import {
+  estimateInitialMessageSetSize,
+  MESSAGE_SET_GENERATION_BATCH_SIZE,
   outOfFocusFigureNumbers,
+  repairTutorContextChunks,
   SessionMutationQueue,
   prefetchConsumeWaitMs,
   repairedCurrentChunkId,
@@ -22,6 +25,29 @@ describe("prefetch consume wait policy", () => {
 
   test("uses the consume cap for a fresh prefetch", () => {
     expect(prefetchConsumeWaitMs(0, 1_000, 100_000, 120_000)).toBe(100_000);
+  });
+});
+
+describe("prepared message generation sizing", () => {
+  const chunk = (id: string, length: number): SourceChunk => ({
+    id,
+    headingPath: [],
+    locator: id,
+    kind: "body",
+    text: "x".repeat(length),
+    confidence: 1,
+  });
+
+  test("uses 50 messages as a work batch without capping the full route", () => {
+    const chunks = [
+      ...Array.from({ length: 60 }, (_, index) => chunk(`short-${index}`, 700)),
+      ...Array.from({ length: 126 }, (_, index) => chunk(`medium-${index}`, 701)),
+      ...Array.from({ length: 2 }, (_, index) => chunk(`long-${index}`, 1601)),
+    ];
+
+    expect(MESSAGE_SET_GENERATION_BATCH_SIZE).toBe(50);
+    expect(estimateInitialMessageSetSize(chunks)).toBe(319);
+    expect(estimateInitialMessageSetSize(chunks)).toBeGreaterThan(chunks.length);
   });
 });
 
@@ -94,6 +120,11 @@ describe("sequential tutor grounding", () => {
   test("rejects a numbered figure that is absent from the current chunk", () => {
     expect(outOfFocusFigureNumbers({ message: "이제 Figure 2.7을 보겠습니다." }, chunks[1])).toEqual(["2.7"]);
     expect(outOfFocusFigureNumbers({ message: "Figure 2.7의 변수를 봅니다." }, chunks[3])).toEqual([]);
+  });
+
+  test("limits the final repair pass to the current chunk on a progression turn", () => {
+    expect(repairTutorContextChunks(chunks, chunks[2], true).map((item) => item.id)).toEqual(["chunk-003"]);
+    expect(repairTutorContextChunks(chunks, chunks[2], false).map((item) => item.id)).toEqual(chunks.map((item) => item.id));
   });
 });
 
@@ -366,5 +397,51 @@ describe("immutable prepared message route", () => {
     expect(internal.snapshot("session-route").messages).toEqual([]);
     expect(getDb().query<{ count: number }, []>("SELECT COUNT(*) AS count FROM learning_messages WHERE delivery_state = 'discarded'").get()?.count).toBe(1);
     expect((await internal.revealPreparedMessageUnlocked("session-route")).message).toBe("A1");
+  });
+
+  test("automatically continues with another 50-message batch after a batch checkpoint", async () => {
+    seedRoute();
+    const now = Date.now();
+    getDb().query(
+      `INSERT INTO learning_message_sets
+       (id, material_id, status, provider, model, tutor_language, learning_level, material_fingerprint,
+        annotation_snapshot_hash, prompt_version, generation_context_hash, total_messages, completed_messages,
+        next_route_index, created_at, updated_at)
+       VALUES ('set-batched', 'material-route', 'partial', 'openai', 'model', 'ko', 'medium', 'material', 'annotations',
+        'prompt', 'batched-context', 100, 0, 0, ?, ?)`
+    ).run(now, now);
+
+    const service = new TutorService();
+    const batchSizes: number[] = [];
+    const internal = service as unknown as {
+      generateMessageSet: (messageSetId: string, routeLimit: number) => Promise<void>;
+      launchMessageSetGeneration: (messageSetId: string) => Promise<void>;
+    };
+    internal.generateMessageSet = async (messageSetId, routeLimit) => {
+      batchSizes.push(routeLimit);
+      if (batchSizes.length === 1) {
+        getDb().query(
+          `UPDATE learning_message_sets
+           SET status = 'queued', completed_messages = 50, next_route_index = 50,
+               generation_owner_id = NULL, lease_expires_at = NULL, updated_at = ?
+           WHERE id = ?`
+        ).run(Date.now(), messageSetId);
+        return;
+      }
+      getDb().query(
+        `UPDATE learning_message_sets
+         SET status = 'ready', completed_messages = 100, next_route_index = 100,
+             generation_owner_id = NULL, lease_expires_at = NULL, updated_at = ?
+         WHERE id = ?`
+      ).run(Date.now(), messageSetId);
+    };
+
+    await internal.launchMessageSetGeneration("set-batched");
+    for (let attempt = 0; attempt < 20 && batchSizes.length < 2; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+
+    expect(batchSizes).toEqual([50, 50]);
+    expect(getDb().query<{ status: string }, []>("SELECT status FROM learning_message_sets WHERE id = 'set-batched'").get()?.status).toBe("ready");
   });
 });
