@@ -361,7 +361,7 @@ function TutorBlock({ block }: { block: TutorContentBlock }) {
   if (block.type === "hook") {
     return (
       <section className="tutor-block hook-block">
-        <p>{block.body}</p>
+        <MarkdownContent content={block.body} compact />
       </section>
     );
   }
@@ -372,7 +372,7 @@ function TutorBlock({ block }: { block: TutorContentBlock }) {
     if (!quote) return null;
     return (
       <section className="tutor-block source-quote-block">
-        <p>{quote}</p>
+        <MarkdownContent content={quote} compact />
         <small>{block.attribution || block.sourceRef}</small>
       </section>
     );
@@ -485,7 +485,7 @@ function TutorBlock({ block }: { block: TutorContentBlock }) {
     return (
       <section className="tutor-block misconception-block">
         <BlockTitle title={block.title || "헷갈릴 수 있는 지점"} />
-        <p>{block.body}</p>
+        <MarkdownContent content={block.body} compact />
         <div className="misconception-repair">
           <MarkdownContent content={block.repair} compact />
         </div>
@@ -495,7 +495,7 @@ function TutorBlock({ block }: { block: TutorContentBlock }) {
 
   return (
     <section className="tutor-block bridge-block">
-      <p>{block.body}</p>
+      <MarkdownContent content={block.body} compact />
     </section>
   );
 }
@@ -506,7 +506,7 @@ function ReflectionBlock({ block }: { block: Extract<TutorContentBlock, { type: 
   return (
     <section className="tutor-block reflection-block">
       <span>생각해 볼 점</span>
-      <p>{block.body}</p>
+      <MarkdownContent content={block.body} compact />
       {hasAiView ? (
         <>
           <button type="button" className="ai-view-button" aria-expanded={open} onClick={() => setOpen((value) => !value)}>

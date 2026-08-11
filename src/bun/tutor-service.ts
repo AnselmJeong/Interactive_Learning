@@ -53,6 +53,12 @@ const TERM_RENDERING_RULE = [
   "On first mention in Korean, write the Korean gloss/transliteration plus the original in parentheses whenever the original is known, e.g. 보에티우스(Boethius), 포르투나(Fortune), 알마문(al-Ma'mun), 무타질라(Mu'tazila), 이성('aql).",
   "For people, schools, movements, book titles, Arabic/Islamic terms, philosophical terms, and other identity-bearing names, keep the original form visible; if the Korean rendering would be awkward or obscure, use the original form directly.",
 ].join(" ");
+const MATH_RENDERING_RULE = [
+  "MATH RENDERING RULE:",
+  "When learner-facing text contains mathematical notation, format inline math with $...$ and display equations with $$...$$ so the app can render them with KaTeX.",
+  "Put variable names and indexed symbols inside math delimiters too: write $V_{\\mathrm{syn}}$, $I_{\\mathrm{ext},i}$, and $s_j$, never bare V_syn, I_ext_i, or sj.",
+  "Never use \\(...\\) or \\[...\\] as math delimiters, and never leave LaTeX commands outside math delimiters.",
+].join(" ");
 
 export class SessionMutationQueue {
   private readonly queues = new Map<string, Promise<void>>();
@@ -3557,6 +3563,7 @@ After that overview hook, teach the first source chunk with a guided_reading and
 ${languageInstruction}
 Invariant: assume the learner has not read the source. Teach it well enough that they feel a good teacher read it with them.
 ${TERM_RENDERING_RULE}
+${MATH_RENDERING_RULE}
 ${originalTermLine}
 
 ${levelInstruction}
@@ -3704,6 +3711,7 @@ Output schema: {"message":"plain text fallback summary","blocks":[/* 2-4 blocks 
 ${languageInstruction}
 The structured JSON call failed, so this is a repair call. Return plain tutor text only.
 ${TERM_RENDERING_RULE}
+${MATH_RENDERING_RULE}
 ${originalTermLine}
 ${levelInstruction}
 Answer the learner's actual latest turn. Do not grade, do not say to stick closer to the source, and do not repeat a canned fallback.

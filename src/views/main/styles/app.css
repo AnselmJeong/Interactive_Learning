@@ -1185,7 +1185,7 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
 }
 .reflection-block p,
 .bridge-block p,
-.misconception-block > p {
+.misconception-block > .markdown-content p {
   margin: 0;
   line-height: 1.6;
 }
@@ -1228,7 +1228,7 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   display: grid;
   gap: 8px;
 }
-.misconception-block > p {
+.misconception-block > .markdown-content p {
   color: var(--ink);
   font-size: 18px;
   line-height: 1.58;
@@ -2413,7 +2413,8 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   line-height: 1.72;
 }
 .markdown-content > :first-child { margin-top: 0; }
-.markdown-content > :last-child { margin-bottom: 0; }
+.markdown-content > :last-child,
+.markdown-content.compact > :last-child { margin-bottom: 0; }
 .markdown-content p,
 .markdown-content ul,
 .markdown-content ol,
@@ -4939,7 +4940,7 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
 :root[data-theme="dark"] .bubble .markdown-content,
 :root[data-theme="dark"] .source-row-title,
 :root[data-theme="dark"] .source-quote-block p,
-:root[data-theme="dark"] .misconception-block > p,
+:root[data-theme="dark"] .misconception-block > .markdown-content p,
 :root[data-theme="dark"] .source-figure-card figcaption p,
 :root[data-theme="dark"] .source-mark p {
   color: var(--ink);

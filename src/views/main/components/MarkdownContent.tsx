@@ -7,12 +7,33 @@ import type { PluggableList } from "unified";
 
 const remarkPlugins: PluggableList = [[remarkGfm, { singleTilde: false }], remarkMath];
 
+const PROTECTED_MARKDOWN_SEGMENT = /(```[\s\S]*?```|`[^`\n]*`|\$\$[\s\S]*?\$\$|\$(?:\\.|[^$\n])+\$)/g;
+const BARE_SUBSCRIPT_IDENTIFIER = /(^|[^A-Za-z0-9\u0370-\u03ff\\/$])((?:[A-Za-z\u0370-\u03ff]|alpha|beta|gamma|delta|theta|lambda|mu|sigma|tau|omega)(?:\\?_[A-Za-z0-9\u0370-\u03ff]+)+)(?=$|[^A-Za-z0-9\u0370-\u03ff_])/giu;
+const BARE_INDEX_SHORTHAND = /(^|[^A-Za-z0-9\u0370-\u03ff\\/$])([stwx])([ij]{1,2})(?=$|[^A-Za-z0-9\u0370-\u03ff_])/gu;
+const BARE_DESCRIPTIVE_SHORTHAND = /(^|[^A-Za-z0-9\u0370-\u03ff\\/$])([GVg])(syn|Na|K|Ca|leak)(?=$|[^A-Za-z0-9\u0370-\u03ff_])/gu;
+
+function mathSubscript(part: string) {
+  if (part.length === 1 || /^\d+$/u.test(part)) return part;
+  return `\\mathrm{${part}}`;
+}
+
+function wrapBareSubscriptIdentifiers(segment: string) {
+  return segment
+    .replace(BARE_SUBSCRIPT_IDENTIFIER, (_, prefix: string, identifier: string) => {
+      const [base = "", ...subscripts] = identifier.replace(/\\_/gu, "_").split("_");
+      const subscript = subscripts.map(mathSubscript).join(",");
+      return `${prefix}$${base}_{${subscript}}$`;
+    })
+    .replace(BARE_INDEX_SHORTHAND, (_, prefix: string, base: string, indices: string) => `${prefix}$${base}_{${indices}}$`)
+    .replace(BARE_DESCRIPTIVE_SHORTHAND, (_, prefix: string, base: string, descriptor: string) => `${prefix}$${base}_{\\mathrm{${descriptor}}}$`);
+}
+
 export function normalizeMarkdownContent(content: string): string {
   return content
-    .split(/(```[\s\S]*?```|`[^`\n]*`)/g)
+    .split(PROTECTED_MARKDOWN_SEGMENT)
     .map((segment) => {
-      if (segment.startsWith("```") || segment.startsWith("`")) return segment;
-      return segment
+      if (segment.startsWith("```") || segment.startsWith("`") || segment.startsWith("$")) return segment;
+      const normalized = segment
         .replace(/\\\[([\s\S]*?)\\\]/gu, (_, formula: string) => `\n$$\n${formula.trim()}\n$$\n`)
         .replace(/\\\(([^\n]*?)\\\)/gu, (_, formula: string) => `$${formula.trim()}$`)
         .replace(/(\*{1,3})[\u200b\u200c\u200d\ufeff]+/gu, "$1")
@@ -22,6 +43,7 @@ export function normalizeMarkdownContent(content: string): string {
         .replace(/\\(\*{2,3})(?=\S)/gu, "$1")
         .replace(/(?<=\S)\\(\*{2,3})/gu, "$1")
         .replace(/(?<=[\p{P}\p{S}])(\*{2,3})(?=[\u3131-\u318e\uac00-\ud7a3])/gu, "$1&ZeroWidthSpace;");
+      return wrapBareSubscriptIdentifiers(normalized);
     })
     .join("");
 }

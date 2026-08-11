@@ -35,4 +35,24 @@ describe("MarkdownContent normalization", () => {
     expect(normalized).toContain(`$$\nP(d)=e^{-\\lambda d}\n$$`);
     expect(normalized).toContain("`\\(x\\)`");
   });
+
+  test("renders bare scientific subscript identifiers from stored tutor messages", () => {
+    const content = "시냅스 전류는 sj와 V_syn에 의존하고, 외부 입력 I_ext_i와 가중치 wij는 Gsyn으로 조절됩니다.";
+    const normalized = normalizeMarkdownContent(content);
+    expect(normalized).toContain(String.raw`$s_{j}$`);
+    expect(normalized).toContain(String.raw`$V_{\mathrm{syn}}$`);
+    expect(normalized).toContain(String.raw`$I_{\mathrm{ext},i}$`);
+    expect(normalized).toContain(String.raw`$w_{ij}$`);
+    expect(normalized).toContain(String.raw`$G_{\mathrm{syn}}$`);
+
+    const html = renderToStaticMarkup(createElement(MarkdownContent, { content }));
+    expect(html.match(/class="katex"/g)).toHaveLength(5);
+    expect(html).toContain("syn");
+    expect(html).toContain("ext");
+  });
+
+  test("repairs escaped underscores but preserves code and existing math", () => {
+    const normalized = normalizeMarkdownContent(String.raw`V\_syn과 $I_{\mathrm{ext},i}$, 코드 \`V_syn\``);
+    expect(normalized).toBe(String.raw`$V_{\mathrm{syn}}$과 $I_{\mathrm{ext},i}$, 코드 \`V_syn\``);
+  });
 });
