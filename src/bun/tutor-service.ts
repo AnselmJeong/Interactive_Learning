@@ -715,8 +715,13 @@ function figureNumbers(text: string) {
   return Array.from(text.matchAll(/(?:figure|fig\.?|그림)\s*(\d+(?:\.\d+)?)/gi), (match) => match[1]!);
 }
 
-export function outOfFocusFigureNumbers(output: Partial<TutorTurnOutput>, focusChunk: SourceChunk | undefined) {
-  const allowed = new Set(figureNumbers(focusChunk?.text || ""));
+function figureReferenceText(chunk: SourceChunk) {
+  return [...chunk.headingPath, chunk.locator, chunk.text].filter(Boolean).join("\n");
+}
+
+export function outOfFocusFigureNumbers(output: Partial<TutorTurnOutput>, referenceChunks: SourceChunk | SourceChunk[] | undefined) {
+  const chunks = Array.isArray(referenceChunks) ? referenceChunks : referenceChunks ? [referenceChunks] : [];
+  const allowed = new Set(chunks.flatMap((chunk) => figureNumbers(figureReferenceText(chunk))));
   const rendered = [String(output.message || ""), JSON.stringify(output.blocks || [])].join("\n");
   return uniqueStrings(figureNumbers(rendered).filter((figureNumber) => !allowed.has(figureNumber)));
 }
@@ -2133,6 +2138,14 @@ export class TutorService {
     const focusChunk = this.currentChunkOf(artifacts, session);
     const currentModule = this.ownerModuleOf(artifacts, focusChunk?.id);
     const allComplete = totalChunks > 0 && covered.size >= totalChunks;
+    const focusIndex = focusChunk ? curriculum.findIndex((chunk) => chunk.id === focusChunk.id) : -1;
+    const nextChunk = focusIndex >= 0 ? curriculum[focusIndex + 1] : undefined;
+    const figureReferenceIds = new Set([
+      ...session.coveredChunkIds,
+      ...(focusChunk ? [focusChunk.id] : []),
+      ...(nextChunk ? [nextChunk.id] : []),
+    ]);
+    const figureReferenceChunks = curriculum.filter((chunk) => figureReferenceIds.has(chunk.id));
 
     // The AI turn is the real product. Retry a couple of times for transient JSON-format issues
     // (the second attempt asks harder for clean JSON). But a provider connection/timeout failure
@@ -2143,9 +2156,9 @@ export class TutorService {
     for (let attempt = 0; attempt < 2 && !output && !connectionFailed; attempt += 1) {
       try {
         const candidate = await this.aiTutorOutput(artifacts, currentModule, focusChunk, session, payload, attempt);
-        const unsupportedFigures = isProgressTurnEvent(payload.event) ? outOfFocusFigureNumbers(candidate, focusChunk) : [];
+        const unsupportedFigures = isProgressTurnEvent(payload.event) ? outOfFocusFigureNumbers(candidate, figureReferenceChunks) : [];
         if (unsupportedFigures.length) {
-          throw new Error(`Tutor jumped to figure ${unsupportedFigures.join(", ")} outside the current source chunk`);
+          throw new Error(`Tutor jumped to figure ${unsupportedFigures.join(", ")} outside the learned/current/next source range`);
         }
         output = candidate;
       } catch (error) {
@@ -2161,9 +2174,16 @@ export class TutorService {
     if (!output && !connectionFailed) {
       try {
         const candidate = await this.aiTutorTextRepairOutput(artifacts, currentModule, focusChunk, session, payload);
-        const unsupportedFigures = isProgressTurnEvent(payload.event) ? outOfFocusFigureNumbers(candidate, focusChunk) : [];
+        const unsupportedFigures = isProgressTurnEvent(payload.event) ? outOfFocusFigureNumbers(candidate, figureReferenceChunks) : [];
         if (unsupportedFigures.length) {
-          throw new Error(`Tutor repair jumped to figure ${unsupportedFigures.join(", ")} outside the current source chunk`);
+          const warning = `Tutor repair referenced figure ${unsupportedFigures.join(", ")} outside the learned/current/next source range`;
+          console.warn(`[tutor] ${warning}; accepting the final repair so generation can continue.`);
+          if (candidate.stateUpdate) {
+            candidate.stateUpdate = {
+              ...candidate.stateUpdate,
+              criticWarning: [candidate.stateUpdate.criticWarning, warning].filter(Boolean).join(" "),
+            };
+          }
         }
         output = candidate;
       } catch (error) {
@@ -3598,7 +3618,7 @@ Return 2-4 content blocks. Do not return paragraph-only output unless the learne
 Never simulate a flow, bullet list, or table inside paragraph or guided_reading text. If you are tempted to write "A | B | C", "1. A 2. B", or "- A - B", stop and emit either a flow, bullets, or compare_table block.
 Reflection blocks should not trap the learner before progress can continue. Whenever you emit a reflection block, include aiView: your own concise answer or interpretive stance, grounded in the current source, so the learner can reveal it without typing a reply.
 	You teach the source ONE SOURCE CHUNK AT A TIME, in order. Teach only the current chunk below this turn; do not summarize or race ahead to later chunks. The learner steps to the next chunk by choosing the progression option.
-	On a start/continue/next/return progression turn, never mention a numbered figure unless that exact figure number appears in the current source chunk. A figure found only in surrounding context belongs to another point in the reading and must not be taught yet.
+	On a start/continue/next/return progression turn, a numbered figure may be mentioned when it belongs to the current chunk (including its heading/locator), was already covered earlier, or is a brief transition to the immediately following chunk. Do not jump ahead to unrelated later figures.
 	If the learner asks a detour question, answer it fully while preserving the current source chunk as the lesson anchor. When returning from a detour, continue from the next active chunk; do not replay the pre-detour explanation.
 	When starting a new module (or the very first chunk), open with a hook block that naturally summarizes the module's actual content without formulaic labels such as "핵심은", "요약하면", or "TLDR". It must NOT give study advice or talk about how to read. Then provide guided_reading before any reflective question. When simply continuing to the next chunk of the same module, open with a one-line bridge and a guided_reading of the new chunk — do not repeat a hook every time. When continuing the same chunk, do not replay the same explanation; teach the still-undiscussed details, examples, mechanism, contrast, or implication inside the current chunk. Do not open by showing a raw source sentence unless the learner explicitly asks for the exact wording.
 	Always provide exactly 3 choices that work as complete learner replies or exploration paths, phrased as learner continuations, not exam answers or UI commands. Do NOT include progression commands such as "다음 대목으로", "다음 문단으로", "다음 모듈로", or "다음 진도로"; the app shows those separately.

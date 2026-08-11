@@ -122,6 +122,26 @@ describe("sequential tutor grounding", () => {
     expect(outOfFocusFigureNumbers({ message: "Figure 2.7의 변수를 봅니다." }, chunks[3])).toEqual([]);
   });
 
+  test("accepts a figure named by the current chunk heading or locator", () => {
+    const figureChunk = {
+      ...chunks[2]!,
+      headingPath: ["Paper", "Figure 2.1 Cortical microcircuit"],
+      locator: "before Section 2.2",
+      text: "Schematic of two pyramidal neurons.",
+    };
+
+    expect(outOfFocusFigureNumbers({ message: "Figure 2.1은 피라미드 뉴런의 연결을 보여줍니다." }, figureChunk)).toEqual([]);
+  });
+
+  test("allows figures from learned and immediately upcoming chunks", () => {
+    const learned = { ...chunks[0]!, text: "Figure 1.9 introduced the circuit." };
+    const current = { ...chunks[1]!, text: "The circuit is discussed here." };
+    const next = { ...chunks[2]!, headingPath: ["Paper", "Figure 2.1 Cortical microcircuit"] };
+
+    expect(outOfFocusFigureNumbers({ message: "Figure 1.9를 떠올린 뒤 Figure 2.1을 보겠습니다." }, [learned, current, next])).toEqual([]);
+    expect(outOfFocusFigureNumbers({ message: "Figure 9.9로 건너갑니다." }, [learned, current, next])).toEqual(["9.9"]);
+  });
+
   test("limits the final repair pass to the current chunk on a progression turn", () => {
     expect(repairTutorContextChunks(chunks, chunks[2], true).map((item) => item.id)).toEqual(["chunk-003"]);
     expect(repairTutorContextChunks(chunks, chunks[2], false).map((item) => item.id)).toEqual(chunks.map((item) => item.id));
