@@ -16,6 +16,7 @@ import { readZipEntries } from "./archive-reader";
 import { dataPath } from "./paths";
 import { getDb } from "./project-db";
 import { SettingsService } from "./settings-service";
+import { refreshMaterialArtifactChecksums, validateTransferredMaterialArtifacts } from "./material-artifact-validation";
 
 const TRANSFER_SCHEMA_VERSION = 2;
 const MAX_ARCHIVE_BYTES = 2_000_000_000;
@@ -375,6 +376,7 @@ export class ProjectTransferService {
       if (existsSync(projectDir)) await cp(projectDir, filesDir, { recursive: true, force: true });
       else await mkdir(filesDir, { recursive: true });
       await rewritePortableJsonFiles(filesDir, "export", projectDir);
+      await refreshMaterialArtifactChecksums(join(filesDir, "materials"));
       await writeFile(join(payload, "state.json"), `${stableStringify(state)}\n`, "utf8");
       const head = latestHead(projectId);
       const exportId = crypto.randomUUID();
@@ -428,6 +430,11 @@ export class ProjectTransferService {
     const stateBytes = files.get("project/state.json");
     if (!stateBytes) throw new Error("Project transfer state is missing");
     const state = validateState(JSON.parse(new TextDecoder().decode(stateBytes)), manifest.projectId, manifest.schemaVersion);
+    validateTransferredMaterialArtifacts(
+      files,
+      state.tables.learning_materials.map((material) => String(material.id)),
+      "project/files",
+    );
     if (sha256(stableStringify(state)) !== manifest.projectStateHash) throw new Error("Project transfer state hash does not match its manifest");
     if (manifest.schemaVersion === 1) {
       const { documents: _documents, ...legacyCounts } = tableCounts(state);
@@ -513,6 +520,7 @@ export class ProjectTransferService {
         await cp(incomingDir, finalDir, { recursive: true, force: true });
       }
       await rewritePortableJsonFiles(finalDir, "import", finalDir);
+      await refreshMaterialArtifactChecksums(join(finalDir, "materials"));
       installedFiles = true;
       getDb().transaction(() => {
         importRows(state, root, mode);

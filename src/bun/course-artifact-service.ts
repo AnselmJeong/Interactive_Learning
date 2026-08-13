@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { getDb } from "./project-db";
 import { dataPath, materialDirAt } from "./paths";
@@ -19,9 +19,22 @@ import type {
   SourceFigure,
   VisualSpec,
 } from "../shared/artifact-types";
+import {
+  LEARNING_IR_COMPILER_VERSION,
+  LEARNING_IR_PROMPT_VERSION,
+  MATERIAL_ARTIFACT_SCHEMA_VERSION,
+  type CriticReportV2,
+  type LearningDocumentType,
+  type SourceSemanticIr,
+  type SourceBrief,
+} from "../shared/learning-ir-types";
 import type { MaterialSummary } from "../shared/rpc-types";
 import { displayableCourseTitle, displayableHeadingPath, displayableModuleTitle, displayableOutlineTitle, plainDisplayText } from "../shared/display-title";
 import type { AiChatClient } from "./openai-compatible-client";
+import { compileLearningIr } from "./learning-ir-compiler";
+import { sha256 } from "./learning-ir-validator";
+import { compileSourceBrief, sourceBriefAsLegacyOverview } from "./source-brief-compiler";
+import { buildGroundedVisuals } from "./visual-grammar";
 
 type MaterialRow = {
   id: string;
@@ -58,6 +71,61 @@ type ArtifactCacheEntry = {
   updatedAt: number;
   artifacts: HeavyMaterialArtifacts;
 };
+
+type ArtifactPayloads = Record<string, unknown>;
+
+function serializedArtifact(value: unknown) {
+  return `${JSON.stringify(value, null, 2)}\n`;
+}
+
+async function publishArtifactsAtomically(dir: string, payloads: ArtifactPayloads, manifest: MaterialManifest) {
+  const stagingDir = join(dir, `.staging-${crypto.randomUUID()}`);
+  await mkdir(stagingDir, { recursive: true });
+  try {
+    const entries = Object.entries(payloads);
+    for (const [name, value] of entries) await writeFile(join(stagingDir, name), serializedArtifact(value), "utf8");
+    for (const [name] of entries) {
+      const raw = await readFile(join(stagingDir, name), "utf8");
+      const expected = manifest.files?.[name]?.sha256;
+      if (!expected || sha256(raw) !== expected) throw new Error(`Artifact checksum validation failed for ${name}`);
+      JSON.parse(raw);
+    }
+    for (const [name] of entries) await rename(join(stagingDir, name), join(dir, name));
+    const manifestStagingPath = join(stagingDir, "material_manifest.json");
+    await writeFile(manifestStagingPath, serializedArtifact(manifest), "utf8");
+    JSON.parse(await readFile(manifestStagingPath, "utf8"));
+    await rename(manifestStagingPath, join(dir, "material_manifest.json"));
+  } finally {
+    await rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+}
+
+function documentTypeForLearningIr(documentType: DocumentType, sourceCount: number): LearningDocumentType {
+  return sourceCount > 1 ? "mixed" : documentType;
+}
+
+function conceptsFromLearningIr(ir: SourceSemanticIr): Concept[] {
+  const prerequisiteByTarget = new Map<string, string[]>();
+  for (const relation of ir.relations) {
+    if (relation.type !== "prerequisite_for") continue;
+    const values = prerequisiteByTarget.get(relation.toId) || [];
+    values.push(relation.fromId);
+    prerequisiteByTarget.set(relation.toId, values);
+  }
+  return ir.concepts.map((concept) => ({
+    id: concept.id,
+    name: concept.label,
+    definition: concept.definition,
+    whyItMatters: concept.whyItMatters,
+    prerequisites: prerequisiteByTarget.get(concept.id) || [],
+    misconceptions: [],
+    sourceChunkIds: concept.sourceChunkIds,
+  }));
+}
+
+function isSourceBrief(value: unknown): value is SourceBrief {
+  return Boolean(value && typeof value === "object" && (value as SourceBrief).schemaVersion === 1 && typeof (value as SourceBrief).summary === "string");
+}
 
 function toMaterial(row: MaterialRow, sourceIds: string[]): MaterialSummary {
   return {
@@ -136,6 +204,24 @@ function signalsFromText(text: string) {
 function compactText(text: string, max = 180) {
   const normalized = text.replace(/\s+/g, " ").trim();
   return `${normalized.slice(0, max)}${normalized.length > max ? "..." : ""}`;
+}
+
+export function deterministicMaterialOverview(title: string, chunks: SourceChunk[], documentType: DocumentType): MaterialOverview {
+  const first = chunks.find((chunk) => chunk.text.trim())?.text || title;
+  const articleSentences = sentences(first).filter((sentence) => (
+    !/\d/.test(sentence)
+    && !/\b(results?|findings?|conclusions?|effect size|p\s*[<=>]|significant(?:ly)?)\b|결과|결론|효과\s*크기|유의(?:미|성)/i.test(sentence)
+  ));
+  const safeArticleText = articleSentences.slice(0, 3).join(" ") || chunks
+    .flatMap((chunk) => sentences(chunk.text))
+    .find((sentence) => !/\d/.test(sentence) && !/\b(results?|findings?|conclusions?)\b|결과|결론/i.test(sentence)) || title;
+  const paragraph = compactText(documentType === "article" ? safeArticleText : first, documentType === "article" ? 700 : 900);
+  return {
+    paragraph,
+    sourceChunkIds: chunks.slice(0, 6).map((chunk) => chunk.id),
+    generatedAt: new Date().toISOString(),
+    generatorVersion: `${documentType === "article" ? ARTICLE_OVERVIEW_GENERATOR_VERSION : MATERIAL_OVERVIEW_GENERATOR_VERSION}-degraded`,
+  };
 }
 
 export const MATERIAL_OVERVIEW_GENERATOR_VERSION = "material-overview-v2-llm-full-source";
@@ -288,12 +374,35 @@ function buildConcepts(chunks: SourceChunk[]): Concept[] {
       id: `concept-${index + 1}`,
       name,
       definition: firstSentence,
-      whyItMatters: "이 대목은 이후 질문과 설명의 근거가 되는 핵심 문맥입니다.",
+      // Legacy course grouping still needs stable placeholder IDs, but this is
+      // not a semantic concept and must never carry learner-facing importance copy.
+      whyItMatters: "",
       prerequisites: index > 0 ? [`concept-${index}`] : [],
       misconceptions: ["원문 근거 없이 일반 상식으로만 답하는 것"],
       sourceChunkIds: [chunk.id],
       visualCandidate: index === 0 ? { type: "flow", id: "visual-course-map" } : undefined,
     };
+  });
+}
+
+function sanitizeLegacyConceptMap(concepts: Concept[], chunks: SourceChunk[]) {
+  const headings = new Set(chunks.flatMap((chunk) => chunk.headingPath)
+    .map((heading) => heading.normalize("NFKC").toLocaleLowerCase().replace(/\s+/g, " ").trim()));
+  return concepts.flatMap((concept) => {
+    const name = plainDisplayText(concept.name);
+    const key = name.normalize("NFKC").toLocaleLowerCase().replace(/\s+/g, " ").trim();
+    const structural = !name
+      || headings.has(key)
+      || /^(?:figure|fig\.?|table|chapter|section)\b/i.test(name)
+      || /^!?\[[^\]]*\]\((?:file:|https?:|\.\.?\/)/i.test(concept.definition.trim());
+    if (structural) return [];
+    return [{
+      ...concept,
+      name,
+      whyItMatters: /(?:이후 질문|핵심 문맥|근거가 되는|later questions?|core context)/i.test(concept.whyItMatters)
+        ? ""
+        : concept.whyItMatters,
+    }];
   });
 }
 
@@ -448,6 +557,7 @@ export class CourseArtifactService {
   private readonly sources = new SourceService();
   private readonly artifactCache = new Map<string, ArtifactCacheEntry>();
   private readonly generationPromises = new Map<string, Promise<MaterialSummary>>();
+  private readonly backfillPromises = new Map<string, Promise<void>>();
 
   constructor(private readonly materialOverviewRuntime?: MaterialOverviewRuntimeProvider) {}
 
@@ -509,22 +619,39 @@ export class CourseArtifactService {
       const { chunks: sourceChunks } = normalizeFigureCaptionChunks(loadedSourceChunks);
       const figures = (await Promise.all(sourceIds.map((sourceId) => this.sources.loadFigures(sourceId)))).flat();
       if (!sourceChunks.length) throw new Error("No chunks were extracted for selected sources");
-      const conceptMap = buildConcepts(sourceChunks);
-      const coursePlan = buildCoursePlan(title, sourceChunks, conceptMap, sourceTitleForChunk);
-      const overview = await this.createMaterialOverview(title, sourceChunks, documentType);
-      const visuals = buildVisuals(sourceChunks, sourceTitleForChunk);
+      const legacyConceptMap = buildConcepts(sourceChunks);
+      const coursePlan = buildCoursePlan(title, sourceChunks, legacyConceptMap, sourceTitleForChunk);
+      const runtime = this.materialOverviewRuntime ? await this.materialOverviewRuntime().catch((error) => {
+        console.warn("Learning artifact generation is using the deterministic fallback", (error as Error).message);
+        return undefined;
+      }) : undefined;
+      const overview = runtime
+        ? await generateMaterialOverview(title, sourceChunks, runtime, documentType).catch((error) => {
+            console.warn("Material overview generation degraded", (error as Error).message);
+            return deterministicMaterialOverview(title, sourceChunks, documentType);
+          })
+        : deterministicMaterialOverview(title, sourceChunks, documentType);
+      const learningIr = await compileLearningIr({
+        materialId: id,
+        documentType: documentTypeForLearningIr(documentType, sourceIds.length),
+        sourceCount: sourceIds.length,
+        chunks: sourceChunks,
+        coursePlan,
+        legacyConcepts: legacyConceptMap,
+        runtime,
+        generatedAt: new Date(now).toISOString(),
+      });
+      const sourceBrief = compileSourceBrief({ ir: learningIr, title, sourceCount: sourceIds.length, chunks: sourceChunks, overview });
+      const conceptMap = conceptsFromLearningIr(learningIr);
+      const visuals = buildGroundedVisuals(learningIr, figures);
       const lecturePlan = buildLecturePlan(id, sourceChunks, sourceTitleForChunk);
       const presentationPlan = buildPresentationPlan(id, sourceChunks, sourceTitleForChunk);
-      const criticReport = buildCriticReport(id, lecturePlan, visuals);
-      const manifest: MaterialManifest = {
-        id,
-        projectId,
-        title,
-        sourceIds,
-        sourceChunkIds: sourceChunks.map((chunk) => chunk.id),
-        generatedAt: new Date(now).toISOString(),
-        generatorModel: "deterministic-mvp",
-        status: "ready",
+      const criticReport: CriticReportV2 = {
+        schemaVersion: 2,
+        materialId: id,
+        generatedAt: new Date().toISOString(),
+        quality: learningIr.quality,
+        stageTimingsMs: {},
       };
       const sourceIndex = Object.fromEntries(
         sourceChunks.map((chunk) => [
@@ -537,9 +664,47 @@ export class CourseArtifactService {
         ])
       );
       const figureIndex = buildFigureIndex(figures);
+      const payloads: ArtifactPayloads = {
+        "learning_ir.json": learningIr,
+        "source_brief.json": sourceBrief,
+        "concept_map.json": conceptMap,
+        "course_plan.json": coursePlan,
+        "material_overview.json": overview,
+        "lecture_plan.json": lecturePlan,
+        "presentation_plan.json": presentationPlan,
+        "critic_report.json": criticReport,
+        "visual_specs.json": visuals,
+        "source_index.json": sourceIndex,
+        "source_chunks.json": sourceChunks,
+        "figures.json": figures,
+        "figure_index.json": figureIndex,
+      };
+      const files = Object.fromEntries(Object.entries(payloads).map(([name, value]) => [name, {
+        path: name,
+        sha256: sha256(serializedArtifact(value)),
+        required: name === "learning_ir.json" || name === "source_brief.json" || name === "course_plan.json" || name === "source_chunks.json",
+      }]));
+      const manifest: MaterialManifest = {
+        id,
+        projectId,
+        title,
+        sourceIds,
+        sourceChunkIds: sourceChunks.map((chunk) => chunk.id),
+        generatedAt: new Date(now).toISOString(),
+        generatorModel: runtime?.model || "deterministic-fallback",
+        status: "ready",
+        artifactSchemaVersion: MATERIAL_ARTIFACT_SCHEMA_VERSION,
+        sourceFingerprint: learningIr.sourceFingerprint,
+        contentHash: learningIr.contentHash,
+        compilerVersion: LEARNING_IR_COMPILER_VERSION,
+        promptVersion: LEARNING_IR_PROMPT_VERSION,
+        files,
+      };
 
       const paths = {
         manifest: join(dir, "material_manifest.json"),
+        learningIr: join(dir, "learning_ir.json"),
+        sourceBrief: join(dir, "source_brief.json"),
         concepts: join(dir, "concept_map.json"),
         course: join(dir, "course_plan.json"),
         overview: join(dir, "material_overview.json"),
@@ -552,20 +717,7 @@ export class CourseArtifactService {
         figures: join(dir, "figures.json"),
         figureIndex: join(dir, "figure_index.json"),
       };
-      await Promise.all([
-        writeFile(paths.manifest, `${JSON.stringify(manifest, null, 2)}\n`, "utf8"),
-        writeFile(paths.concepts, `${JSON.stringify(conceptMap, null, 2)}\n`, "utf8"),
-        writeFile(paths.course, `${JSON.stringify(coursePlan, null, 2)}\n`, "utf8"),
-        writeFile(paths.overview, `${JSON.stringify(overview, null, 2)}\n`, "utf8"),
-        writeFile(paths.lecture, `${JSON.stringify(lecturePlan, null, 2)}\n`, "utf8"),
-        writeFile(paths.presentation, `${JSON.stringify(presentationPlan, null, 2)}\n`, "utf8"),
-        writeFile(paths.critic, `${JSON.stringify(criticReport, null, 2)}\n`, "utf8"),
-        writeFile(paths.visuals, `${JSON.stringify(visuals, null, 2)}\n`, "utf8"),
-        writeFile(paths.index, `${JSON.stringify(sourceIndex, null, 2)}\n`, "utf8"),
-        writeFile(paths.chunks, `${JSON.stringify(sourceChunks, null, 2)}\n`, "utf8"),
-        writeFile(paths.figures, `${JSON.stringify(figures, null, 2)}\n`, "utf8"),
-        writeFile(paths.figureIndex, `${JSON.stringify(figureIndex, null, 2)}\n`, "utf8"),
-      ]);
+      await publishArtifactsAtomically(dir, payloads, manifest);
 
       getDb()
         .query(
@@ -579,8 +731,8 @@ export class CourseArtifactService {
           paths.manifest,
           paths.concepts,
           paths.course,
-          paths.overview,
-          JSON.stringify(overview),
+          paths.sourceBrief,
+          JSON.stringify(sourceBrief),
           paths.lecture,
           paths.presentation,
           paths.critic,
@@ -650,32 +802,126 @@ export class CourseArtifactService {
     const row = this.getRow(materialId);
     const cached = this.artifactCache.get(materialId);
     const documentType = this.documentTypeForMaterial(materialId);
-    if (cached?.updatedAt === row.updated_at && (!this.materialOverviewRuntime || isCurrentMaterialOverview(cached.artifacts.overview, documentType))) {
+    if (
+      cached?.updatedAt === row.updated_at
+      && (
+        cached.artifacts.manifest.artifactSchemaVersion === MATERIAL_ARTIFACT_SCHEMA_VERSION
+        || !this.materialOverviewRuntime
+        || isCurrentMaterialOverview(cached.artifacts.overview, documentType)
+      )
+    ) {
       return { ...cached.artifacts, annotations: listMaterialAnnotations(materialId) };
     }
     const artifacts = await this.loadHeavyArtifacts(row, documentType);
     this.artifactCache.set(materialId, { updatedAt: row.updated_at, artifacts });
+    if (artifacts.manifest.artifactSchemaVersion !== MATERIAL_ARTIFACT_SCHEMA_VERSION) this.scheduleLegacyBackfill(row, artifacts);
     return { ...artifacts, annotations: listMaterialAnnotations(materialId) };
+  }
+
+  private scheduleLegacyBackfill(row: MaterialRow, artifacts: HeavyMaterialArtifacts) {
+    if (this.backfillPromises.has(row.id)) return;
+    const promise = Promise.resolve().then(async () => {
+      if (!this.canPersistLegacyBackfill(row.id)) return;
+      await this.persistLegacyBackfill(row, artifacts);
+    }).catch((error) => {
+      console.warn("Legacy learning artifact backfill was deferred", { materialId: row.id, error: (error as Error).message });
+    }).finally(() => {
+      this.backfillPromises.delete(row.id);
+    });
+    this.backfillPromises.set(row.id, promise);
+  }
+
+  private canPersistLegacyBackfill(materialId: string) {
+    const activeSession = getDb().query<{ count: number }, [string]>(
+      "SELECT COUNT(*) AS count FROM learning_sessions WHERE material_id = ? AND status = 'active'",
+    ).get(materialId)?.count || 0;
+    const activeSet = getDb().query<{ count: number }, [string]>(`
+      SELECT COUNT(*) AS count FROM learning_message_sets
+      WHERE material_id = ? AND status IN ('queued', 'generating', 'interrupted', 'waiting_for_provider', 'paused', 'partial')
+    `).get(materialId)?.count || 0;
+    return activeSession === 0 && activeSet === 0;
+  }
+
+  private async persistLegacyBackfill(row: MaterialRow, artifacts: HeavyMaterialArtifacts) {
+    if (!row.manifest_path || !artifacts.sourceSemanticIr || !artifacts.sourceBrief) return;
+    const dir = dirname(row.manifest_path);
+    const grounded = buildGroundedVisuals(artifacts.sourceSemanticIr, artifacts.figures);
+    const visuals = [...artifacts.visuals, ...grounded.filter((visual) => !artifacts.visuals.some((existing) => existing.id === visual.id))];
+    const criticReport: CriticReportV2 = {
+      schemaVersion: 2,
+      materialId: row.id,
+      generatedAt: new Date().toISOString(),
+      quality: artifacts.sourceSemanticIr.quality,
+      stageTimingsMs: {},
+    };
+    const payloads: ArtifactPayloads = {
+      "learning_ir.json": artifacts.sourceSemanticIr,
+      "source_brief.json": artifacts.sourceBrief,
+      "concept_map.json": artifacts.conceptMap,
+      "course_plan.json": artifacts.coursePlan,
+      "material_overview.json": artifacts.overview,
+      "critic_report.json": criticReport,
+      "visual_specs.json": visuals,
+      "source_index.json": artifacts.sourceIndex,
+      "source_chunks.json": artifacts.sourceChunks,
+      "figures.json": artifacts.figures,
+      "figure_index.json": artifacts.figureIndex,
+    };
+    if (artifacts.lecturePlan) payloads["lecture_plan.json"] = artifacts.lecturePlan;
+    if (artifacts.presentationPlan) payloads["presentation_plan.json"] = artifacts.presentationPlan;
+    const files = Object.fromEntries(Object.entries(payloads).map(([name, value]) => [name, {
+      path: name,
+      sha256: sha256(serializedArtifact(value)),
+      required: name === "learning_ir.json" || name === "source_brief.json" || name === "course_plan.json" || name === "source_chunks.json",
+    }]));
+    const manifest: MaterialManifest = {
+      ...artifacts.manifest,
+      artifactSchemaVersion: MATERIAL_ARTIFACT_SCHEMA_VERSION,
+      sourceFingerprint: artifacts.sourceSemanticIr.sourceFingerprint,
+      contentHash: artifacts.sourceSemanticIr.contentHash,
+      compilerVersion: artifacts.sourceSemanticIr.generator.compilerVersion,
+      promptVersion: artifacts.sourceSemanticIr.generator.promptVersion,
+      files,
+    };
+    await publishArtifactsAtomically(dir, payloads, manifest);
+    const updatedAt = Date.now();
+    getDb().query(`
+      UPDATE learning_materials
+      SET overview_path = ?, overview_json = ?, critic_report_path = ?, visual_specs_path = ?, updated_at = ?
+      WHERE id = ? AND status = 'ready'
+    `).run(
+      join(dir, "source_brief.json"),
+      JSON.stringify(artifacts.sourceBrief),
+      join(dir, "critic_report.json"),
+      join(dir, "visual_specs.json"),
+      updatedAt,
+      row.id,
+    );
+    this.artifactCache.delete(row.id);
   }
 
   private async loadHeavyArtifacts(row: MaterialRow, documentType: DocumentType): Promise<HeavyMaterialArtifacts> {
     if (!row.manifest_path || !row.concept_map_path || !row.course_plan_path || !row.visual_specs_path || !row.source_index_path) {
       throw new Error("Material artifacts are incomplete");
     }
-    const [manifest, conceptMap, coursePlan, lecturePlan, presentationPlan, criticReport, visuals, sourceIndex] = await Promise.all([
-      readFile(row.manifest_path, "utf8").then((raw) => JSON.parse(raw) as MaterialManifest),
+    const manifest = await readFile(row.manifest_path, "utf8").then((raw) => JSON.parse(raw) as MaterialManifest);
+    if (manifest.artifactSchemaVersion === MATERIAL_ARTIFACT_SCHEMA_VERSION) {
+      await this.validateV2RequiredArtifacts(row.manifest_path, manifest);
+    }
+    const [loadedConceptMap, coursePlan, lecturePlan, presentationPlan, criticReport, visuals, sourceIndex] = await Promise.all([
       readFile(row.concept_map_path, "utf8").then((raw) => JSON.parse(raw) as Concept[]),
       readFile(row.course_plan_path, "utf8").then((raw) => JSON.parse(raw) as CoursePlan),
       row.lecture_plan_path ? readFile(row.lecture_plan_path, "utf8").then((raw) => JSON.parse(raw) as LecturePlan) : Promise.resolve(undefined),
       row.presentation_plan_path
         ? readFile(row.presentation_plan_path, "utf8").then((raw) => JSON.parse(raw) as PresentationPlan)
         : Promise.resolve(undefined),
-      row.critic_report_path ? readFile(row.critic_report_path, "utf8").then((raw) => JSON.parse(raw) as CriticReport) : Promise.resolve(undefined),
+      row.critic_report_path ? readFile(row.critic_report_path, "utf8").then((raw) => JSON.parse(raw) as CriticReport | CriticReportV2) : Promise.resolve(undefined),
       readFile(row.visual_specs_path, "utf8").then((raw) => JSON.parse(raw) as VisualSpec[]),
       readFile(row.source_index_path, "utf8").then((raw) => JSON.parse(raw) as Record<string, { sourceId: string; title: string; locator: string }>),
     ]);
     const loadedSourceChunks = await this.loadMaterialSourceChunks(row);
     const { chunks: sourceChunks, removedChunkIds } = normalizeFigureCaptionChunks(loadedSourceChunks);
+    const conceptMap = sanitizeLegacyConceptMap(loadedConceptMap, sourceChunks);
     const sanitizedPlan = sanitizeCoursePlan(coursePlan);
     const normalizedCoursePlan = removedChunkIds.size
       ? {
@@ -686,12 +932,44 @@ export class CourseArtifactService {
           })),
         }
       : sanitizedPlan;
-    const overview = await this.loadMaterialOverview(row, sourceChunks, documentType);
     const figures = await this.loadMaterialFigures(row, sourceChunks);
     const figureIndex = await this.loadMaterialFigureIndex(row, figures);
+    let learningIr: SourceSemanticIr;
+    let sourceBrief: SourceBrief;
+    if (manifest.artifactSchemaVersion === MATERIAL_ARTIFACT_SCHEMA_VERSION) {
+      learningIr = await this.readV2Artifact<SourceSemanticIr>(row.manifest_path, manifest, "learning_ir.json");
+      sourceBrief = await this.readV2Artifact<SourceBrief>(row.manifest_path, manifest, "source_brief.json");
+      if (learningIr.contentHash !== manifest.contentHash || learningIr.sourceFingerprint !== manifest.sourceFingerprint) {
+        throw new Error("Learning artifact manifest does not match learning_ir.json");
+      }
+      if (sourceBrief.materialId !== row.id || sourceBrief.sourceFingerprint !== learningIr.sourceFingerprint) {
+        throw new Error("Source brief does not match its learning artifact");
+      }
+    } else {
+      learningIr = await compileLearningIr({
+        materialId: row.id,
+        documentType: documentTypeForLearningIr(documentType, this.sourceIds(row.id).length),
+        sourceCount: this.sourceIds(row.id).length,
+        chunks: sourceChunks,
+        coursePlan: normalizedCoursePlan,
+        legacyConcepts: conceptMap,
+        generatedAt: manifest.generatedAt,
+      });
+      const legacyOverview = await this.loadMaterialOverview(row, sourceChunks, documentType);
+      sourceBrief = compileSourceBrief({
+        ir: learningIr,
+        title: row.title,
+        sourceCount: this.sourceIds(row.id).length,
+        chunks: sourceChunks,
+        overview: legacyOverview,
+      });
+    }
+    const overview = sourceBriefAsLegacyOverview(sourceBrief);
     return {
       manifest,
       overview,
+      sourceSemanticIr: learningIr,
+      sourceBrief,
       conceptMap,
       coursePlan: normalizedCoursePlan,
       lecturePlan,
@@ -705,11 +983,36 @@ export class CourseArtifactService {
     };
   }
 
+  private async readV2Artifact<T>(manifestPath: string, manifest: MaterialManifest, name: string): Promise<T> {
+    const descriptor = manifest.files?.[name];
+    if (!descriptor || (descriptor.required && !descriptor.path)) throw new Error(`Required material artifact is missing from manifest: ${name}`);
+    const path = join(dirname(manifestPath), descriptor.path);
+    const raw = await readFile(path, "utf8");
+    if (sha256(raw) !== descriptor.sha256) throw new Error(`Material artifact checksum mismatch: ${name}`);
+    return JSON.parse(raw) as T;
+  }
+
+  private async validateV2RequiredArtifacts(manifestPath: string, manifest: MaterialManifest) {
+    const files = manifest.files;
+    if (!files) throw new Error("Material artifact manifest has no file descriptors");
+    for (const [name, descriptor] of Object.entries(files)) {
+      if (!descriptor.required) continue;
+      const parts = descriptor.path.replaceAll("\\", "/").split("/");
+      if (!descriptor.path || parts.some((part) => !part || part === "." || part === "..")) {
+        throw new Error(`Unsafe required material artifact path: ${name}`);
+      }
+      const raw = await readFile(join(dirname(manifestPath), ...parts), "utf8");
+      if (sha256(raw) !== descriptor.sha256) throw new Error(`Material artifact checksum mismatch: ${name}`);
+      JSON.parse(raw);
+    }
+  }
+
   private async loadMaterialOverview(row: MaterialRow, sourceChunks: SourceChunk[], documentType: DocumentType) {
     const overviewPath = row.overview_path || (row.manifest_path ? join(dirname(row.manifest_path), "material_overview.json") : null);
     if (row.overview_json) {
       try {
-        const databaseOverview = JSON.parse(row.overview_json) as MaterialOverview;
+        const parsed = JSON.parse(row.overview_json) as MaterialOverview | SourceBrief;
+        const databaseOverview = isSourceBrief(parsed) ? sourceBriefAsLegacyOverview(parsed) : parsed;
         if (isCurrentMaterialOverview(databaseOverview, documentType)) return databaseOverview;
       } catch {
         // Invalid legacy JSON is replaced from the artifact file or regenerated below.
@@ -718,7 +1021,8 @@ export class CourseArtifactService {
     let storedOverview: MaterialOverview | null = null;
     if (overviewPath) {
       try {
-        storedOverview = JSON.parse(await readFile(overviewPath, "utf8")) as MaterialOverview;
+        const parsed = JSON.parse(await readFile(overviewPath, "utf8")) as MaterialOverview | SourceBrief;
+        storedOverview = isSourceBrief(parsed) ? sourceBriefAsLegacyOverview(parsed) : parsed;
         if (isCurrentMaterialOverview(storedOverview, documentType)) {
           this.persistMaterialOverview(row.id, storedOverview, overviewPath);
           return storedOverview;

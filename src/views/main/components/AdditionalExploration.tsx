@@ -3,6 +3,7 @@ import { Check, ChevronDown, Loader2, Sparkles } from "lucide-react";
 import {
   isAdditionalExplorationSaved,
 } from "../additional-exploration";
+import { InlineMarkdownContent } from "./MarkdownContent";
 
 export function AdditionalExploration({
   choices,
@@ -68,7 +69,7 @@ export function AdditionalExploration({
                   disabled={disabled || saved || Boolean(pendingChoice)}
                   onClick={() => void addExploration(choice)}
                 >
-                  <span>{choice}</span>
+                  <InlineMarkdownContent content={choice} />
                   {pending ? (
                     <Loader2 size={14} className="spin" aria-label="추가 중" />
                   ) : saved ? (

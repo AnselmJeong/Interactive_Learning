@@ -41,11 +41,11 @@ const progress = new ProgressService();
 const annotationExports = new AnnotationExportService();
 const documentTransfers = new DocumentTransferService();
 const projectTransfers = new ProjectTransferService();
-const sessionExports = new SessionExportService();
 const settings = new SettingsService();
 const secrets = new AiProviderSettingsService();
 const sources = new SourceService();
 const materials = new CourseArtifactService(materialOverviewRuntime);
+const sessionExports = new SessionExportService(materials);
 const figureAssetServer = createFigureAssetServer(async (materialId, figureId) => {
   const artifacts = await materials.getArtifacts(materialId);
   const figure = artifacts.figures.find((item) => item.id === figureId);
@@ -67,7 +67,8 @@ const annotations = new AnnotationService(materials, providerClient, async (quer
 const tutor = new TutorService(
   (status) => sendToView("tutor.prefetchStatus", status),
   undefined,
-  (status) => sendToView("materials.messageSetProgress", status)
+  (status) => sendToView("materials.messageSetProgress", status),
+  materials
 );
 const MAX_FIGURE_VISION_IMAGE_BYTES = 6_000_000;
 
@@ -384,8 +385,9 @@ const rpc = BrowserView.defineRPC<AppRPC>({
       "documents.cancelTransferImport": ({ importId }) => documentTransfers.cancelImport(importId),
       "progress.getProjectSnapshot": ({ projectId }) => progress.getProjectSnapshot(projectId),
       "progress.getDocumentSnapshot": ({ projectId, documentId }) => progress.getDocumentSnapshot(projectId, documentId),
+      "progress.getMaterialSnapshot": ({ materialId }) => progress.getMaterialSnapshot(materialId),
       "materials.generate": async ({ projectId, sourceIds }) => {
-        sendToView("materials.generationProgress", { projectId, stage: "concepts", message: "Building source-grounded material", progress: 20 });
+        sendToView("materials.generationProgress", { projectId, stage: "normalize", message: "원문 대목을 정리하고 학습 산출물을 준비합니다", progress: 20 });
         const result = await materials.generate(projectId, sourceIds);
         sendToView("materials.generationProgress", { projectId, materialId: result.id, stage: "complete", message: "Material ready", progress: 100 });
         return result;
@@ -394,6 +396,7 @@ const rpc = BrowserView.defineRPC<AppRPC>({
       "materials.getArtifacts": ({ materialId }) => materials.getArtifacts(materialId),
       "materials.prepareMessages": ({ materialId, forceNewVersion }) => tutor.prepareMessages(materialId, Boolean(forceNewVersion)),
       "materials.messageSetStatus": ({ materialId }) => tutor.messageSetStatus(materialId),
+      "materials.getLearningIr": ({ messageSetId }) => tutor.preparedLearningIr(messageSetId),
       "materials.resumeMessageSetGeneration": ({ messageSetId }) => tutor.resumeMessageSetGeneration(messageSetId),
       "materials.pauseMessageSetGeneration": ({ messageSetId }) => tutor.pauseMessageSetGeneration(messageSetId),
       "figures.getAsset": ({ materialId, figureId }) => getFigureAsset(materialId, figureId),

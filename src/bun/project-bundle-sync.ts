@@ -5,6 +5,7 @@ import { getDb } from "./project-db";
 import { dataPath } from "./paths";
 import { listMaterialAnnotations, replaceMaterialAnnotations } from "./annotation-store";
 import type { DocumentType, MaterialAnnotation, MaterialManifest, MaterialOverview, QualityStatus, SourceManifest, SourceType } from "../shared/artifact-types";
+import type { SourceBrief } from "../shared/learning-ir-types";
 import type { ProjectSummary } from "../shared/rpc-types";
 import type { SessionSnapshot, TutorMessage } from "../shared/tutor-types";
 import { normalizeLearningLevel, type LearningLevel } from "../shared/learning-levels";
@@ -607,13 +608,15 @@ async function importMaterials(projectDir: string, projectId: string) {
       concepts: join(dir, "concept_map.json"),
       course: join(dir, "course_plan.json"),
       overview: join(dir, "material_overview.json"),
+      sourceBrief: join(dir, "source_brief.json"),
       lecture: join(dir, "lecture_plan.json"),
       presentation: join(dir, "presentation_plan.json"),
       critic: join(dir, "critic_report.json"),
       visuals: join(dir, "visual_specs.json"),
       index: join(dir, "source_index.json"),
     };
-    const overview = existsSync(paths.overview) ? await readJson<MaterialOverview>(paths.overview) : null;
+    const overviewPath = existsSync(paths.sourceBrief) ? paths.sourceBrief : paths.overview;
+    const overview = existsSync(overviewPath) ? await readJson<MaterialOverview | SourceBrief>(overviewPath) : null;
 
     getDb()
       .query(
@@ -647,7 +650,7 @@ async function importMaterials(projectDir: string, projectId: string) {
         manifestPath,
         existsSync(paths.concepts) ? paths.concepts : null,
         existsSync(paths.course) ? paths.course : null,
-        existsSync(paths.overview) ? paths.overview : null,
+        existsSync(overviewPath) ? overviewPath : null,
         overview ? JSON.stringify(overview) : null,
         existsSync(paths.lecture) ? paths.lecture : null,
         existsSync(paths.presentation) ? paths.presentation : null,

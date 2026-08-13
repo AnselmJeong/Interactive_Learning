@@ -1,6 +1,6 @@
 {
   "name": "learnie",
-  "version": "0.8.3",
+  "version": "0.9.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -17,6 +17,9 @@
   },
   "dependencies": {
     "@vitejs/plugin-react": "^4.5.2",
+    "d3-force": "^3.0.0",
+    "d3-selection": "^3.0.0",
+    "d3-zoom": "^3.0.0",
     "electrobun": "^1.18.1",
     "katex": "^0.17.0",
     "lucide-react": "^0.468.0",
@@ -29,6 +32,9 @@
   },
   "devDependencies": {
     "@types/bun": "latest",
+    "@types/d3-force": "^3.0.10",
+    "@types/d3-selection": "^3.0.11",
+    "@types/d3-zoom": "^3.0.8",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@types/three": "^0.181.0",

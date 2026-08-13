@@ -258,7 +258,7 @@ export const TutorBlockRenderer = memo(function TutorBlockRenderer({
   onAnnotationSaved?: (annotation: MaterialAnnotation) => void;
   onAnnotationDeleted?: (annotationId: string) => void;
 }) {
-  const visibleBlocks = blocks.filter((block) => block.type !== "source_quote" || block.showToLearner);
+  const visibleBlocks = blocks.filter((block) => block.type !== "visual_ref" && (block.type !== "source_quote" || block.showToLearner));
   if (!visibleBlocks.length) return null;
   const renderedFigureIds = new Set<string>();
 
@@ -358,6 +358,7 @@ export const TutorBlockRenderer = memo(function TutorBlockRenderer({
 });
 
 function TutorBlock({ block }: { block: TutorContentBlock }) {
+  if (block.type === "visual_ref") return null;
   if (block.type === "hook") {
     return (
       <section className="tutor-block hook-block">

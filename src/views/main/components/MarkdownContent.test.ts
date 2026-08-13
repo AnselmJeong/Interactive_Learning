@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { micromark } from "micromark";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { MarkdownContent, normalizeMarkdownContent } from "./MarkdownContent";
+import { InlineMarkdownContent, MarkdownContent, normalizeLegacySelectedMath, normalizeMarkdownContent } from "./MarkdownContent";
 
 describe("MarkdownContent normalization", () => {
   test("keeps bold markup working before Korean particles after punctuation", () => {
@@ -54,5 +54,18 @@ describe("MarkdownContent normalization", () => {
   test("repairs escaped underscores but preserves code and existing math", () => {
     const normalized = normalizeMarkdownContent(String.raw`V\_syn과 $I_{\mathrm{ext},i}$, 코드 \`V_syn\``);
     expect(normalized).toBe(String.raw`$V_{\mathrm{syn}}$과 $I_{\mathrm{ext},i}$, 코드 \`V_syn\``);
+  });
+
+  test("collapses legacy triple KaTeX selection text into one inline formula", () => {
+    const legacy = "이 미분방정식을 τmdVdt=−(V−Vss)\\tau_m \\frac{dV}{dt} = - (V - V_{ss})τm​dtdV​=−(V−Vss​)로 변형";
+    expect(normalizeLegacySelectedMath(legacy)).toBe("이 미분방정식을 $\\tau_m \\frac{dV}{dt} = - (V - V_{ss})$로 변형");
+    const html = renderToStaticMarkup(createElement(InlineMarkdownContent, { content: legacy }));
+    expect(html.match(/class="katex"/g)).toHaveLength(1);
+  });
+
+  test("renders inline math without adding paragraph wrappers", () => {
+    const html = renderToStaticMarkup(createElement(InlineMarkdownContent, { content: String.raw`시정수 $\tau_m$` }));
+    expect(html).toContain('class="katex"');
+    expect(html).not.toContain("<p>");
   });
 });

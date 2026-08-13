@@ -19,6 +19,7 @@ import type {
 import type { AiProviderId, AiProviderStatus, AppSettings, ProviderModel, PublicAiProviderUpdate } from "./settings-types";
 import type { LearningMessageSetSummary, SessionSnapshot, SessionSummary, TutorContext, TutorMessage, TutorPrefetchStatus, TutorTurnOutput } from "./tutor-types";
 import type { LearningLevel } from "./learning-levels";
+import type { PreparedLearningIrResult } from "./learning-ir-types";
 import type { ProjectTransferExport, ProjectTransferImportResult, ProjectTransferPreview, SessionReadableExport } from "./project-transfer-types";
 import type { DocumentTransferExport, DocumentTransferImportPreview, DocumentTransferImportResult, DocumentTransferPreview } from "./document-transfer-types";
 
@@ -236,9 +237,28 @@ export type IngestionProgress = {
 export type GenerationProgress = {
   projectId: string;
   materialId?: string;
-  stage: "concepts" | "course" | "visuals" | "persist" | "complete" | "failed";
+  stage:
+    | "normalize"
+    | "extract"
+    | "validate"
+    | "brief"
+    | "visuals"
+    | "graph"
+    | "persist"
+    | "complete"
+    | "failed"
+    // Legacy senders remain accepted during the v1 to v2 transition.
+    | "concepts"
+    | "course";
   message: string;
   progress: number;
+};
+
+export type MaterialProgressSnapshot = {
+  materialId: string;
+  currentChunkId: string | null;
+  coveredChunkIds: string[];
+  activeSessionId: string | null;
 };
 
 export type AiProviderConnectionInput = {
@@ -305,11 +325,13 @@ export type AppRPC = {
       "documents.cancelTransferImport": { params: { importId: string }; response: boolean };
       "progress.getProjectSnapshot": { params: { projectId: string }; response: ProjectProgressSnapshot };
       "progress.getDocumentSnapshot": { params: { projectId: string; documentId: string }; response: DocumentProgressSnapshot };
+      "progress.getMaterialSnapshot": { params: { materialId: string }; response: MaterialProgressSnapshot };
       "materials.generate": { params: { projectId: string; sourceIds: string[] }; response: MaterialSummary };
       "materials.list": { params: { projectId: string }; response: MaterialSummary[] };
       "materials.getArtifacts": { params: { materialId: string }; response: MaterialArtifacts };
       "materials.prepareMessages": { params: { materialId: string; forceNewVersion?: boolean }; response: LearningMessageSetSummary };
       "materials.messageSetStatus": { params: { materialId: string }; response: LearningMessageSetSummary[] };
+      "materials.getLearningIr": { params: { messageSetId: string }; response: PreparedLearningIrResult };
       "materials.resumeMessageSetGeneration": { params: { messageSetId: string }; response: LearningMessageSetSummary };
       "materials.pauseMessageSetGeneration": { params: { messageSetId: string }; response: LearningMessageSetSummary };
       "figures.getAsset": { params: { materialId: string; figureId: string }; response: { figureId: string; mimeType: string; dataUrl: string } };

@@ -17,6 +17,7 @@ import { getDb } from "./project-db";
 import { writeProjectDocumentIndex } from "./project-bundle-sync";
 import { dataPath } from "./paths";
 import { SettingsService } from "./settings-service";
+import { refreshMaterialArtifactChecksums, validateTransferredMaterialArtifacts } from "./material-artifact-validation";
 
 const MAX_ARCHIVE_BYTES = 2_000_000_000;
 const MAX_FILE_COUNT = 10_000;
@@ -305,6 +306,13 @@ function remapState(state: TransferState, destinationProjectId: string, replacem
         for (const column of ["manifest_path", "concept_map_path", "course_plan_path", "overview_path", "lecture_plan_path", "presentation_plan_path", "critic_report_path", "visual_specs_path", "source_index_path"]) {
           if (row[column]) row[column] = join(projectDir, safeArchivePath(String(row[column])));
         }
+        if (typeof row.overview_json === "string" && row.overview_json) {
+          try {
+            row.overview_json = JSON.stringify(rewritePortableValue(JSON.parse(row.overview_json), "import", projectDir, replacements));
+          } catch {
+            // Keep malformed legacy inline JSON unchanged; the artifact loader will use adjacent files.
+          }
+        }
       }
     }
   }
@@ -352,6 +360,7 @@ export class DocumentTransferService {
       await mkdir(payload, { recursive: true });
       await copyDocumentFiles(projectDir, payload, rawState);
       await rewriteJsonFiles(payload, "export", projectDir);
+      await refreshMaterialArtifactChecksums(join(payload, "materials"));
       await enrichSourceManifests(payload, rawState);
       const state = normalizeStatePaths(rawState, projectDir);
       await writeFile(join(payload, "state.json"), `${stringify(state)}\n`, "utf8");
@@ -415,6 +424,11 @@ export class DocumentTransferService {
     const stateBytes = files.get("document/state.json");
     if (!stateBytes) throw new Error("Document transfer state is missing");
     const state = validateState(JSON.parse(new TextDecoder().decode(stateBytes)), manifest);
+    validateTransferredMaterialArtifacts(
+      files,
+      state.tables.learning_materials.map((material) => String(material.id)),
+      "document",
+    );
     if (hash(stringify(state)) !== manifest.documentStateHash) throw new Error("Document transfer state hash does not match its manifest");
     const actualAssets = manifest.files.filter((file) => safeArchivePath(file.path) !== "document/state.json").length;
     const calculatedCounts = counts(state, actualAssets, 0);
@@ -501,6 +515,7 @@ export class DocumentTransferService {
         }
         await cp(join(payload, path), target, { force: false });
       }
+      await refreshMaterialArtifactChecksums(join(mappedFiles, "materials"));
       await mkdir(projectDir, { recursive: true });
       for (const top of await readdir(mappedFiles)) {
         const source = join(mappedFiles, top);

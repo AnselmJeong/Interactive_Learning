@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { getDb } from "./project-db";
 import { recordChunkViews } from "./progress-service";
 import { CourseArtifactService } from "./course-artifact-service";
@@ -6,7 +8,7 @@ import { SettingsService } from "./settings-service";
 import { AiProviderSettingsService } from "./ai-provider-settings";
 import { createAiProviderClient } from "./ai-provider-client";
 import { isProviderError } from "./provider-error";
-import { dataPath } from "./paths";
+import { dataPath, materialDirAt } from "./paths";
 import { deleteSessionSnapshot, writeSessionSnapshot } from "./project-bundle-sync";
 import { classifyProgressionCommand } from "../shared/progression-command";
 import { plainDisplayText } from "../shared/display-title";
@@ -16,6 +18,19 @@ import { normalizeLearningLevel, tutorLevelInstruction, type LearningLevel } fro
 import type { AiProviderId, TutorLanguage } from "../shared/settings-types";
 import { canonicalFigureChunkId } from "../shared/source-figure-placement";
 import { stripMarkdownImageTokens } from "../shared/markdown-image-text";
+import { isGroundedVisual } from "./visual-grammar";
+import {
+  compilePreparedLearningIr,
+  preparedLearningMessageFingerprint,
+  type PreparedLearningMessageInput,
+} from "./prepared-learning-ir-compiler";
+import {
+  PREPARED_LEARNING_IR_COMPILER_VERSION,
+  PREPARED_LEARNING_IR_PROMPT_VERSION,
+  PREPARED_LEARNING_IR_SCHEMA_VERSION,
+  type PreparedLearningIr,
+  type PreparedLearningIrResult,
+} from "../shared/learning-ir-types";
 
 // "start_module": open the first source chunk of a (new) module with a content summary.
 // "continue_chunk": keep the cursor on the current source chunk and continue teaching it.
@@ -429,6 +444,7 @@ function blocksToPlainText(blocks: TutorContentBlock[]) {
       if (block.type === "compare_table") return `${block.title || ""}\n${block.columns.join(" | ")}\n${block.rows.map((row) => block.columns.map((column) => row[column] || "").join(" | ")).join("\n")}`;
       if (block.type === "source_quote") return `"${block.quote}"`;
       if (block.type === "misconception") return `${block.title || "헷갈릴 수 있는 지점"}\n${block.body}\n${block.repair}`;
+      if (block.type === "visual_ref") return "";
       return block.body;
     })
     .filter(Boolean)
@@ -814,7 +830,6 @@ type LearningMessageBatchEmitter = (status: LearningMessageBatchStatus) => void;
 type LearningMessageSetEmitter = (status: LearningMessageSetSummary) => void;
 
 export class TutorService {
-  private readonly artifacts = new CourseArtifactService();
   private readonly settings = new SettingsService();
   private readonly secrets = new AiProviderSettingsService();
   private readonly activePrefetches = new Map<string, string>();
@@ -826,11 +841,13 @@ export class TutorService {
   private readonly generationRuntimeOverrides = new Map<string, { provider: AiProviderId; model: string; tutorLanguage: TutorLanguage; learningLevel: LearningLevel }>();
   private readonly chunkModuleMaps = new WeakMap<MaterialArtifacts["coursePlan"], Map<string, CourseModule>>();
   private readonly sessionMutations = new SessionMutationQueue();
+  private readonly learningIrRuns = new Map<string, Promise<PreparedLearningIrResult>>();
 
   constructor(
     private readonly emitPrefetchStatus?: TutorPrefetchEmitter,
     private readonly emitBatchStatus?: LearningMessageBatchEmitter,
-    private readonly emitMessageSetStatus?: LearningMessageSetEmitter
+    private readonly emitMessageSetStatus?: LearningMessageSetEmitter,
+    private readonly artifacts: CourseArtifactService = new CourseArtifactService()
   ) {}
 
   private messageSetSummary(row: LearningMessageSetRow): LearningMessageSetSummary {
@@ -907,6 +924,106 @@ export class TutorService {
       )
       .all(materialId)
       .map((row) => this.messageSetSummary(row));
+  }
+
+  private preparedMessagesForLearningIr(messageSetId: string): PreparedLearningMessageInput[] {
+    return getDb()
+      .query<PreparedLearningMessageRow, [string]>(
+        "SELECT * FROM prepared_learning_messages WHERE message_set_id = ? ORDER BY route_index ASC",
+      )
+      .all(messageSetId)
+      .map((row) => ({
+        id: row.id,
+        routeIndex: row.route_index,
+        moduleId: row.module_id,
+        targetEvent: row.target_event,
+        content: row.content,
+        blocks: jsonArray(row.blocks_json),
+        sourceChunkIds: jsonArray(row.source_refs_json),
+        visualId: row.visual_id,
+      }));
+  }
+
+  private preparedLearningIrPath(row: LearningMessageSetRow) {
+    const material = this.artifacts.getRow(row.material_id);
+    return join(
+      materialDirAt(this.projectRoot(material.project_id), material.project_id, material.id),
+      "learning_ir",
+      `${row.id}.json`,
+    );
+  }
+
+  private async readCurrentPreparedLearningIr(row: LearningMessageSetRow, messages: PreparedLearningMessageInput[]) {
+    try {
+      const parsed = JSON.parse(await readFile(this.preparedLearningIrPath(row), "utf8")) as PreparedLearningIr;
+      const currentFingerprint = preparedLearningMessageFingerprint(messages);
+      if (
+        parsed.schemaVersion === PREPARED_LEARNING_IR_SCHEMA_VERSION
+        && parsed.messageSetId === row.id
+        && parsed.materialId === row.material_id
+        && parsed.messageSetFingerprint === currentFingerprint
+        && parsed.generator.compilerVersion === PREPARED_LEARNING_IR_COMPILER_VERSION
+        && parsed.generator.promptVersion === PREPARED_LEARNING_IR_PROMPT_VERSION
+      ) return parsed;
+    } catch {
+      // Missing, interrupted, or stale learning IRs are regenerated from the immutable prepared set.
+    }
+    return null;
+  }
+
+  private async generatePreparedLearningIr(row: LearningMessageSetRow): Promise<PreparedLearningIrResult> {
+    if (row.status !== "ready") return { status: "not_ready", ir: null, error: null };
+    const messages = this.preparedMessagesForLearningIr(row.id);
+    const cached = await this.readCurrentPreparedLearningIr(row, messages);
+    if (cached) {
+      return cached.quality.status === "degraded"
+        ? { status: "unavailable", ir: null, error: "완성된 메시지에서 표시할 만한 개념 관계를 확인하지 못했습니다." }
+        : { status: "ready", ir: cached, error: null };
+    }
+    const settings = await this.settings.get();
+    const key = await this.secrets.getApiKey(row.provider);
+    if (!row.model || !key.value) {
+      return { status: "unavailable", ir: null, error: "학습지도를 만들 provider 설정을 확인해 주세요." };
+    }
+    const runtimeSettings = {
+      ...settings,
+      aiProvider: row.provider,
+      tutorLanguage: row.tutor_language,
+      providers: {
+        ...settings.providers,
+        [row.provider]: { ...settings.providers[row.provider], selectedModel: row.model },
+      },
+    };
+    try {
+      const ir = await compilePreparedLearningIr({
+        materialId: row.material_id,
+        messageSetId: row.id,
+        messages,
+        runtime: { client: createAiProviderClient(runtimeSettings, key.value, row.provider), model: row.model },
+      });
+      const path = this.preparedLearningIrPath(row);
+      await mkdir(dirname(path), { recursive: true });
+      const temporaryPath = `${path}.tmp-${crypto.randomUUID()}`;
+      await writeFile(temporaryPath, `${JSON.stringify(ir, null, 2)}\n`, "utf8");
+      await rename(temporaryPath, path);
+      return ir.quality.status === "degraded"
+        ? { status: "unavailable", ir: null, error: "완성된 메시지에서 표시할 만한 개념 관계를 확인하지 못했습니다." }
+        : { status: "ready", ir, error: null };
+    } catch (error) {
+      return { status: "unavailable", ir: null, error: `학습지도 생성 실패: ${compactError(error)}` };
+    }
+  }
+
+  async preparedLearningIr(messageSetId: string): Promise<PreparedLearningIrResult> {
+    const row = this.getMessageSetRow(messageSetId);
+    if (row.status !== "ready") return { status: "not_ready", ir: null, error: null };
+    const active = this.learningIrRuns.get(messageSetId);
+    if (active) return active;
+    const run = this.generatePreparedLearningIr(row).finally(() => {
+      if (this.learningIrRuns.get(messageSetId) === run) this.learningIrRuns.delete(messageSetId);
+    });
+    this.learningIrRuns.set(messageSetId, run);
+    return run;
   }
 
   private async messageSetRuntime(materialId: string, artifacts: MaterialArtifacts, requireApiKey = true) {
@@ -1254,6 +1371,9 @@ export class TutorService {
         this.emitMessageSet(messageSetId);
         if (isComplete) {
           this.recordMessageSetEvent(messageSetId, "ready", null, "message_set_generator", { completedMessages: routeIndex + 1 });
+          void this.preparedLearningIr(messageSetId).catch((error) => {
+            console.warn(`[learning-ir] post-generation compile failed for ${messageSetId}: ${compactError(error)}`);
+          });
           return;
         }
       }
@@ -2564,6 +2684,13 @@ export class TutorService {
 
   private materialFingerprint(artifacts: MaterialArtifacts) {
     return stableHash({
+      artifactSchemaVersion: artifacts.manifest.artifactSchemaVersion || 1,
+      sourceSemanticIrContentHash: artifacts.sourceSemanticIr?.contentHash || null,
+      sourceFingerprint: artifacts.sourceSemanticIr?.sourceFingerprint || artifacts.manifest.sourceFingerprint || null,
+      visuals: artifacts.visuals.map((visual) => ({
+        id: visual.id,
+        contentHash: isGroundedVisual(visual) ? visual.contentHash : stableHash(visual),
+      })),
       courseId: artifacts.coursePlan.id,
       title: artifacts.coursePlan.title,
       modules: artifacts.coursePlan.modules.map((module) => ({
@@ -3570,7 +3697,7 @@ After that overview hook, teach the first source chunk with a guided_reading and
       : "";
     const lecturePlan = this.lectureModule(artifacts, module);
     const presentationPlan = this.presentationModule(artifacts, module);
-    const visualIds = artifacts.visuals.map((visual) => visual.id);
+    const visualIds = [this.moduleVisual(artifacts, module)?.id].filter((id): id is string => Boolean(id));
     const strictJson = attempt > 0
       ? "\n\nCRITICAL: Your previous response was prose, not JSON. Return a SINGLE valid JSON object and NOTHING else — no markdown fences, no prose, no explanation. The response MUST start with { and end with }."
       : "\n\nRespond with ONLY the JSON object — no prose, no markdown fences, no explanation before or after. The response MUST start with { and end with }.";
@@ -3805,7 +3932,8 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${stripMarkdow
     output: Partial<TutorTurnOutput>
   ): TutorTurnOutput {
     const allowedRefs = new Set(artifacts.sourceChunks.map((chunk) => chunk.id));
-    const allowedVisuals = new Set(artifacts.visuals.map((visual) => visual.id));
+    const moduleVisual = this.moduleVisual(artifacts, module);
+    const allowedVisuals = new Set(moduleVisual ? [moduleVisual.id] : []);
 
     // Advancement is handled by the source-chunk cursor BEFORE this turn is generated, so this turn
     // never advances on its own. We only record the learner's intent for digression handling and
@@ -3821,8 +3949,18 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${stripMarkdow
     const baseProgress = artifacts.sourceChunks.length
       ? Math.round((session.coveredChunkIds.length / artifacts.sourceChunks.length) * 100)
       : 0;
-    const blocks = this.sanitizeBlocks(artifacts, module, focusChunk, payload, output.blocks, output.message);
-    const message = blocks.length ? blocksToPlainText(blocks) : this.scrubExamLanguage(String(output.message || "이 대목을 먼저 설명해 보겠습니다."));
+    const contentBlocks = this.sanitizeBlocks(artifacts, module, focusChunk, payload, output.blocks, output.message);
+    const diagram = output.diagram && allowedVisuals.has(output.diagram) ? output.diagram : null;
+    const blocks: TutorContentBlock[] = diagram
+      ? [...contentBlocks, {
+          type: "visual_ref",
+          visualId: diagram,
+          placement: moduleVisual && isGroundedVisual(moduleVisual) ? moduleVisual.placement : "after_explanation",
+        }]
+      : contentBlocks;
+    const message = contentBlocks.length
+      ? blocksToPlainText(contentBlocks)
+      : this.scrubExamLanguage(String(output.message || "이 대목을 먼저 설명해 보겠습니다."));
 
     // Evidence selection: the source chunks shown under "근거 보기" must line up with the
     // answer body. Block-level refs (guided_reading / source_quote) are grounded in what is
@@ -3852,7 +3990,7 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${stripMarkdow
     return {
       message,
       blocks,
-      diagram: output.diagram && allowedVisuals.has(output.diagram) ? output.diagram : null,
+      diagram,
       visualPlacement: output.visualPlacement === "inline" || output.visualPlacement === "side_panel" ? output.visualPlacement : null,
       choices: this.sanitizeChoices(output.choices, module, ready, isDigression, blocks),
       progress: Math.max(baseProgress, Math.min(100, Math.round(Number(output.progress) || baseProgress))),
@@ -4081,6 +4219,7 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${stripMarkdow
 
   private scrubBlock(block: TutorContentBlock): TutorContentBlock {
     const clean = (text: string) => this.scrubExamLanguage(stripMarkdownImageTokens(text));
+    if (block.type === "visual_ref") return block;
     if (block.type === "bullets") return { ...block, items: block.items.map(clean).filter(Boolean) };
     if (block.type === "flow") return { ...block, steps: block.steps.map(clean).filter(Boolean) };
     if (block.type === "compare_table") {
@@ -4198,6 +4337,13 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${stripMarkdow
   }
 
   private moduleVisual(artifacts: MaterialArtifacts, module: CourseModule): VisualSpec | null {
+    const sectionIds = new Set(
+      (artifacts.sourceSemanticIr?.sections || [])
+        .filter((section) => section.moduleId === module.id)
+        .map((section) => section.id),
+    );
+    const grounded = artifacts.visuals.find((visual) => isGroundedVisual(visual) && sectionIds.has(visual.sectionId));
+    if (grounded) return grounded;
     const lectureVisual = this.lectureModule(artifacts, module)?.visualOpportunities.find((visual) => visual.placement !== "after_hook")?.id;
     const id = lectureVisual || module.visualIds[0];
     if (!id || id === "visual-course-map" || this.isTeachingGuideVisualId(id)) return null;

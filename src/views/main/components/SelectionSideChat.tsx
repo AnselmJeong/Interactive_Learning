@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent } from 
 import { ChevronDown, ChevronUp, Globe2, Loader2, RotateCcw, Save, Send, X } from "lucide-react";
 import type { QuestionThreadResult } from "../../../shared/artifact-types";
 import type { ChatSubmitShortcut } from "../../../shared/settings-types";
-import { MarkdownContent } from "./MarkdownContent";
+import { InlineMarkdownContent, MarkdownContent } from "./MarkdownContent";
 import { shouldSubmitTextArea } from "../submit-shortcut";
 import { QuestionWebSources } from "./QuestionWebSources";
 
@@ -128,7 +128,7 @@ export function SelectionSideChat({
             aria-expanded={selectionExpanded}
             title={selectionExpanded ? "선택문 접기" : "선택문 전체 보기"}
           >
-            <strong>{panel.selectedText}</strong>
+            <strong><InlineMarkdownContent content={panel.selectedText} /></strong>
             {selectionExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
           </button>
         </div>
@@ -159,7 +159,7 @@ export function SelectionSideChat({
                 <MarkdownContent content={message.content} compact />
                 <QuestionWebSources sources={message.sources} />
               </>
-            ) : <p>{message.content}</p>}
+            ) : <MarkdownContent content={message.content} compact />}
           </article>
         )) : (
           <p className="side-chat-empty">선택한 문장에 관해 궁금한 점을 물어보세요. 이 대화는 메인 학습 진도와 분리됩니다.</p>
@@ -167,7 +167,7 @@ export function SelectionSideChat({
         {panel.pendingUserText ? (
           <article className="side-chat-message user pending">
             <span>나</span>
-            <p>{panel.pendingUserText}</p>
+            <MarkdownContent content={panel.pendingUserText} compact />
           </article>
         ) : null}
         {panel.status === "asking" ? (

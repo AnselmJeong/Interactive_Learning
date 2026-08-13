@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { canReuseMaterialForGeneration, generateMaterialOverview, materialGenerationKey, normalizeFigureCaptionChunks } from "./course-artifact-service";
+import { canReuseMaterialForGeneration, deterministicMaterialOverview, generateMaterialOverview, materialGenerationKey, normalizeFigureCaptionChunks } from "./course-artifact-service";
 import type { SourceChunk } from "../shared/artifact-types";
 import type { AiChatClient, ChatParams } from "./openai-compatible-client";
 
@@ -147,5 +147,18 @@ describe("material overview", () => {
 
     expect(calls).toBe(2);
     expect(overview.paragraph).toContain("기억과 사고");
+  });
+
+  test("keeps the deterministic article fallback free of numerical findings and conclusions", () => {
+    const overview = deterministicMaterialOverview("Study", [{
+      id: "chunk-1",
+      headingPath: ["Abstract"],
+      locator: "p. 1",
+      kind: "body",
+      text: "This study examines how recognition shapes online behavior. Results showed a significant effect in 312 participants. The conclusion confirms a strong effect size.",
+      confidence: 1,
+    }], "article");
+    expect(overview.paragraph).toContain("examines how recognition");
+    expect(overview.paragraph).not.toMatch(/312|Results|conclusion|effect size/i);
   });
 });

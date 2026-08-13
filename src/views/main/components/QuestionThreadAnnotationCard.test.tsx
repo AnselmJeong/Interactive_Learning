@@ -85,4 +85,21 @@ describe("QuestionThreadAnnotationCard", () => {
     expect(html).toContain("새로운 관점은 무엇인가요?");
     expect(html).not.toContain('aria-label="원문 위치"');
   });
+
+  test("renders a formula in the saved side-chat heading", () => {
+    const annotation = questionAnnotation();
+    annotation.selectedText = String.raw`막 시정수 $\tau_m$의 의미`;
+    const html = renderToStaticMarkup(createElement(QuestionThreadAnnotationCard, {
+      annotation,
+      active: false,
+      expanded: false,
+      onToggle: () => undefined,
+      onContinue: () => undefined,
+      onLocate: () => true,
+      onDelete: () => undefined,
+    }));
+    const header = html.match(/<header>(.*?)<\/header>/)?.[1] || "";
+    expect(header).toContain('class="katex"');
+    expect(header).not.toContain("$\\tau_m$");
+  });
 });

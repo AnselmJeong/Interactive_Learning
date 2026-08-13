@@ -67,6 +67,7 @@ function collisionSafePath(folder: string, baseName: string) {
 function blocksToMarkdown(blocks: TutorContentBlock[], fallback: string) {
   if (!blocks.length) return stripMarkdownImageTokens(fallback).trim();
   return blocks.map((block) => {
+    if (block.type === "visual_ref") return "";
     if (block.type === "hook") return `> ${block.body}`;
     if (block.type === "guided_reading") return block.sourceRef ? `${block.body}\n\n_Source: ${block.sourceRef}_` : block.body;
     if (block.type === "paragraph") return block.body;
@@ -103,7 +104,8 @@ function annotationBody(raw: string) {
 
 export class SessionExportService {
   private readonly settings = new SettingsService();
-  private readonly artifacts = new CourseArtifactService();
+
+  constructor(private readonly artifacts: CourseArtifactService = new CourseArtifactService()) {}
 
   async exportReadable(sessionId: string, destinationFolder?: string): Promise<SessionReadableExport> {
     const snapshot = getDb().transaction(() => {

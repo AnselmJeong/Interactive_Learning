@@ -6,6 +6,7 @@ import type {
   LearningActivityDay,
   ProjectProgressSnapshot,
   SourceProgressSnapshot,
+  MaterialProgressSnapshot,
 } from "../shared/rpc-types";
 
 type SessionActivityOwner = {
@@ -91,6 +92,26 @@ export function recordChunkViews(
 }
 
 export class ProgressService {
+  getMaterialSnapshot(materialId: string): MaterialProgressSnapshot {
+    const material = getDb().query<{ id: string }, [string]>("SELECT id FROM learning_materials WHERE id = ?").get(materialId);
+    if (!material) throw new Error("Material not found");
+    const sessions = getDb().query<SessionProgressRow, [string]>(`
+      SELECT id, current_chunk_id, covered_chunk_ids_json, status
+      FROM learning_sessions
+      WHERE material_id = ?
+      ORDER BY updated_at DESC
+    `).all(materialId);
+    const covered = new Set<string>();
+    for (const session of sessions) for (const chunkId of jsonStringList(session.covered_chunk_ids_json)) covered.add(chunkId);
+    const active = sessions.find((session) => session.status === "active") || null;
+    return {
+      materialId,
+      currentChunkId: active?.current_chunk_id || null,
+      coveredChunkIds: [...covered],
+      activeSessionId: active?.id || null,
+    };
+  }
+
   getProjectSnapshot(projectId: string): ProjectProgressSnapshot {
     const project = getDb().query<{ id: string }, [string]>("SELECT id FROM projects WHERE id = ?").get(projectId);
     if (!project) throw new Error("Project not found");

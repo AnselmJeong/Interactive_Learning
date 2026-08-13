@@ -222,9 +222,14 @@ export function LearningSelectionLookup({
     if (!root || !materialId) return null;
     const selected = window.getSelection();
     if (!selected || selected.isCollapsed || !selected.rangeCount) return null;
-    const text = selected.toString().replace(/\s+/g, " ").trim();
-    if (text.length < 3) return null;
     const range = selected.getRangeAt(0);
+    const selectedFragment = range.cloneContents();
+    selectedFragment.querySelectorAll<HTMLElement>(".katex").forEach((formula) => {
+      const tex = formula.querySelector('annotation[encoding="application/x-tex"]')?.textContent?.trim();
+      if (tex) formula.replaceWith(document.createTextNode(`$${tex}$`));
+    });
+    const text = (selectedFragment.textContent || selected.toString()).replace(/\s+/g, " ").trim();
+    if (text.length < 3) return null;
     const startElement = elementFromNode(range.startContainer);
     const endElement = elementFromNode(range.endContainer);
     if (!startElement || !endElement || !root.contains(startElement) || !root.contains(endElement)) return null;
@@ -267,7 +272,7 @@ export function LearningSelectionLookup({
       chunkId,
       anchorMessageId,
       anchorBlockId,
-      text: textAnchor.selectedText.slice(0, SELECTED_TEXT_MAX_CHARS),
+      text: text.slice(0, SELECTED_TEXT_MAX_CHARS),
       textAnchor,
       highlightAnnotationIds: highlightAnnotationIdsForRange(root, range),
       x: point.x,

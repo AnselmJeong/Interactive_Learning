@@ -345,16 +345,24 @@ export type MaterialManifest = {
   generatedAt: string;
   generatorModel: string;
   status: MaterialStatus;
+  artifactSchemaVersion?: 2;
+  sourceFingerprint?: string;
+  contentHash?: string;
+  compilerVersion?: string;
+  promptVersion?: string;
+  files?: Record<string, MaterialArtifactFile>;
 };
 
 export type MaterialArtifacts = {
   manifest: MaterialManifest;
   overview: MaterialOverview;
+  sourceSemanticIr?: SourceSemanticIr;
+  sourceBrief?: SourceBrief;
   conceptMap: Concept[];
   coursePlan: CoursePlan;
   lecturePlan?: LecturePlan;
   presentationPlan?: PresentationPlan;
-  criticReport?: CriticReport;
+  criticReport?: CriticReport | CriticReportV2;
   visuals: VisualSpec[];
   sourceChunks: SourceChunk[];
   sourceIndex: Record<string, { sourceId: string; title: string; locator: string }>;
@@ -362,3 +370,4 @@ export type MaterialArtifacts = {
   figureIndex: Record<string, { sourceId: string; title: string; locator: string; sourceChunkIds: string[] }>;
   annotations: MaterialAnnotation[];
 };
+import type { CriticReportV2, MaterialArtifactFile, SourceBrief, SourceSemanticIr } from "./learning-ir-types";

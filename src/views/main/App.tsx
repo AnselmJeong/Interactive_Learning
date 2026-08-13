@@ -1,11 +1,12 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import { BarChart3, BookOpen, Check, Download, Highlighter, Info, LibraryBig, Loader2, LocateFixed, MessageSquare, Moon, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Pencil, Play, Send, Settings, Sparkles, Sun, Trash2, Upload, X } from "lucide-react";
-import type { AnnotationReadableExport, BookMetadataCandidate, BookMetadataSearchInput, DocumentRemovalImpact, DocumentSummary, MaterialSummary, PreparedSourceImport, ProjectProgressSnapshot, ProjectSummary, SourceRemovalImpact, SourceSummary } from "../../shared/rpc-types";
+import type { AnnotationReadableExport, BookMetadataCandidate, BookMetadataSearchInput, DocumentRemovalImpact, DocumentSummary, MaterialProgressSnapshot, MaterialSummary, PreparedSourceImport, ProjectProgressSnapshot, ProjectSummary, SourceRemovalImpact, SourceSummary } from "../../shared/rpc-types";
 import type { ProjectTransferExport, ProjectTransferPreview, SessionReadableExport } from "../../shared/project-transfer-types";
 import type { DocumentTransferExport, DocumentTransferImportPreview, DocumentTransferImportResult } from "../../shared/document-transfer-types";
 import type { AppSettings, AiProviderStatus, ChatSubmitShortcut, ProviderModel } from "../../shared/settings-types";
-import type { DocumentType, MaterialAnnotation, MaterialArtifacts, QuestionThreadResult } from "../../shared/artifact-types";
+import type { DocumentType, MaterialAnnotation, MaterialArtifacts, QuestionThreadResult, VisualSpec } from "../../shared/artifact-types";
 import type { LearningMessageSetSummary, SessionSnapshot, SessionSummary, SourceRef, TutorContext, TutorMessage, TutorPrefetchStatus } from "../../shared/tutor-types";
+import type { PreparedLearningIrResult } from "../../shared/learning-ir-types";
 import { displayableCourseTitle, displayableHeadingPath, displayableModuleTitle, displayableOutlineTitle, titleCasedSourceTitle } from "../../shared/display-title";
 import { SettingsModal } from "./components/SettingsModal";
 import { VisualRenderer } from "./components/VisualRenderer";
@@ -28,6 +29,7 @@ import { LearningBuddy } from "./components/LearningBuddy";
 import { MilestoneConfetti } from "./components/MilestoneConfetti";
 import { LEARNING_MILESTONES } from "./learning-milestones";
 import { SourceLearningPreview } from "./components/SourceLearningPreview";
+import { LearningGuideView } from "./components/LearningGuideView";
 import { AnnotationInlineScope } from "./components/AnnotationInlineScope";
 import { HighlightRemoveMenu, type HighlightMenuTarget } from "./components/HighlightRemoveMenu";
 import { QuestionThreadAnnotationCard } from "./components/QuestionThreadAnnotationCard";
@@ -448,6 +450,7 @@ const ChatLog = memo(function ChatLog({
   expandedSourceMessages,
   sourceRefById,
   materialId,
+  visuals,
   annotations,
   request,
   onToggleSource,
@@ -462,6 +465,7 @@ const ChatLog = memo(function ChatLog({
   expandedSourceMessages: Set<string>;
   sourceRefById: Map<string, SourceRef>;
   materialId: string;
+  visuals: VisualSpec[];
   annotations: MaterialAnnotation[];
   request: RpcRequest;
   onToggleSource: (messageId: string) => void;
@@ -587,6 +591,7 @@ const ChatLog = memo(function ChatLog({
         const messageInlineAnnotations = inlineAnnotations.messageGroups.get(message.id) || [];
         const explorationChoices = message.role === "assistant" ? additionalExplorationChoices(message.choices) : [];
         const savedExplorationTitles = savedAdditionalExplorationTitles(annotations, message.id);
+        const messageVisual = message.visualId ? visuals.find((visual) => visual.id === message.visualId) : undefined;
         return (
           <div
             key={message.id}
@@ -643,6 +648,7 @@ const ChatLog = memo(function ChatLog({
                 <MarkdownContent content={message.content} />
               </AnnotationInlineScope>
             )}
+            {message.role === "assistant" && messageVisual ? <VisualRenderer visual={messageVisual} /> : null}
             {explorationChoices.length ? (
               <AdditionalExploration
                 choices={explorationChoices}
@@ -721,6 +727,7 @@ const ChatComposer = memo(function ChatComposer({
   disabled,
   placeholder,
   autoFocusToken,
+  prefillRequest,
   submitShortcut,
   onSend,
 }: {
@@ -728,6 +735,7 @@ const ChatComposer = memo(function ChatComposer({
   disabled: boolean;
   placeholder: string;
   autoFocusToken?: number;
+  prefillRequest?: { text: string; token: number } | null;
   submitShortcut: ChatSubmitShortcut;
   onSend: (text: string) => Promise<boolean>;
 }) {
@@ -757,6 +765,12 @@ const ChatComposer = memo(function ChatComposer({
     textareaRef.current?.focus();
     resizeTextarea();
   }, [autoFocusToken, disabled, resizeTextarea]);
+
+  useEffect(() => {
+    if (!prefillRequest || disabled) return;
+    setDraft(prefillRequest.text);
+    textareaRef.current?.focus();
+  }, [disabled, prefillRequest]);
 
   useEffect(() => {
     window.addEventListener("resize", resizeTextarea);
@@ -823,7 +837,9 @@ export function App({ request }: { request: RpcRequest }) {
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [providerStatus, setProviderStatus] = useState<AiProviderStatus | null>(null);
   const [models, setModels] = useState<ProviderModel[]>([]);
-  const [viewMode, setViewMode] = useState<"chat" | "source">("chat");
+  const [viewMode, setViewMode] = useState<"chat" | "source" | "guide">("chat");
+  const [preparedLearningIr, setPreparedLearningIr] = useState<PreparedLearningIrResult>({ status: "not_ready", ir: null, error: null });
+  const [preparedLearningIrBusy, setPreparedLearningIrBusy] = useState(false);
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>("sessions");
   const [leftPaneOpen, setLeftPaneOpen] = useState(true);
   const [leftPaneWidth, setLeftPaneWidth] = useState(initialLeftPaneWidth);
@@ -836,6 +852,8 @@ export function App({ request }: { request: RpcRequest }) {
   const [selectedModuleId, setSelectedModuleId] = useState<string | null>(null);
   const [resumeScrollAnchorId, setResumeScrollAnchorId] = useState<string | null>(null);
   const [composerFocusToken, setComposerFocusToken] = useState(0);
+  const [composerPrefillRequest, setComposerPrefillRequest] = useState<{ text: string; token: number } | null>(null);
+  const [sourceFocusRequest, setSourceFocusRequest] = useState<{ chunkId: string; token: number } | null>(null);
   const [sideChatResumeRequest, setSideChatResumeRequest] = useState<{ annotation: MaterialAnnotation; token: number } | null>(null);
   const [pendingAnnotationDeletion, setPendingAnnotationDeletion] = useState<MaterialAnnotation | null>(null);
   const [workspaceRoute, setWorkspaceRoute] = useState<WorkspaceRoute>("library");
@@ -844,6 +862,7 @@ export function App({ request }: { request: RpcRequest }) {
   const [selectedDocumentId, setSelectedDocumentId] = useState<string | null>(null);
   const [selectedProjectAnnotationId, setSelectedProjectAnnotationId] = useState<string | null>(null);
   const [projectProgress, setProjectProgress] = useState<ProjectProgressSnapshot | null>(null);
+  const [materialProgress, setMaterialProgress] = useState<MaterialProgressSnapshot | null>(null);
   const [annotationExportBusy, setAnnotationExportBusy] = useState(false);
   const [metadataDocument, setMetadataDocument] = useState<DocumentSummary | null>(null);
   const [metadataBusy, setMetadataBusy] = useState(false);
@@ -853,6 +872,10 @@ export function App({ request }: { request: RpcRequest }) {
   );
   const tutorSurfaceRef = useRef<HTMLElement | null>(null);
   const continueButtonRef = useRef<HTMLButtonElement | null>(null);
+
+  useEffect(() => {
+    if (!activeMaterial) setMaterialProgress(null);
+  }, [activeMaterial]);
   const lastFocusedReadyActionKeyRef = useRef<string | null>(null);
   const userPointerDownRef = useRef(false);
   const answerReadyNotificationPendingRef = useRef(false);
@@ -1720,16 +1743,24 @@ export function App({ request }: { request: RpcRequest }) {
     return nextArtifacts;
   }
 
+  async function refreshMaterialProgress(materialId: string) {
+    const snapshot = (await request("progress.getMaterialSnapshot", { materialId })) as MaterialProgressSnapshot;
+    setMaterialProgress(snapshot);
+    return snapshot;
+  }
+
   async function selectMaterial(material: MaterialSummary) {
     sessionStartTokenRef.current += 1;
     setSessionStartBusy(false);
     setActiveMaterial(material);
-    const [nextArtifacts, sessions] = await Promise.all([
+    const [nextArtifacts, sessions, nextMaterialProgress] = await Promise.all([
       request("materials.getArtifacts", { materialId: material.id }) as Promise<MaterialArtifacts>,
       request("sessions.list", { materialId: material.id }) as Promise<SessionSummary[]>,
+      request("progress.getMaterialSnapshot", { materialId: material.id }) as Promise<MaterialProgressSnapshot>,
       refreshMessageSets(material.id),
     ]);
     setArtifacts(nextArtifacts);
+    setMaterialProgress(nextMaterialProgress);
     setState((current) => ({ ...current, sessions }));
     setSession(null);
     setContext(null);
@@ -1751,6 +1782,12 @@ export function App({ request }: { request: RpcRequest }) {
       if (requestToken !== sessionStartTokenRef.current) return null;
       await refreshMaterialArtifacts(result.session.materialId);
       setSession(result.session);
+      setMaterialProgress((current) => ({
+        materialId: result.session.materialId,
+        currentChunkId: result.session.currentChunkId,
+        coveredChunkIds: [...new Set([...(current?.materialId === result.session.materialId ? current.coveredChunkIds : []), ...result.session.coveredChunkIds])],
+        activeSessionId: result.session.id,
+      }));
       setContext(result.context);
       setMessageSetsByMaterial((current) => ({
         ...current,
@@ -1843,6 +1880,7 @@ export function App({ request }: { request: RpcRequest }) {
       await refreshMaterialArtifacts(result.session.materialId);
       setActiveMaterial((current) => current?.id === result.session.materialId ? current : state.materials.find((material) => material.id === result.session.materialId) || current);
       setSession(result.session);
+      void refreshMaterialProgress(result.session.materialId);
       setContext(result.context);
       setResumeScrollAnchorId(result.session.lastRevealedMessageId);
       setSelectedModuleId(result.session.currentModuleId);
@@ -2088,7 +2126,26 @@ export function App({ request }: { request: RpcRequest }) {
     setComposerFocusToken(Date.now());
   }
 
+  function openSourceAnchor(chunkId: string) {
+    setSourceFocusRequest({ chunkId, token: Date.now() });
+    setViewMode("source");
+  }
+
   const allSessionMessages = session?.messages || EMPTY_MESSAGES;
+  const visibleMessageByPreparedId = useMemo(() => new Map(
+    allSessionMessages.flatMap((message) => message.originPreparedMessageId ? [[message.originPreparedMessageId, message] as const] : []),
+  ), [allSessionMessages]);
+  const canOpenPreparedLearningMessage = useCallback(
+    (preparedMessageId: string) => visibleMessageByPreparedId.has(preparedMessageId),
+    [visibleMessageByPreparedId],
+  );
+  const openPreparedLearningMessage = useCallback((preparedMessageId: string) => {
+    const message = visibleMessageByPreparedId.get(preparedMessageId);
+    if (!message) return;
+    setSelectedModuleId(message.moduleId || null);
+    setResumeScrollAnchorId(message.id);
+    setViewMode("chat");
+  }, [visibleMessageByPreparedId]);
   const currentMessages = useMemo(
     () => (selectedModuleId ? allSessionMessages.filter((message) => message.moduleId === selectedModuleId) : allSessionMessages),
     [allSessionMessages, selectedModuleId]
@@ -2192,6 +2249,49 @@ export function App({ request }: { request: RpcRequest }) {
       : `${preparedMessages}개 메시지`
     : "준비 전";
   const preparationComplete = isMessageSetPreparationComplete(activeMessageSet);
+  const loadPreparedLearningIr = useCallback(async (messageSetId: string) => {
+    setPreparedLearningIrBusy(true);
+    setPreparedLearningIr({ status: "generating", ir: null, error: null });
+    try {
+      const result = await request("materials.getLearningIr", { messageSetId });
+      setPreparedLearningIr(result as PreparedLearningIrResult);
+    } catch (error) {
+      setPreparedLearningIr({
+        status: "unavailable",
+        ir: null,
+        error: String((error as Error).message || error),
+      });
+    } finally {
+      setPreparedLearningIrBusy(false);
+    }
+  }, [request]);
+  useEffect(() => {
+    let cancelled = false;
+    if (!activeMessageSet || !preparationComplete || activeMessageSet.status !== "ready") {
+      setPreparedLearningIr({ status: "not_ready", ir: null, error: null });
+      setPreparedLearningIrBusy(false);
+      return () => { cancelled = true; };
+    }
+    setPreparedLearningIr({ status: "generating", ir: null, error: null });
+    setPreparedLearningIrBusy(true);
+    void request("materials.getLearningIr", { messageSetId: activeMessageSet.id }).then((result) => {
+      if (!cancelled) setPreparedLearningIr(result as PreparedLearningIrResult);
+    }).catch((error) => {
+      if (!cancelled) {
+        setPreparedLearningIr({
+          status: "unavailable",
+          ir: null,
+          error: String((error as Error).message || error),
+        });
+      }
+    }).finally(() => {
+      if (!cancelled) setPreparedLearningIrBusy(false);
+    });
+    return () => { cancelled = true; };
+  }, [activeMessageSet?.id, activeMessageSet?.status, activeMessageSet?.completedMessages, activeMessageSet?.totalMessages, preparationComplete, request]);
+  useEffect(() => {
+    if (viewMode === "guide" && !preparationComplete) setViewMode("chat");
+  }, [preparationComplete, viewMode]);
   const activeModule = context?.moduleOutline.find((item) => item.status === "in_progress");
   const activeModuleTitle = activeModule ? displayModuleTitle(activeModule) : "";
   const buddyModuleTitle = activeModuleTitle || selectedModuleTitle;
@@ -2300,7 +2400,8 @@ export function App({ request }: { request: RpcRequest }) {
       && session?.currentModuleId
       && session.currentModuleId !== selectedModuleId
   );
-  const visibleVisual = isTeachingGuideVisual(context?.visual) ? null : context?.visual;
+  const hasMessageScopedVisual = currentMessages.some((message) => message.visualId && artifacts?.visuals.some((visual) => visual.id === message.visualId));
+  const visibleVisual = hasMessageScopedVisual || isTeachingGuideVisual(context?.visual) ? null : context?.visual;
   const activeSourceId = activeMaterial && activeMaterial.sourceIds.length === 1 ? activeMaterial.sourceIds[0] : null;
   const activeSource = activeSourceId ? state.sources.find((source) => source.id === activeSourceId) || null : null;
   const activeDocument = activeSource?.documentId ? documents.find((document) => document.id === activeSource.documentId) || null : null;
@@ -2748,6 +2849,16 @@ export function App({ request }: { request: RpcRequest }) {
           ) : null}
 
           <div className="sidebar-footer">
+            <button
+              type="button"
+              className="wide-button settings-button sidebar-theme-toggle"
+              onClick={() => void toggleTheme()}
+              title={theme === "dark" ? "밝은 테마로 전환" : "어두운 테마로 전환"}
+              aria-label={theme === "dark" ? "밝은 테마로 전환" : "어두운 테마로 전환"}
+            >
+              {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
+              <span>{theme === "dark" ? "밝은 테마" : "어두운 테마"}</span>
+            </button>
             <button className="wide-button settings-button" onClick={() => setSettingsOpen(true)}>
               <Settings size={16} /> Settings
             </button>
@@ -2833,15 +2944,6 @@ export function App({ request }: { request: RpcRequest }) {
             </p>
           </div>
           <div className="topbar-actions">
-            <button
-              type="button"
-              className="icon-button theme-toggle"
-              onClick={() => void toggleTheme()}
-              title={theme === "dark" ? "Light theme" : "Dark theme"}
-              aria-label={theme === "dark" ? "Light theme" : "Dark theme"}
-            >
-              {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
-            </button>
             <div className="status-pill" title={status} aria-live="polite">
               {busy || tutorThinking || sessionStartBusy ? <Loader2 size={16} className="spin" /> : <Check size={16} />}
               <span className="status-text">{status}</span>
@@ -2904,6 +3006,21 @@ export function App({ request }: { request: RpcRequest }) {
                 <button type="button" className={viewMode === "chat" ? "active" : ""} onClick={() => setViewMode("chat")}>
                   학습공간
                 </button>
+                {preparationComplete ? (
+                  <button
+                    type="button"
+                    className={viewMode === "guide" ? "active" : ""}
+                    onClick={() => setViewMode("guide")}
+                    title={preparedLearningIrBusy
+                      ? "학습지도 화면에서 생성 상태를 확인할 수 있습니다"
+                      : preparedLearningIr.status === "unavailable"
+                        ? "학습지도 화면에서 오류를 확인하고 다시 만들 수 있습니다"
+                        : "완성된 학습 메시지에서 만든 학습지도"}
+                  >
+                    {preparedLearningIrBusy ? <Loader2 size={14} className="spin" /> : null}
+                    학습지도
+                  </button>
+                ) : null}
               </div>
               <button
                 className={`wide-button topbar-button batch-button ${batchGenerating ? "generating" : preparationComplete ? "complete" : activeMessageSet?.status || "idle"}`}
@@ -2934,7 +3051,17 @@ export function App({ request }: { request: RpcRequest }) {
             progressPercent={progressPercent}
           />
           <section className="tutor-surface" ref={tutorSurfaceRef}>
-          {viewMode === "source" && artifacts ? (
+          {viewMode === "guide" ? (
+            <LearningGuideView
+              result={preparedLearningIr}
+              busy={preparedLearningIrBusy}
+              onOpenSource={openSourceAnchor}
+              onOpenLearningMessage={openPreparedLearningMessage}
+              learnedRouteIndex={session?.lastRevealedRouteIndex ?? -1}
+              canOpenLearningMessage={canOpenPreparedLearningMessage}
+              onRetry={activeMessageSet ? () => void loadPreparedLearningIr(activeMessageSet.id) : undefined}
+            />
+          ) : viewMode === "source" && artifacts ? (
             <ImmersiveSourceView
               artifacts={artifacts}
               sourceProgress={sourceProgress}
@@ -2945,6 +3072,7 @@ export function App({ request }: { request: RpcRequest }) {
               submitShortcut={settings?.chatSubmitShortcut || "cmd-enter"}
               onAnnotationSaved={handleAnnotationSaved}
               onAnnotationDeleted={handleAnnotationDeleted}
+              focusRequest={sourceFocusRequest}
             />
           ) : session ? (
             <>
@@ -2970,6 +3098,7 @@ export function App({ request }: { request: RpcRequest }) {
                 expandedSourceMessages={expandedSourceMessages}
                 sourceRefById={sourceRefById}
                 materialId={artifacts?.manifest.id || session.materialId}
+                visuals={artifacts?.visuals || []}
                 annotations={artifacts?.annotations || []}
                 request={request}
                 onToggleSource={toggleSourceMessage}
@@ -3074,6 +3203,7 @@ export function App({ request }: { request: RpcRequest }) {
               busy={busy}
               disabled={selectedModuleWaiting}
               autoFocusToken={composerFocusToken}
+              prefillRequest={composerPrefillRequest}
               submitShortcut={settings?.chatSubmitShortcut || "cmd-enter"}
               placeholder={
                 selectedModuleWaiting

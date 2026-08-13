@@ -39,7 +39,8 @@ export type TutorContentBlock =
   | { type: "source_quote"; quote: string; sourceRef: string; attribution?: string; showToLearner?: boolean }
   | { type: "reflection"; body: string; aiView?: string }
   | { type: "misconception"; title?: string; body: string; repair: string }
-  | { type: "bridge"; body: string };
+  | { type: "bridge"; body: string }
+  | { type: "visual_ref"; visualId: string; placement: "before_explanation" | "after_explanation" | "review" };
 
 export type TutorStateUpdate = {
   nextPhase: TutorPhase;

@@ -72,6 +72,7 @@ type ImmersiveSourceViewProps = {
   submitShortcut: ChatSubmitShortcut;
   onAnnotationSaved?: (annotation: MaterialAnnotation) => void;
   onAnnotationDeleted?: (annotationId: string) => void;
+  focusRequest?: { chunkId: string; token: number } | null;
 };
 
 const LOOKUP_PANEL_WIDTH = 420;
@@ -151,6 +152,7 @@ export function ImmersiveSourceView({
   submitShortcut,
   onAnnotationSaved,
   onAnnotationDeleted,
+  focusRequest,
 }: ImmersiveSourceViewProps) {
   const [query, setQuery] = useState("");
   const [selection, setSelection] = useState<SelectionState | null>(null);
@@ -297,6 +299,15 @@ export function ImmersiveSourceView({
     const el = chunk ? chunkRefs.current.get(chunk.id) : null;
     el?.scrollIntoView({ block: "center", behavior: "smooth" });
   }, [artifacts.sourceChunks, sourceProgress?.firstCurrentIndex]);
+
+  useEffect(() => {
+    if (!focusRequest) return;
+    const element = chunkRefs.current.get(focusRequest.chunkId);
+    if (!element) return;
+    const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+    element.scrollIntoView({ block: "center", behavior: reducedMotion ? "auto" : "smooth" });
+    element.focus({ preventScroll: true });
+  }, [focusRequest]);
 
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
@@ -757,6 +768,7 @@ export function ImmersiveSourceView({
               <article
                 key={chunk.id}
                 data-chunk-id={chunk.id}
+                tabIndex={-1}
                 className={`source-chunk immersive-source-chunk ${status} ${matchesQuery ? "search-hit" : ""}`}
                 ref={(el) => {
                   if (el) chunkRefs.current.set(chunk.id, el);

@@ -53,6 +53,10 @@ describe("progress service", () => {
     expect(snapshot.documents[0]?.sources[1]?.percent).toBe(25);
     expect(snapshot.currentSourceId).toBe("b");
     expect(snapshot.activeSessionId).toBe("active");
+    const materialSnapshot = new ProgressService().getMaterialSnapshot("m1");
+    expect(materialSnapshot.currentChunkId).toBe("b2");
+    expect(new Set(materialSnapshot.coveredChunkIds)).toEqual(new Set(["a1", "a2", "b1", "orphan"]));
+    expect(materialSnapshot.activeSessionId).toBe("active");
 
     recordChunkViews("active", ["b1"], ["b1", "b2"], "b3", now);
     const activity = new ProgressService().getProjectSnapshot("p1").activityDays;

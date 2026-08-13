@@ -27,11 +27,11 @@ export function resolveLearningBuddyLayout({
   leftPaneOpen,
   rightPaneOpen,
 }: {
-  viewMode: "chat" | "source";
+  viewMode: "chat" | "source" | "guide";
   leftPaneOpen: boolean;
   rightPaneOpen: boolean;
 }): { screenSide: BuddyScreenSide; bubbleSide: BuddyScreenSide } {
-  const screenSide = viewMode === "source" ? "right" : "left";
+  const screenSide = viewMode === "chat" ? "left" : "right";
   const bubbleSide = screenSide === "right"
     ? (rightPaneOpen ? "right" : "left")
     : (leftPaneOpen ? "left" : "right");
@@ -55,7 +55,7 @@ export function LearningBuddy({
   enabled: boolean;
   active: boolean;
   request: RpcRequest;
-  viewMode: "chat" | "source";
+  viewMode: "chat" | "source" | "guide";
   leftPaneOpen: boolean;
   rightPaneOpen: boolean;
   thinking: boolean;

@@ -81,4 +81,40 @@ describe("SourceLearningPreview", () => {
     expect(html).not.toContain("modules");
     expect(html).not.toContain(">Results</strong>");
   });
+
+  test("does not expose source-derived concepts as a learning guide before messages are complete", () => {
+    const artifacts = {
+      manifest: { id: "m1" },
+      overview: { paragraph: "Legacy" },
+      coursePlan: { title: "Source", estimatedTimeMinutes: 10, modules: [] },
+      sourceChunks: [{ id: "chunk-1" }],
+      visuals: [],
+      learningIr: {
+        concepts: [{ id: "concept-1", label: "Recognition", definition: "A social response.", whyItMatters: "It shapes action.", sourceChunkIds: ["chunk-1"] }],
+      },
+      sourceBrief: {
+        schemaVersion: 1,
+        materialId: "m1",
+        scope: "single_source",
+        documentType: "book",
+        guidingQuestion: "How does recognition shape action?",
+        summary: "The source connects recognition with action.",
+        centralIdea: null,
+        conceptIds: ["concept-1"],
+        structureVisualId: null,
+        misconceptions: [],
+        anchors: [{ sourceChunkId: "chunk-1", label: "Opening", excerpt: "Recognition changes the available action." }],
+        reviewPrompt: { prompt: "Connect recognition and action.", kind: "connect" },
+        sourceFingerprint: "source",
+        generatedAt: "2026-08-13T00:00:00.000Z",
+        generatorVersion: "source-brief-v1",
+        quality: { status: "good", issues: [], acceptedItemCount: 3, rejectedItemCount: 0 },
+      },
+    } as unknown as MaterialArtifacts;
+    const html = renderToStaticMarkup(createElement(SourceLearningPreview, { artifacts }));
+    expect(html).toContain("Legacy");
+    expect(html).not.toContain("How does recognition shape action?");
+    expect(html).not.toContain("원문 진입점");
+    expect(html).not.toContain("학습공간에서 생각하기");
+  });
 });

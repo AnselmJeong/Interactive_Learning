@@ -2,7 +2,7 @@ import { ChevronDown, LocateFixed, MessageSquare, Trash2 } from "lucide-react";
 import { useState } from "react";
 import type { MaterialAnnotation } from "../../../shared/artifact-types";
 import { questionMessages } from "../../../shared/question-thread";
-import { MarkdownContent } from "./MarkdownContent";
+import { InlineMarkdownContent, MarkdownContent } from "./MarkdownContent";
 import { QuestionWebSources } from "./QuestionWebSources";
 
 type QuestionThreadAnnotationCardProps = {
@@ -47,7 +47,7 @@ export function QuestionThreadAnnotationCard({
           aria-controls={contentId}
         >
           <span className="question-thread-label">{isAdditionalExploration ? "추가 탐색" : "사이드 대화"}</span>
-          <strong>{isAdditionalExploration ? result.title : annotation.selectedText}</strong>
+          <strong><InlineMarkdownContent content={isAdditionalExploration ? result.title : annotation.selectedText} /></strong>
           <ChevronDown size={16} aria-hidden="true" />
         </button>
         <div className="question-thread-header-actions">
@@ -88,7 +88,7 @@ export function QuestionThreadAnnotationCard({
                     <MarkdownContent content={message.content} compact />
                     <QuestionWebSources sources={message.sources} />
                   </>
-                ) : <p>{message.content}</p>}
+                ) : <MarkdownContent content={message.content} compact />}
               </article>
             ))}
           </div>
