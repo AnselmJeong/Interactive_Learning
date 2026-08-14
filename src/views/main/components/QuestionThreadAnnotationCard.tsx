@@ -4,6 +4,7 @@ import type { MaterialAnnotation } from "../../../shared/artifact-types";
 import { questionMessages } from "../../../shared/question-thread";
 import { InlineMarkdownContent, MarkdownContent } from "./MarkdownContent";
 import { QuestionWebSources } from "./QuestionWebSources";
+import { SideChatVisualRenderer } from "./SideChatVisualRenderer";
 
 type QuestionThreadAnnotationCardProps = {
   annotation: MaterialAnnotation;
@@ -86,6 +87,7 @@ export function QuestionThreadAnnotationCard({
                 {message.role === "assistant" ? (
                   <>
                     <MarkdownContent content={message.content} compact />
+                    {message.visual ? <SideChatVisualRenderer visual={message.visual} /> : null}
                     <QuestionWebSources sources={message.sources} />
                   </>
                 ) : <MarkdownContent content={message.content} compact />}

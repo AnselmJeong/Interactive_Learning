@@ -102,4 +102,33 @@ describe("QuestionThreadAnnotationCard", () => {
     expect(header).toContain('class="katex"');
     expect(header).not.toContain("$\\tau_m$");
   });
+
+  test("renders a saved assistant diagram inside the annotation transcript", () => {
+    const annotation = questionAnnotation();
+    if (annotation.result.kind !== "question_thread") throw new Error("Expected question thread");
+    annotation.result.messages[1]!.visual = {
+      type: "diagram",
+      title: "논증 구조",
+      direction: "horizontal",
+      nodes: [
+        { id: "premise", label: "전제" },
+        { id: "conclusion", label: "결론", tone: "accent" },
+      ],
+      edges: [{ from: "premise", to: "conclusion", label: "뒷받침" }],
+    };
+
+    const html = renderToStaticMarkup(createElement(QuestionThreadAnnotationCard, {
+      annotation,
+      active: false,
+      expanded: true,
+      onToggle: () => undefined,
+      onContinue: () => undefined,
+      onLocate: () => true,
+      onDelete: () => undefined,
+    }));
+    expect(html).toContain("논증 구조");
+    expect(html).toContain("전제");
+    expect(html).toContain("결론");
+    expect(html).toContain("side-chat-diagram");
+  });
 });

@@ -180,6 +180,82 @@ describe("annotation side-chat service", () => {
     expect(calls[0]?.messages[0]?.content).toContain("Never use \\(...\\)");
   });
 
+  test("uses structured JSON only for an explicit side-chat visualization request and persists the visual", async () => {
+    const jsonCalls: ChatParams[] = [];
+    let attempt = 0;
+    const visualClient = {
+      listModels: async () => [],
+      chatText: async () => { throw new Error("visual request must not use the plain text path"); },
+      chatJson: async (params: ChatParams) => {
+        jsonCalls.push(params);
+        attempt += 1;
+        if (attempt === 1) return { answer: "명세가 잘못된 첫 시도", visual: { type: "function_plot" } };
+        return {
+          answer: "$p(ISI)=\\lambda e^{-\\lambda ISI}$는 오른쪽으로 갈수록 감소합니다.",
+          visual: {
+            type: "function_plot",
+            title: "포아송 과정의 ISI 확률밀도",
+            xAxis: { label: "ISI", min: 0, max: 5 },
+            yAxis: { label: "p(ISI)", min: 0, max: 1 },
+            parameters: { lambda: 1 },
+            series: [{
+              label: "λ = 1",
+              expression: {
+                op: "multiply",
+                left: { op: "parameter", name: "lambda" },
+                right: {
+                  op: "exp",
+                  value: {
+                    op: "negate",
+                    value: { op: "multiply", left: { op: "parameter", name: "lambda" }, right: { op: "x" } },
+                  },
+                },
+              },
+            }],
+            annotations: [{ x: 0, y: 1, label: "최댓값 λ" }],
+          },
+        };
+      },
+    };
+    service = new AnnotationService(
+      { getArtifacts: async () => artifacts() } as never,
+      async () => ({
+        publicSettings: { aiProvider: "openai", providers: { openai: { selectedModel: "deepseek-v4-pro" } } },
+        apiKey: { value: "test-key", source: "test" },
+        client: visualClient,
+      }) as never
+    );
+
+    const response = await service.askTurn({
+      materialId: "material-1",
+      chunkId: "chunk-1",
+      selectedText: "p(ISI) = lambda exp(-lambda ISI)",
+      userText: "이 식을 그래프로 보여줘",
+    });
+
+    expect(jsonCalls).toHaveLength(2);
+    expect(jsonCalls[0]?.messages[0]?.content).toContain("Return exactly one JSON object");
+    expect(jsonCalls[0]?.messages[0]?.content).toContain("Never return SVG");
+    expect(jsonCalls[1]?.messages.at(-1)?.content).toContain("previous response was not a valid visual JSON");
+    expect(response.thread.messages[1]?.visual).toMatchObject({
+      type: "function_plot",
+      parameters: { lambda: 1 },
+    });
+
+    const saved = await service.save({
+      materialId: "material-1",
+      chunkId: "chunk-1",
+      surface: "chat",
+      kind: "question",
+      selectedText: "p(ISI) = lambda exp(-lambda ISI)",
+      result: response.thread,
+      sourceMeta: response.thread.sourceMeta,
+    });
+    expect(saved.result.kind === "question_thread" ? saved.result.messages[1]?.visual?.type : null).toBe("function_plot");
+    const snapshot = JSON.parse(await readFile(join(tempRoot, "project-1", "materials", "material-1", "annotations.json"), "utf8"));
+    expect(snapshot[0]?.result?.messages?.[1]?.visual?.type).toBe("function_plot");
+  });
+
   test("saves a chat note with its text anchor and snapshot payload", async () => {
     const textAnchor = {
       version: 1 as const,

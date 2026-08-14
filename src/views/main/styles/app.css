@@ -4800,6 +4800,7 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   background: var(--surface-raised);
   box-shadow: 0 20px 52px rgba(24, 23, 22, 0.22);
 }
+.selection-side-chat.has-visual { width: min(680px, calc(100vw - 24px)); }
 .selection-side-chat.dragging { box-shadow: 0 24px 60px rgba(24, 23, 22, 0.28); }
 .selection-side-chat > header {
   display: flex;
@@ -4881,6 +4882,65 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
 .side-chat-message.assistant { align-self: stretch; }
 .side-chat-message.assistant .markdown-content { font-size: 14.5px; line-height: 1.62; }
 .side-chat-message.pending { opacity: 0.78; }
+.side-chat-visual {
+  width: 100%;
+  margin: 12px 0 4px;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface-soft);
+}
+.side-chat-visual > figcaption {
+  border-bottom: 1px solid var(--line);
+  padding: 9px 11px;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 780;
+  line-height: 1.35;
+}
+.side-chat-visual-canvas {
+  width: 100%;
+  overflow-x: auto;
+  padding: 8px;
+  scrollbar-gutter: stable;
+}
+.side-chat-visual svg { display: block; width: 100%; min-width: 520px; height: auto; }
+.side-chat-plot .plot-grid line { stroke: var(--line); stroke-width: 1; }
+.side-chat-plot .plot-axes line { stroke: var(--muted); stroke-width: 1.25; }
+.side-chat-plot .plot-axes text,
+.side-chat-diagram .diagram-edges text { fill: var(--muted); font-size: 11px; }
+.side-chat-plot .plot-axes .axis-label { fill: var(--ink); font-size: 13px; font-weight: 700; }
+.side-chat-plot .plot-series path {
+  fill: none;
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.side-chat-plot .plot-series .series-a { stroke: var(--question-accent); }
+.side-chat-plot .plot-series .series-b { stroke: var(--teal); }
+.side-chat-plot .plot-series .series-c { stroke: var(--accent); }
+.side-chat-plot .plot-series .series-d { stroke: var(--danger); }
+.side-chat-plot .plot-legend line { stroke-width: 3; stroke-linecap: round; }
+.side-chat-plot .plot-legend text { fill: var(--muted); font-size: 10.5px; }
+.side-chat-plot .plot-legend .series-a line { stroke: var(--question-accent); }
+.side-chat-plot .plot-legend .series-b line { stroke: var(--teal); }
+.side-chat-plot .plot-legend .series-c line { stroke: var(--accent); }
+.side-chat-plot .plot-legend .series-d line { stroke: var(--danger); }
+.side-chat-plot .plot-annotations circle { fill: var(--surface-raised); stroke: var(--question-accent); stroke-width: 2; }
+.side-chat-plot .plot-annotations text { fill: var(--ink); font-size: 11px; font-weight: 680; }
+.side-chat-diagram .diagram-edges path { fill: none; stroke: var(--question-accent-line); stroke-width: 2; }
+.side-chat-diagram marker path { fill: var(--question-accent); }
+.side-chat-diagram .diagram-edges text {
+  paint-order: stroke;
+  stroke: var(--surface-soft);
+  stroke-width: 5px;
+  stroke-linejoin: round;
+}
+.side-chat-diagram .diagram-node rect { fill: var(--surface-raised); stroke: var(--line-strong); stroke-width: 1.5; }
+.side-chat-diagram .diagram-node.accent rect { fill: var(--question-accent-soft); stroke: var(--question-accent-line); }
+.side-chat-diagram .diagram-node.muted rect { fill: var(--panel-soft); stroke: var(--line); }
+.side-chat-diagram .diagram-node-label { fill: var(--ink); font-size: 13px; font-weight: 760; }
+.side-chat-diagram .diagram-node-detail { fill: var(--muted); font-size: 10px; }
 .side-chat-pending { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12.5px; }
 .side-chat-error {
   display: flex;

@@ -14,12 +14,14 @@ import type {
   NoteResult,
   QuestionThreadMessage,
   QuestionThreadResult,
+  SideChatVisualSpec,
   HighlightResult,
   SourceChunk,
   TextSelectionAnchor,
 } from "../shared/artifact-types";
 import type { AppSettings } from "../shared/settings-types";
 import { isQuestionThreadResult } from "../shared/question-thread";
+import { isSideChatVisualizationRequest, normalizeSideChatVisualSpec } from "../shared/side-chat-visual";
 import { directImageUrl, loadDirectImage } from "./direct-image-service";
 
 type ProviderClientContext = {
@@ -150,6 +152,7 @@ const SELECTION_QUESTION_ANSWER_TOKENS = 3200;
 const QUESTION_THREAD_MAX_MESSAGES = 120;
 const QUESTION_THREAD_MAX_MESSAGE_CHARS = 12_000;
 const QUESTION_THREAD_MAX_TOTAL_CHARS = 120_000;
+const QUESTION_THREAD_MAX_VISUAL_CHARS = 32_000;
 const QUESTION_THREAD_CONTEXT_MESSAGES = 16;
 const QUESTION_THREAD_SUMMARY_CHARS = 4_000;
 const QUESTION_WEB_SEARCH_QUERY_CHARS = 260;
@@ -216,6 +219,9 @@ function normalizeThreadMessage(message: QuestionThreadMessage, index: number): 
   if (!content) throw new Error("Side-chat messages cannot be empty");
   if (content.length > QUESTION_THREAD_MAX_MESSAGE_CHARS) throw new Error("A side-chat message is too long");
   const createdAt = Number.isFinite(message.createdAt) ? message.createdAt : Date.now();
+  const visual = message.visual === undefined ? undefined : normalizeSideChatVisualSpec(message.visual);
+  if (message.visual !== undefined && !visual) throw new Error("Side-chat visual is invalid");
+  if (visual && JSON.stringify(visual).length > QUESTION_THREAD_MAX_VISUAL_CHARS) throw new Error("Side-chat visual is too large");
   return {
     id: typeof message.id === "string" && message.id.trim() ? message.id.trim().slice(0, 240) : `imported-${index}-${createdAt}`,
     role: message.role,
@@ -227,6 +233,7 @@ function normalizeThreadMessage(message: QuestionThreadMessage, index: number): 
     ...(message.role === "assistant" && Array.isArray(message.sources)
       ? { sources: normalizeSourceMetaList(message.sources, 10) }
       : {}),
+    ...(message.role === "assistant" && visual ? { visual } : {}),
   };
 }
 
@@ -238,7 +245,7 @@ function validateDraftThread(value: QuestionThreadResult | undefined) {
   const ids = new Set<string>();
   let totalChars = 0;
   messages.forEach((message, index) => {
-    totalChars += message.content.length;
+    totalChars += message.content.length + (message.visual ? JSON.stringify(message.visual).length : 0);
     if (ids.has(message.id)) throw new Error("Side-chat message ids must be unique");
     ids.add(message.id);
     const expectedRole = index % 2 === 0 ? "user" : "assistant";
@@ -266,7 +273,10 @@ function validateDraftThread(value: QuestionThreadResult | undefined) {
 function compactEarlierThread(messages: QuestionThreadMessage[]) {
   if (!messages.length) return "";
   const summary = messages
-    .map((message) => `${message.role === "user" ? "Learner" : "Tutor"}: ${compactText(message.content, 320)}`)
+    .map((message) => {
+      const visual = message.visual ? ` [visual: ${message.visual.type} · ${message.visual.title}]` : "";
+      return `${message.role === "user" ? "Learner" : "Tutor"}: ${compactText(message.content, 320)}${visual}`;
+    })
     .join("\n");
   return compactText(summary, QUESTION_THREAD_SUMMARY_CHARS);
 }
@@ -434,7 +444,7 @@ async function fetchJson<T>(url: string, timeoutMs = 10000): Promise<T> {
   const response = await fetch(url, {
     headers: {
       accept: "application/json",
-      "user-agent": "Learnie/0.9.0 desktop learning app",
+      "user-agent": "Learnie/0.9.1 desktop learning app",
     },
     signal: AbortSignal.timeout(timeoutMs),
   });
@@ -454,7 +464,7 @@ async function fetchImageDataUrl(value: string, timeoutMs = 10000): Promise<stri
   const response = await fetch(url.toString(), {
     headers: {
       accept: "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
-      "user-agent": "Learnie/0.9.0 desktop learning app",
+      "user-agent": "Learnie/0.9.1 desktop learning app",
     },
     signal: AbortSignal.timeout(timeoutMs),
   });
@@ -945,6 +955,40 @@ const MATH_RENDERING_RULE = [
   "Never use \\(...\\) or \\[...\\] as math delimiters, and never leave LaTeX commands such as \\lambda outside math delimiters.",
 ].join(" ");
 
+const SIDE_CHAT_VISUAL_JSON_RULE = `Return exactly one JSON object with this shape:
+{
+  "answer": "A short learner-facing explanation in Markdown",
+  "visual": {
+    "type": "function_plot | line_chart | diagram",
+    "title": "..."
+  }
+}
+
+Allowed visual shapes:
+1. function_plot: {"type":"function_plot","title":"...","xAxis":{"label":"...","min":0,"max":5},"yAxis":{"label":"...","min":0,"max":1},"parameters":{"lambda":1},"series":[{"label":"lambda = 1","expression": EXPRESSION}],"annotations":[{"x":0,"y":1,"label":"..."}]}
+2. line_chart: {"type":"line_chart","title":"...","xAxis":{"label":"...","min":0,"max":10},"yAxis":{"label":"..."},"series":[{"label":"...","points":[{"x":0,"y":0},{"x":1,"y":1}]}],"annotations":[]}
+3. diagram: {"type":"diagram","title":"...","direction":"horizontal|vertical","nodes":[{"id":"n1","label":"...","detail":"...","tone":"default|accent|muted"}],"edges":[{"from":"n1","to":"n2","label":"..."}]}
+
+Function expressions are JSON trees. Leaves are {"op":"x"}, {"op":"number","value":1}, or {"op":"parameter","name":"lambda"}. Unary operations are negate, abs, sqrt, exp, log, sin, cos, tan and use {"op":"exp","value":EXPRESSION}. Binary operations are add, subtract, multiply, divide, power, min, max and use {"op":"multiply","left":EXPRESSION,"right":EXPRESSION}.
+
+For example, lambda * exp(-lambda * x) is {"op":"multiply","left":{"op":"parameter","name":"lambda"},"right":{"op":"exp","value":{"op":"negate","value":{"op":"multiply","left":{"op":"parameter","name":"lambda"},"right":{"op":"x"}}}}}.
+
+Use function_plot for a formula and encode the exact formula as an expression tree so Learnie computes the curve. Use line_chart only for actual supplied data or a clearly qualitative trace; never invent measurements. Use diagram for concepts, mechanisms, causal relations, or processes. Keep diagrams to 12 nodes, charts to 4 series, and labels concise. Never return SVG, HTML, Mermaid, CSS, JavaScript, URLs, or executable expressions. The visual must answer the learner's visualization request, not merely restate it.`;
+
+function sideChatHistoryContent(message: QuestionThreadMessage) {
+  if (message.role !== "assistant" || !message.visual) return message.content;
+  return `${message.content}\n\nPrevious Learnie visual JSON:\n${JSON.stringify(message.visual)}`;
+}
+
+function normalizeVisualTurnResponse(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("AI returned an invalid side-chat visual response");
+  const response = value as Record<string, unknown>;
+  const answer = typeof response.answer === "string" ? response.answer.trim() : "";
+  const visual = normalizeSideChatVisualSpec(response.visual);
+  if (!answer || !visual) throw new Error("AI did not return a valid graph or diagram specification");
+  return { body: compactMarkdownText(answer, SELECTION_QUESTION_ANSWER_CHARS), visual };
+}
+
 function citedWebSourceIds(value: string) {
   return new Set(
     [...value.matchAll(/\[(S\d+)\]/gi)]
@@ -1015,6 +1059,7 @@ export class AnnotationService {
         createdAt: Date.now(),
         model: answer.model,
         sources: answer.sourceMeta.filter((source) => Boolean(source.url)),
+        ...(answer.visual ? { visual: answer.visual } : {}),
       },
     ];
     const thread: QuestionThreadResult = {
@@ -1314,6 +1359,7 @@ export class AnnotationService {
     const model = publicSettings.providers[publicSettings.aiProvider].selectedModel;
     if (!apiKey.value || !model) throw new Error("AI provider is not configured");
     const webSources = useWebSearch ? await this.searchQuestionSources(client, model, selectedText, question, context) : [];
+    const wantsVisual = isSideChatVisualizationRequest(question, history);
 
     const recentHistory = history.slice(-QUESTION_THREAD_CONTEXT_MESSAGES);
     const earlierSummary = compactEarlierThread(history.slice(0, -QUESTION_THREAD_CONTEXT_MESSAGES));
@@ -1338,23 +1384,56 @@ export class AnnotationService {
       "Write in Korean unless the learner clearly uses another language.",
       TERM_RENDERING_RULE,
       MATH_RENDERING_RULE,
+      wantsVisual
+        ? "The learner explicitly requested a graph, visualization, or diagram. Return a valid visual specification with a concise explanation."
+        : "Do not add a graph or diagram unless the learner explicitly requests one.",
+      wantsVisual ? SIDE_CHAT_VISUAL_JSON_RULE : "",
       "Use short paragraphs or a compact list when clearer. Do not expose internal app terminology.",
       "Keep the answer complete and substantive; do not stop mid-sentence.",
       referenceContext,
       useWebSearch ? questionWebSourceBlock(webSources) : "",
       earlierSummary ? `Summary of earlier side-chat turns:\n${earlierSummary}` : "",
     ].filter(Boolean).join("\n\n---\n\n");
-    const draftBody = await client.chatText({
-      model,
-      temperature: 0.35,
-      maxTokens: SELECTION_QUESTION_ANSWER_TOKENS,
-      timeoutMs: 90000,
-      messages: [
-        { role: "system", content: tutorInstructions },
-        ...recentHistory.map((message) => ({ role: message.role, content: message.content })),
-        { role: "user", content: question },
-      ],
-    });
+    const messages = [
+      { role: "system" as const, content: tutorInstructions },
+      ...recentHistory.map((message) => ({ role: message.role, content: sideChatHistoryContent(message) })),
+      { role: "user" as const, content: question },
+    ];
+    let draftBody = "";
+    let visual: SideChatVisualSpec | undefined;
+    if (wantsVisual) {
+      let lastError: unknown;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          const response = normalizeVisualTurnResponse(await client.chatJson({
+            model,
+            temperature: attempt === 0 ? 0.25 : 0.1,
+            maxTokens: SELECTION_QUESTION_ANSWER_TOKENS,
+            timeoutMs: 90000,
+            messages: attempt === 0
+              ? messages
+              : [
+                  ...messages.slice(0, -1),
+                  { role: "user" as const, content: `${question}\n\nYour previous response was not a valid visual JSON object. Return only the required JSON object now.` },
+                ],
+          }));
+          draftBody = response.body;
+          visual = response.visual;
+          break;
+        } catch (error) {
+          lastError = error;
+        }
+      }
+      if (!visual) throw new Error(`그래프 또는 다이어그램 명세를 만들지 못했습니다: ${(lastError as Error)?.message || "invalid visual response"}`);
+    } else {
+      draftBody = await client.chatText({
+        model,
+        temperature: 0.35,
+        maxTokens: SELECTION_QUESTION_ANSWER_TOKENS,
+        timeoutMs: 90000,
+        messages,
+      });
+    }
     const body = useWebSearch
       ? await this.ensureWebGroundedAnswer(client, model, question, draftBody, webSources)
       : draftBody;
@@ -1362,6 +1441,7 @@ export class AnnotationService {
     const retrievedAt = new Date().toISOString();
     return {
       body: compactMarkdownText(body, SELECTION_QUESTION_ANSWER_CHARS),
+      ...(visual ? { visual } : {}),
       model,
       retrievedAt,
       sourceMeta: [

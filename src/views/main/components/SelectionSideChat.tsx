@@ -5,6 +5,7 @@ import type { ChatSubmitShortcut } from "../../../shared/settings-types";
 import { InlineMarkdownContent, MarkdownContent } from "./MarkdownContent";
 import { shouldSubmitTextArea } from "../submit-shortcut";
 import { QuestionWebSources } from "./QuestionWebSources";
+import { SideChatVisualRenderer } from "./SideChatVisualRenderer";
 
 export type SelectionSideChatState = {
   key: string;
@@ -33,10 +34,11 @@ type SelectionSideChatProps = {
 };
 
 const PANEL_WIDTH = 460;
+const VISUAL_PANEL_WIDTH = 680;
 const PANEL_HEIGHT = 680;
 
-export function clampSideChatPoint(x: number, y: number) {
-  const width = Math.min(PANEL_WIDTH, window.innerWidth - 24);
+export function clampSideChatPoint(x: number, y: number, hasVisual = false) {
+  const width = Math.min(hasVisual ? VISUAL_PANEL_WIDTH : PANEL_WIDTH, window.innerWidth - 24);
   const height = Math.min(PANEL_HEIGHT, window.innerHeight * 0.72, window.innerHeight - 100);
   return {
     x: Math.max(12, Math.min(window.innerWidth - width - 12, x)),
@@ -63,6 +65,7 @@ export function SelectionSideChat({
   const busy = panel.status === "asking" || panel.status === "saving";
   const saved = Boolean(panel.annotationId) && !panel.hasUnsavedChanges;
   const saveLabel = saved ? "저장됨" : panel.annotationId ? "변경 저장" : "저장";
+  const hasVisual = Boolean(panel.thread?.messages.some((message) => message.role === "assistant" && message.visual));
 
   useEffect(() => {
     composerRef.current?.focus();
@@ -73,12 +76,18 @@ export function SelectionSideChat({
     if (transcript) transcript.scrollTop = transcript.scrollHeight;
   }, [panel.thread?.messages.length, panel.pendingUserText, panel.status]);
 
+  useLayoutEffect(() => {
+    if (!hasVisual) return;
+    const next = clampSideChatPoint(panel.x, panel.y, true);
+    if (next.x !== panel.x || next.y !== panel.y) onMove(next.x, next.y);
+  }, [hasVisual, onMove, panel.x, panel.y]);
+
   useEffect(() => {
     if (!dragging) return;
     function onPointerMove(event: globalThis.PointerEvent) {
       const drag = dragRef.current;
       if (!drag) return;
-      const next = clampSideChatPoint(event.clientX - drag.offsetX, event.clientY - drag.offsetY);
+      const next = clampSideChatPoint(event.clientX - drag.offsetX, event.clientY - drag.offsetY, hasVisual);
       onMove(next.x, next.y);
     }
     function onPointerUp() {
@@ -93,7 +102,7 @@ export function SelectionSideChat({
       window.removeEventListener("pointerup", onPointerUp);
       window.removeEventListener("pointercancel", onPointerUp);
     };
-  }, [dragging, onMove]);
+  }, [dragging, hasVisual, onMove]);
 
   function startDrag(event: PointerEvent<HTMLElement>) {
     if ((event.target as Element).closest("button")) return;
@@ -113,7 +122,7 @@ export function SelectionSideChat({
 
   return (
     <aside
-      className={`selection-side-chat ${dragging ? "dragging" : ""}`}
+      className={`selection-side-chat ${hasVisual ? "has-visual" : ""} ${dragging ? "dragging" : ""}`}
       role="dialog"
       aria-label="선택 텍스트 사이드 대화"
       style={{ left: panel.x, top: panel.y }}
@@ -157,6 +166,7 @@ export function SelectionSideChat({
             {message.role === "assistant" ? (
               <>
                 <MarkdownContent content={message.content} compact />
+                {message.visual ? <SideChatVisualRenderer visual={message.visual} /> : null}
                 <QuestionWebSources sources={message.sources} />
               </>
             ) : <MarkdownContent content={message.content} compact />}

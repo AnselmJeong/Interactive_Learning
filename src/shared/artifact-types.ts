@@ -71,6 +71,39 @@ export type LookupResult = {
   sourceMeta: LookupSourceMeta[];
 };
 
+export type SideChatPlotExpression =
+  | { op: "x" }
+  | { op: "number"; value: number }
+  | { op: "parameter"; name: string }
+  | { op: "negate" | "abs" | "sqrt" | "exp" | "log" | "sin" | "cos" | "tan"; value: SideChatPlotExpression }
+  | { op: "add" | "subtract" | "multiply" | "divide" | "power" | "min" | "max"; left: SideChatPlotExpression; right: SideChatPlotExpression };
+
+export type SideChatVisualSpec =
+  | {
+      type: "function_plot";
+      title: string;
+      xAxis: { label: string; min: number; max: number };
+      yAxis: { label: string; min?: number; max?: number };
+      parameters?: Record<string, number>;
+      series: Array<{ label: string; expression: SideChatPlotExpression }>;
+      annotations?: Array<{ x: number; y?: number; label: string }>;
+    }
+  | {
+      type: "line_chart";
+      title: string;
+      xAxis: { label: string; min?: number; max?: number };
+      yAxis: { label: string; min?: number; max?: number };
+      series: Array<{ label: string; points: Array<{ x: number; y: number }> }>;
+      annotations?: Array<{ x: number; y?: number; label: string }>;
+    }
+  | {
+      type: "diagram";
+      title: string;
+      direction: "horizontal" | "vertical";
+      nodes: Array<{ id: string; label: string; detail?: string; tone?: "default" | "accent" | "muted" }>;
+      edges: Array<{ from: string; to: string; label?: string }>;
+    };
+
 export type QuestionThreadMessage = {
   id: string;
   role: "user" | "assistant";
@@ -78,6 +111,7 @@ export type QuestionThreadMessage = {
   createdAt: number;
   model?: string;
   sources?: LookupSourceMeta[];
+  visual?: SideChatVisualSpec;
 };
 
 export type QuestionThreadResult = {
