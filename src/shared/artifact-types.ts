@@ -155,6 +155,26 @@ export type ImageLookupResult = {
 export type NoteResult = {
   kind: "note";
   note: string;
+  images?: NoteImageAttachment[];
+};
+
+export type NoteImageAttachment = {
+  id: string;
+  fileName: string;
+  mimeType: "image/png" | "image/jpeg" | "image/webp" | "image/gif";
+  byteSize: number;
+  width?: number;
+  height?: number;
+  /** Runtime-only URL. Persisted snapshots keep only portable attachment metadata. */
+  url?: string;
+};
+
+export type NoteImageUpload = {
+  fileName: string;
+  mimeType: string;
+  dataBase64: string;
+  width?: number;
+  height?: number;
 };
 
 export type HighlightResult = {

@@ -4,13 +4,14 @@ import type { AnnotationReadableExport, BookMetadataCandidate, BookMetadataSearc
 import type { ProjectTransferExport, ProjectTransferPreview, SessionReadableExport } from "../../shared/project-transfer-types";
 import type { DocumentTransferExport, DocumentTransferImportPreview, DocumentTransferImportResult } from "../../shared/document-transfer-types";
 import type { AppSettings, AiProviderStatus, ChatSubmitShortcut, ProviderModel } from "../../shared/settings-types";
-import type { DocumentType, MaterialAnnotation, MaterialArtifacts, QuestionThreadResult, VisualSpec } from "../../shared/artifact-types";
+import type { DocumentType, MaterialAnnotation, MaterialArtifacts, NoteImageUpload, QuestionThreadResult, VisualSpec } from "../../shared/artifact-types";
 import type { LearningMessageSetSummary, SessionSnapshot, SessionSummary, SourceRef, TutorContext, TutorMessage, TutorPrefetchStatus } from "../../shared/tutor-types";
 import type { PreparedLearningIrResult } from "../../shared/learning-ir-types";
 import { displayableCourseTitle, displayableHeadingPath, displayableModuleTitle, displayableOutlineTitle, titleCasedSourceTitle } from "../../shared/display-title";
 import { SettingsModal } from "./components/SettingsModal";
 import { VisualRenderer } from "./components/VisualRenderer";
 import { MarkdownContent } from "./components/MarkdownContent";
+import { NoteImageGallery } from "./components/NoteImages";
 import { TutorBlockRenderer } from "./components/TutorBlockRenderer";
 import { ImmersiveSourceView } from "./components/ImmersiveSourceView";
 import { LearningSelectionLookup } from "./components/LearningSelectionLookup";
@@ -398,7 +399,10 @@ function ChatSavedAnnotationCard({
           </div>
         ) : null
       ) : result.kind === "note" ? (
-        <MarkdownContent content={result.note} compact />
+        <>
+          {result.note ? <MarkdownContent content={result.note} compact /> : null}
+          <NoteImageGallery images={result.images || []} />
+        </>
       ) : (
         <p>저장된 표시입니다.</p>
       )}
@@ -2555,9 +2559,9 @@ export function App({ request }: { request: RpcRequest }) {
     const annotation = artifacts?.annotations.find((item) => item.id === annotationId);
     if (annotation) queueAnnotationDeletion(annotation);
   }, [artifacts?.annotations, queueAnnotationDeletion]);
-  const updateProjectNote = useCallback(async (annotationId: string, note: string) => {
+  const updateProjectNote = useCallback(async (annotationId: string, note: string, imagesToAdd?: NoteImageUpload[], imageIdsToRemove?: string[]) => {
     try {
-      const annotation = (await request("annotations.updateNote", { annotationId, note })) as MaterialAnnotation;
+      const annotation = (await request("annotations.updateNote", { annotationId, note, imagesToAdd, imageIdsToRemove })) as MaterialAnnotation;
       handleAnnotationSaved(annotation);
     } catch (error) {
       setStatus(`노트 편집 실패: ${(error as Error).message}`);

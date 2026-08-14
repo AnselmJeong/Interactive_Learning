@@ -1,13 +1,16 @@
 import { existsSync } from "node:fs";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getDb } from "./project-db";
 import { SettingsService } from "./settings-service";
 import { writeZipFromDirectory } from "./archive-writer";
 import type { AnnotationReadableExport } from "../shared/rpc-types";
+import type { NoteImageAttachment } from "../shared/artifact-types";
+import { resolveNoteImageAsset } from "./annotation-image-assets";
 
 type ExportAnnotationRow = {
+  id: string;
   kind: string;
   selected_text: string;
   result_json: string;
@@ -44,9 +47,9 @@ function json<T>(raw: string | null, fallback: T): T {
   }
 }
 
-function resultMarkdown(raw: string) {
+function resultMarkdown(raw: string, noteImageMarkdown = "") {
   const result = json<Record<string, unknown>>(raw, {});
-  if (result.kind === "note" && typeof result.note === "string") return result.note.trim();
+  if (result.kind === "note" && typeof result.note === "string") return [result.note.trim(), noteImageMarkdown].filter(Boolean).join("\n\n");
   if (result.kind === "question_thread" && Array.isArray(result.messages)) {
     return result.messages.map((message) => {
       const item = message as Record<string, unknown>;
@@ -69,6 +72,11 @@ function resultMarkdown(raw: string) {
   return body.trim();
 }
 
+function noteImages(raw: string) {
+  const result = json<{ kind?: string; images?: NoteImageAttachment[] }>(raw, {});
+  return result.kind === "note" && Array.isArray(result.images) ? result.images : [];
+}
+
 function sourceLinks(raw: string) {
   return json<Array<{ title?: string; url?: string }>>(raw, [])
     .map((source) => source.url ? `- [${source.title || source.url}](${source.url})` : source.title ? `- ${source.title}` : "")
@@ -83,7 +91,7 @@ export class AnnotationExportService {
     if (!ids.length) throw new Error("내보낼 annotation이 없습니다.");
     const placeholders = ids.map(() => "?").join(", ");
     const rows = getDb().query<ExportAnnotationRow, string[]>(`
-      SELECT a.kind, a.selected_text, a.result_json, a.source_meta_json, a.anchor_json, a.created_at,
+      SELECT a.id, a.kind, a.selected_text, a.result_json, a.source_meta_json, a.anchor_json, a.created_at,
              d.title AS document_title, d.document_type, s.title AS source_title, p.title AS project_title
       FROM material_annotations a
       JOIN projects p ON p.id = a.project_id
@@ -104,6 +112,7 @@ export class AnnotationExportService {
     ];
     let currentDocument = "";
     let currentSource = "";
+    const assetsToCopy: Array<{ sourcePath: string; relativePath: string }> = [];
     for (const row of rows) {
       const documentTitle = row.document_title || "분류되지 않은 자료";
       if (documentTitle !== currentDocument) {
@@ -117,7 +126,15 @@ export class AnnotationExportService {
       }
       const kindLabel = row.kind === "note" ? "노트" : row.kind === "highlight" ? "하이라이트" : row.kind === "question" ? "질문" : row.kind === "image" ? "이미지" : "찾아보기";
       lines.push(`#### ${kindLabel} · ${new Date(row.created_at).toLocaleString("ko-KR")}`, "", `> ${row.selected_text.replace(/\n/g, "\n> ")}`, "");
-      const body = resultMarkdown(row.result_json);
+      const imageLines = noteImages(row.result_json).map((image) => {
+        const asset = resolveNoteImageAsset(row.id, image.id);
+        if (!asset) return "";
+        const extension = image.mimeType === "image/jpeg" ? "jpg" : image.mimeType.split("/")[1] || "img";
+        const relativePath = `assets/${row.id}-${image.id}.${extension}`;
+        assetsToCopy.push({ sourcePath: asset.path, relativePath });
+        return `![${image.fileName.replace(/[\[\]]/g, " ")}](${relativePath})`;
+      }).filter(Boolean).join("\n\n");
+      const body = resultMarkdown(row.result_json, imageLines);
       if (body) lines.push(body, "");
       const links = sourceLinks(row.source_meta_json);
       if (links.length) lines.push("참고:", ...links, "");
@@ -132,9 +149,13 @@ export class AnnotationExportService {
     const exportRoot = join(staging, `${safeFilePart(projectTitle)}-annotations`);
     try {
       await mkdir(exportRoot, { recursive: true });
+      if (assetsToCopy.length) {
+        await mkdir(join(exportRoot, "assets"), { recursive: true });
+        await Promise.all(assetsToCopy.map((asset) => copyFile(asset.sourcePath, join(exportRoot, asset.relativePath))));
+      }
       await writeFile(join(exportRoot, "annotations.md"), `${lines.join("\n").trim()}\n`, "utf8");
       await writeZipFromDirectory(staging, zipPath);
-      return { zipPath, fileName: zipPath.split("/").pop() || fileName, projectId, annotationCount: rows.length, assetCount: 0 };
+      return { zipPath, fileName: zipPath.split("/").pop() || fileName, projectId, annotationCount: rows.length, assetCount: assetsToCopy.length };
     } finally {
       await rm(staging, { recursive: true, force: true });
     }

@@ -66,6 +66,33 @@ describe("annotation store", () => {
     expect(loaded[0]?.result).toEqual({ kind: "highlight", style: "yellow" });
   });
 
+  test("keeps multiple notes attached to the same selected text anchor", () => {
+    const first = saveMaterialAnnotation({
+      materialId: "material-1",
+      chunkId: "chunk-1",
+      surface: "source",
+      kind: "note",
+      selectedText: "alpha beta",
+      textAnchor: anchor(),
+      result: { kind: "note", note: "First note" },
+      sourceMeta: [],
+    });
+    const second = saveMaterialAnnotation({
+      materialId: "material-1",
+      chunkId: "chunk-1",
+      surface: "source",
+      kind: "note",
+      selectedText: "alpha beta",
+      textAnchor: anchor(),
+      result: { kind: "note", note: "Second note" },
+      sourceMeta: [],
+    });
+
+    const notes = listMaterialAnnotations("material-1");
+    expect(notes.map((note) => note.id)).toEqual([first.id, second.id]);
+    expect(notes.map((note) => note.result.kind === "note" ? note.result.note : "")).toEqual(["First note", "Second note"]);
+  });
+
   test("replaceMaterialAnnotations preserves text anchors", () => {
     const saved = saveMaterialAnnotation({
       materialId: "material-1",

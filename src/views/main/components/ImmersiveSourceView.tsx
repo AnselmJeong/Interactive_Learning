@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type PointerEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type PointerEvent } from "react";
 import { Bookmark, Globe2, Highlighter, Image as ImageIcon, Loader2, LocateFixed, MessageSquare, Save, Search, Sparkles, StickyNote, Trash2, X } from "lucide-react";
 import type { ImageLookupResult, LookupResult, MaterialAnnotation, MaterialArtifacts, TextSelectionAnchor } from "../../../shared/artifact-types";
 import type { ChatSubmitShortcut } from "../../../shared/settings-types";
@@ -17,6 +17,7 @@ import { QuestionWebSources } from "./QuestionWebSources";
 import { HighlightStylePicker } from "./HighlightStylePicker";
 import { HighlightRemoveMenu, type HighlightMenuTarget } from "./HighlightRemoveMenu";
 import { DEFAULT_SHORTCUT_HIGHLIGHT_STYLE, type HighlightStyle } from "../highlight-styles";
+import { NoteImageGallery, noteImageUpload, readPastedNoteImages } from "./NoteImages";
 
 type RpcRequest = (method: string, params: unknown) => Promise<unknown>;
 
@@ -159,6 +160,7 @@ export function ImmersiveSourceView({
   const [lookupPanel, setLookupPanel] = useState<LookupPanelState | null>(null);
   const [annotations, setAnnotations] = useState<MaterialAnnotation[]>(artifacts.annotations || []);
   const [editingMarkId, setEditingMarkId] = useState<string | null>(null);
+  const [noteSaveError, setNoteSaveError] = useState<{ annotationId: string; message: string } | null>(null);
   const [activeAnnotationId, setActiveAnnotationId] = useState<string | null>(null);
   const [highlightMenu, setHighlightMenu] = useState<HighlightMenuTarget | null>(null);
   const chunkRefs = useRef(new Map<string, HTMLElement>());
@@ -469,10 +471,20 @@ export function ImmersiveSourceView({
     );
   }
 
-  async function saveNote(markId: string, note: string) {
-    const saved = (await request("annotations.updateNote", { annotationId: markId, note })) as MaterialAnnotation;
-    setAnnotations((current) => [saved, ...current.filter((annotation) => annotation.id !== saved.id)]);
-    onAnnotationSaved?.(saved);
+  async function saveNote(markId: string, note: string, event?: ClipboardEvent<HTMLTextAreaElement>) {
+    try {
+      const imagesToAdd = event ? await readPastedNoteImages(event.clipboardData) : [];
+      const saved = (await request("annotations.updateNote", {
+        annotationId: markId,
+        note,
+        ...(imagesToAdd.length ? { imagesToAdd: imagesToAdd.map(noteImageUpload) } : {}),
+      })) as MaterialAnnotation;
+      setAnnotations((current) => [saved, ...current.filter((annotation) => annotation.id !== saved.id)]);
+      setNoteSaveError((current) => current?.annotationId === markId ? null : current);
+      onAnnotationSaved?.(saved);
+    } catch (error) {
+      setNoteSaveError({ annotationId: markId, message: (error as Error).message || String(error) });
+    }
   }
 
   async function removeMark(markId: string) {
@@ -843,14 +855,19 @@ export function ImmersiveSourceView({
                           </button>
                         </div>
                         {mark.kind === "note" ? (
-                          <textarea
-                            value={annotationNote(mark)}
-                            onFocus={() => setEditingMarkId(mark.id)}
-                            onChange={(event) => updateNote(mark.id, event.target.value)}
-                            onBlur={(event) => void saveNote(mark.id, event.target.value)}
-                            placeholder="이 대목에 대한 생각을 남기세요"
-                            rows={editingMarkId === mark.id ? 3 : 1}
-                          />
+                          <>
+                            <textarea
+                              value={annotationNote(mark)}
+                              onFocus={() => setEditingMarkId(mark.id)}
+                              onChange={(event) => updateNote(mark.id, event.target.value)}
+                              onPaste={(event) => void saveNote(mark.id, annotationNote(mark), event)}
+                              onBlur={(event) => void saveNote(mark.id, event.target.value)}
+                              placeholder="생각을 적거나 그림을 붙여넣으세요"
+                              rows={editingMarkId === mark.id ? 3 : 1}
+                            />
+                            {mark.result.kind === "note" ? <NoteImageGallery images={mark.result.images || []} /> : null}
+                            {noteSaveError?.annotationId === mark.id ? <p className="lookup-error">{noteSaveError.message}</p> : null}
+                          </>
                         ) : null}
                       </article>
                     ))}
@@ -1161,7 +1178,10 @@ function SavedAnnotationCard({
       {result.kind === "define" || result.kind === "lookup" || result.kind === "question" || result.kind === "image" ? (
         <LookupResultBody result={result} />
       ) : result.kind === "note" ? (
-        <MarkdownContent content={result.note} compact />
+        <>
+          {result.note ? <MarkdownContent content={result.note} compact /> : null}
+          <NoteImageGallery images={result.images || []} />
+        </>
       ) : (
         <p className="lookup-result-summary">표시된 텍스트입니다.</p>
       )}

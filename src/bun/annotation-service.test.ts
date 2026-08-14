@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { existsSync } from "node:fs";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -297,6 +298,35 @@ describe("annotation side-chat service", () => {
     const snapshotPath = join(tempRoot, "project-1", "materials", "material-1", "annotations.json");
     const snapshot = JSON.parse(await readFile(snapshotPath, "utf8"));
     expect(snapshot[0]).toMatchObject({ id: saved.id, kind: "note", textAnchor, result: saved.result });
+  });
+
+  test("stores pasted note images as project assets instead of base64 in the annotation JSON", async () => {
+    const saved = await service.saveNote({
+      materialId: "material-1",
+      chunkId: "chunk-1",
+      surface: "chat",
+      selectedText: "selected claim",
+      note: "그림과 함께 저장한 Markdown",
+      images: [{
+        fileName: "clipboard.png",
+        mimeType: "image/png",
+        dataBase64: "iVBORw0KGgo=",
+        width: 320,
+        height: 180,
+      }],
+    });
+    expect(saved.result.kind).toBe("note");
+    const image = saved.result.kind === "note" ? saved.result.images?.[0] : null;
+    expect(image).toMatchObject({ fileName: "clipboard.png", mimeType: "image/png", byteSize: 8, width: 320, height: 180 });
+    const assetPath = join(tempRoot, "project-1", "materials", "material-1", "annotation-assets", saved.id, `${image?.id}.png`);
+    expect([...await readFile(assetPath)]).toEqual([137, 80, 78, 71, 13, 10, 26, 10]);
+
+    const snapshot = JSON.parse(await readFile(join(tempRoot, "project-1", "materials", "material-1", "annotations.json"), "utf8"));
+    expect(snapshot[0]?.result?.images?.[0]?.dataBase64).toBeUndefined();
+    expect(JSON.stringify(snapshot)).not.toContain("iVBORw0KGgo");
+
+    await service.updateNote({ annotationId: saved.id, note: "텍스트만 남김", imageIdsToRemove: [image!.id] });
+    expect(existsSync(assetPath)).toBe(false);
   });
 
   test("grounds an opted-in side-chat turn with Ollama web sources and preserves them on the answer", async () => {

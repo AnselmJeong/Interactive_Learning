@@ -37,6 +37,7 @@ type MaterialAnnotationRow = {
 };
 
 export type SaveMaterialAnnotationInput = {
+  id?: string;
   materialId: string;
   chunkId: string;
   sourceId?: string | null;
@@ -135,7 +136,7 @@ export function saveMaterialAnnotation(input: SaveMaterialAnnotationInput) {
     .get(input.materialId);
   if (!material) throw new Error("Material not found");
 
-  const id = crypto.randomUUID();
+  const id = input.id || crypto.randomUUID();
   const now = Date.now();
   const selectedText = input.selectedText.replace(/\s+/g, " ").trim().slice(0, SELECTED_TEXT_MAX_CHARS);
   if (!selectedText) throw new Error("Selected text is empty");

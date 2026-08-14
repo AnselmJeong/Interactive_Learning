@@ -162,7 +162,9 @@ export function highlightAnnotationIdsForRange(root: HTMLElement, range: Range) 
   const marks = root.querySelectorAll<HTMLElement>(".annotation-inline-mark[data-annotation-kind='highlight'][data-annotation-id]");
   for (const mark of marks) {
     try {
-      if (range.intersectsNode(mark) && mark.dataset.annotationId) ids.add(mark.dataset.annotationId);
+      if (range.intersectsNode(mark)) {
+        for (const id of (mark.dataset.annotationIds || mark.dataset.annotationId || "").split(" ").filter(Boolean)) ids.add(id);
+      }
     } catch {
       // Ignore detached nodes while React is reconciling annotation wrappers.
     }
@@ -171,7 +173,9 @@ export function highlightAnnotationIdsForRange(root: HTMLElement, range: Range) 
 }
 
 export function focusAnnotationInline(root: HTMLElement, annotationId: string) {
-  const target = root.querySelector<HTMLElement>(`[data-annotation-id="${cssEscape(annotationId)}"]`);
+  const target = root.querySelector<HTMLElement>(`[data-annotation-id="${cssEscape(annotationId)}"]`)
+    || [...root.querySelectorAll<HTMLElement>("[data-annotation-ids]")]
+      .find((element) => (element.dataset.annotationIds || "").split(" ").includes(annotationId));
   target?.scrollIntoView({ block: "center", behavior: "smooth" });
   return Boolean(target);
 }
@@ -194,10 +198,20 @@ export function applyAnnotationInlineLinks(input: {
     .filter((item): item is { annotation: MaterialAnnotation; anchor: ResolvedTextAnchor } => Boolean(item))
     .sort((a, b) => b.anchor.startOffset - a.anchor.startOffset || b.anchor.endOffset - a.anchor.endOffset);
 
+  const groups = new Map<string, Array<{ annotation: MaterialAnnotation; anchor: ResolvedTextAnchor }>>();
+  for (const item of resolved) {
+    const key = `${item.anchor.startOffset}:${item.anchor.endOffset}`;
+    const group = groups.get(key) || [];
+    group.push(item);
+    groups.set(key, group);
+  }
+  const grouped = [...groups.values()].sort((a, b) => b[0]!.anchor.startOffset - a[0]!.anchor.startOffset || b[0]!.anchor.endOffset - a[0]!.anchor.endOffset);
   const accepted: ResolvedTextAnchor[] = [];
   let applied = 0;
 
-  for (const item of resolved) {
+  for (const group of grouped) {
+    const item = [...group].sort((a, b) => Number(isInteractiveInlineAnnotation(b.annotation)) - Number(isInteractiveInlineAnnotation(a.annotation))
+      || b.annotation.updatedAt - a.annotation.updatedAt)[0]!;
     if (accepted.some((anchor) => rangesOverlap(anchor, item.anchor))) continue;
     if (hasIgnoredTextNode(input.root, item.anchor)) continue;
     const range = rangeForTextOffsets(input.root, item.anchor.startOffset, item.anchor.endOffset);
@@ -210,12 +224,22 @@ export function applyAnnotationInlineLinks(input: {
     const interactive = isInteractiveInlineAnnotation(item.annotation);
     const wrapper = input.root.ownerDocument.createElement(inlineAnnotationTagName(item.annotation));
     wrapper.id = annotationInlineId(item.annotation.id);
-    wrapper.className = inlineClasses(item.annotation, input.activeAnnotationId);
+    wrapper.className = [
+      inlineClasses(item.annotation, group.some(({ annotation }) => annotation.id === input.activeAnnotationId) ? item.annotation.id : null),
+      ...new Set(group.map(({ annotation }) => `annotation-kind-${annotation.kind}`)),
+    ].join(" ");
     wrapper.dataset.annotationId = item.annotation.id;
+    wrapper.dataset.annotationIds = group.map(({ annotation }) => annotation.id).join(" ");
     wrapper.dataset.annotationKind = item.annotation.kind;
+    if (group.length > 1) {
+      wrapper.dataset.annotationCount = String(group.length);
+      wrapper.setAttribute("aria-label", `${range.toString().trim()} · 저장된 기록 ${group.length}개`);
+    }
     if (interactive) {
       wrapper.setAttribute("href", annotationHasCard(item.annotation) ? `#${annotationCardId(item.annotation.id)}` : `#${annotationInlineId(item.annotation.id)}`);
       wrapper.addEventListener("click", (event) => {
+        const selection = wrapper.ownerDocument.defaultView?.getSelection();
+        if (selection && !selection.isCollapsed) return;
         event.preventDefault();
         input.onActivateAnnotation?.(item.annotation);
       });

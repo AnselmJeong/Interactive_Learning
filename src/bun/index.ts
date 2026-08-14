@@ -29,6 +29,8 @@ import { searchOllamaWeb } from "./ollama-web-search-service";
 import { searchBraveImages } from "./brave-image-search-service";
 import { createFigureAssetServer } from "./figure-asset-server";
 import { createBookCoverAssetServer } from "./book-cover-asset-server";
+import { createAnnotationAssetServer } from "./annotation-asset-server";
+import { resolveNoteImageAsset } from "./annotation-image-assets";
 
 configureAppDataBase(Utils.paths.userData);
 configureDatabaseBase(stableDatabaseBase(Utils.paths.userData));
@@ -51,6 +53,7 @@ const figureAssetServer = createFigureAssetServer(async (materialId, figureId) =
   const figure = artifacts.figures.find((item) => item.id === figureId);
   return figure ? { path: figure.assetPath, mimeType: figure.mimeType || "image/png" } : null;
 });
+const annotationAssetServer = createAnnotationAssetServer(resolveNoteImageAsset);
 const annotations = new AnnotationService(materials, providerClient, async (query) => {
   const ollamaKey = await secrets.getApiKey("ollama");
   return searchOllamaWeb(query, ollamaKey.value);
@@ -63,7 +66,7 @@ const annotations = new AnnotationService(materials, providerClient, async (quer
     };
   }
   return { images: await searchBraveImages(query, braveKey.value) };
-});
+}, (annotationId, imageId) => annotationAssetServer.urlFor(annotationId, imageId));
 const tutor = new TutorService(
   (status) => sendToView("tutor.prefetchStatus", status),
   undefined,
@@ -393,7 +396,10 @@ const rpc = BrowserView.defineRPC<AppRPC>({
         return result;
       },
       "materials.list": ({ projectId }) => materials.list(projectId),
-      "materials.getArtifacts": ({ materialId }) => materials.getArtifacts(materialId),
+      "materials.getArtifacts": async ({ materialId }) => {
+        const artifacts = await materials.getArtifacts(materialId);
+        return { ...artifacts, annotations: annotations.withAssetUrlsForMany(artifacts.annotations || []) };
+      },
       "materials.prepareMessages": ({ materialId, forceNewVersion }) => tutor.prepareMessages(materialId, Boolean(forceNewVersion)),
       "materials.messageSetStatus": ({ materialId }) => tutor.messageSetStatus(materialId),
       "materials.getLearningIr": ({ messageSetId }) => tutor.preparedLearningIr(messageSetId),
@@ -407,9 +413,10 @@ const rpc = BrowserView.defineRPC<AppRPC>({
       "annotations.askTurn": (params) => annotations.askTurn(params),
       "annotations.lookup": (params) => annotations.lookup(params),
       "annotations.findImages": (params) => annotations.findImages(params),
-      "annotations.listProject": ({ projectId }) => listProjectAnnotations(projectId),
+      "annotations.listProject": ({ projectId }) => annotations.withAssetUrlsForMany(listProjectAnnotations(projectId)),
       "annotations.exportReadable": ({ projectId, annotationIds, destinationFolder }) => annotationExports.exportReadable(projectId, annotationIds, destinationFolder),
       "annotations.save": (params) => annotations.save(params),
+      "annotations.saveNote": (params) => annotations.saveNote(params),
       "annotations.updateNote": (params) => annotations.updateNote(params),
       "annotations.updateQuestionThread": (params) => annotations.updateQuestionThread(params),
       "annotations.delete": ({ annotationId }) => annotations.delete(annotationId),

@@ -1,6 +1,7 @@
 import type { AiChatClient } from "./openai-compatible-client";
 import type { CourseArtifactService } from "./course-artifact-service";
 import { deleteMaterialAnnotation, getMaterialAnnotation, saveMaterialAnnotation, updateMaterialAnnotationResult } from "./annotation-store";
+import { removeAllNoteImageFiles, removeNoteImageFiles, saveNoteImageUploads } from "./annotation-image-assets";
 import { writeMaterialAnnotationsSnapshot } from "./project-bundle-sync";
 import type {
   ImageLookupItem,
@@ -11,6 +12,7 @@ import type {
   MaterialAnnotationKind,
   MaterialAnnotationSurface,
   MaterialArtifacts,
+  NoteImageUpload,
   NoteResult,
   QuestionThreadMessage,
   QuestionThreadResult,
@@ -73,6 +75,17 @@ type SaveLookupInput = {
 type UpdateNoteInput = {
   annotationId: string;
   note: string;
+  imagesToAdd?: NoteImageUpload[];
+  imageIdsToRemove?: string[];
+};
+
+type SaveNoteInput = SelectionLookupInput & {
+  surface?: MaterialAnnotationSurface;
+  anchorMessageId?: string | null;
+  anchorBlockId?: string | null;
+  textAnchor?: TextSelectionAnchor | null;
+  note: string;
+  images?: NoteImageUpload[];
 };
 
 async function writeAnnotationsSnapshotRecoverable(materialId: string) {
@@ -1007,8 +1020,27 @@ export class AnnotationService {
     private readonly materials: CourseArtifactService,
     private readonly providerClient: ProviderClientFactory,
     private readonly questionWebSearch?: QuestionWebSearch,
-    private readonly imageSearch?: ImageSearch
+    private readonly imageSearch?: ImageSearch,
+    private readonly noteImageUrlFor?: (annotationId: string, imageId: string) => string
   ) {}
+
+  withAssetUrls(annotation: MaterialAnnotation): MaterialAnnotation {
+    if (annotation.result.kind !== "note" || !annotation.result.images?.length || !this.noteImageUrlFor) return annotation;
+    return {
+      ...annotation,
+      result: {
+        ...annotation.result,
+        images: annotation.result.images.map((image) => ({
+          ...image,
+          url: this.noteImageUrlFor!(annotation.id, image.id),
+        })),
+      },
+    };
+  }
+
+  withAssetUrlsForMany(annotations: MaterialAnnotation[]) {
+    return annotations.map((annotation) => this.withAssetUrls(annotation));
+  }
 
   async define(input: SelectionLookupInput): Promise<LookupResult> {
     const term = normalizeSelectedText(input.selectedText);
@@ -1207,23 +1239,84 @@ export class AnnotationService {
       sourceMeta,
     });
     const syncWarning = await writeAnnotationsSnapshotRecoverable(saved.materialId);
-    return syncWarning ? { ...saved, syncWarning } : saved;
+    return this.withAssetUrls(syncWarning ? { ...saved, syncWarning } : saved);
+  }
+
+  async saveNote(input: SaveNoteInput) {
+    const note = input.note.trim().slice(0, 5000);
+    const uploads = input.images || [];
+    if (!note && !uploads.length) throw new Error("노트 내용이나 이미지를 추가해 주세요.");
+    const artifacts = await this.materials.getArtifacts(input.materialId);
+    if (!artifacts.sourceChunks.some((chunk) => chunk.id === input.chunkId)) throw new Error("Source chunk not found");
+    const annotationId = crypto.randomUUID();
+    const context = {
+      id: annotationId,
+      projectId: artifacts.manifest.projectId,
+      materialId: input.materialId,
+    };
+    let images = [] as NonNullable<NoteResult["images"]>;
+    try {
+      images = await saveNoteImageUploads(context, uploads);
+      const saved = saveMaterialAnnotation({
+        id: annotationId,
+        materialId: input.materialId,
+        chunkId: input.chunkId,
+        sourceId: artifacts.sourceIndex[input.chunkId]?.sourceId || null,
+        surface: input.surface,
+        anchorMessageId: input.anchorMessageId || null,
+        anchorBlockId: input.anchorBlockId || null,
+        textAnchor: input.textAnchor || null,
+        kind: "note",
+        selectedText: input.selectedText,
+        result: { kind: "note", note, ...(images.length ? { images } : {}) },
+        sourceMeta: [],
+      });
+      const syncWarning = await writeAnnotationsSnapshotRecoverable(saved.materialId);
+      return this.withAssetUrls(syncWarning ? { ...saved, syncWarning } : saved);
+    } catch (error) {
+      await removeAllNoteImageFiles(context).catch(() => undefined);
+      throw error;
+    }
   }
 
   async updateNote(input: UpdateNoteInput) {
     const existing = getMaterialAnnotation(input.annotationId);
     if (!existing) throw new Error("Annotation not found");
     if (existing.kind !== "note") throw new Error("Only note annotations can be edited");
-    const updated = updateMaterialAnnotationResult(input.annotationId, { kind: "note", note: input.note.slice(0, 5000) });
-    if (!updated) throw new Error("Annotation update failed");
-    const syncWarning = await writeAnnotationsSnapshotRecoverable(updated.materialId);
-    return syncWarning ? { ...updated, syncWarning } : updated;
+    const existingImages = existing.result.kind === "note" ? existing.result.images || [] : [];
+    const removedIds = new Set(input.imageIdsToRemove || []);
+    const removedImages = existingImages.filter((image) => removedIds.has(image.id));
+    const keptImages = existingImages.filter((image) => !removedIds.has(image.id));
+    let addedImages = [] as NonNullable<NoteResult["images"]>;
+    try {
+      addedImages = await saveNoteImageUploads(existing, input.imagesToAdd || [], keptImages);
+      const images = [...keptImages, ...addedImages];
+      const updated = updateMaterialAnnotationResult(input.annotationId, {
+        kind: "note",
+        note: input.note.slice(0, 5000),
+        ...(images.length ? { images } : {}),
+      });
+      if (!updated) throw new Error("Annotation update failed");
+      await removeNoteImageFiles(existing, removedImages).catch((error) => {
+        console.warn(`[annotations] Failed to remove obsolete note image: ${(error as Error).message}`);
+      });
+      const syncWarning = await writeAnnotationsSnapshotRecoverable(updated.materialId);
+      return this.withAssetUrls(syncWarning ? { ...updated, syncWarning } : updated);
+    } catch (error) {
+      await removeNoteImageFiles(existing, addedImages).catch(() => undefined);
+      throw error;
+    }
   }
 
   async delete(annotationId: string) {
     const existing = getMaterialAnnotation(annotationId);
     const deleted = deleteMaterialAnnotation(annotationId);
     if (existing) {
+      if (existing.kind === "note") {
+        await removeAllNoteImageFiles(existing).catch((error) => {
+          console.warn(`[annotations] Failed to remove note image assets: ${(error as Error).message}`);
+        });
+      }
       const syncWarning = await writeAnnotationsSnapshotRecoverable(existing.materialId);
       return { deleted, syncWarning };
     }

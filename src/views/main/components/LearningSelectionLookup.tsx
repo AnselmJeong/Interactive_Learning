@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState, type PointerEvent, type RefObject } from "react";
+import { useEffect, useRef, useState, type ClipboardEvent, type PointerEvent, type RefObject } from "react";
 import { Image as ImageIcon, Loader2, MessageSquare, Save, Search, StickyNote, Trash2, X } from "lucide-react";
-import type { ImageLookupResult, LookupResult, MaterialAnnotation, NoteResult, QuestionThreadResult, TextSelectionAnchor } from "../../../shared/artifact-types";
+import type { ImageLookupResult, LookupResult, MaterialAnnotation, QuestionThreadResult, TextSelectionAnchor } from "../../../shared/artifact-types";
 import type { ChatSubmitShortcut } from "../../../shared/settings-types";
 import { MarkdownContent } from "./MarkdownContent";
 import { highlightAnnotationIdsForRange } from "../annotation-inline-links";
@@ -10,6 +10,7 @@ import { questionThreadFromResult } from "../../../shared/question-thread";
 import { SelectionSideChat, clampSideChatPoint, type SelectionSideChatState } from "./SelectionSideChat";
 import { HighlightStylePicker } from "./HighlightStylePicker";
 import { DEFAULT_SHORTCUT_HIGHLIGHT_STYLE, type HighlightStyle } from "../highlight-styles";
+import { MAX_NOTE_IMAGES, NoteImageGallery, noteImageUpload, readPastedNoteImages, type PendingNoteImage } from "./NoteImages";
 
 type RpcRequest = (method: string, params: unknown) => Promise<unknown>;
 type LookupAction = "lookup" | "image";
@@ -43,6 +44,7 @@ type NotePanelState = {
   x: number;
   y: number;
   note: string;
+  images: PendingNoteImage[];
   error?: string;
 };
 
@@ -551,27 +553,26 @@ export function LearningSelectionLookup({
       x: panelPoint.x,
       y: panelPoint.y,
       note: "",
+      images: [],
     });
   }
 
   async function saveNote(panel: NotePanelState) {
     if (!materialId || panel.status === "saving") return;
     const note = panel.note.trim();
-    if (!note) return;
+    if (!note && !panel.images.length) return;
     setNotePanel({ ...panel, status: "saving", error: undefined });
     try {
-      const result: NoteResult = { kind: "note", note };
-      const saved = (await request("annotations.save", {
+      const saved = (await request("annotations.saveNote", {
         materialId,
         chunkId: panel.selection.chunkId,
         surface: "chat",
         anchorMessageId: panel.selection.anchorMessageId || null,
         anchorBlockId: panel.selection.anchorBlockId || null,
         textAnchor: panel.selection.textAnchor || null,
-        kind: "note",
         selectedText: panel.selection.text,
-        result,
-        sourceMeta: [],
+        note,
+        images: panel.images.map(noteImageUpload),
       })) as MaterialAnnotation;
       onAnnotationSaved?.(saved);
       setNotePanel(null);
@@ -706,6 +707,8 @@ export function LearningSelectionLookup({
         <NotePopover
           panel={notePanel}
           onChange={(note) => setNotePanel((current) => current ? { ...current, note, status: "editing", error: undefined } : current)}
+          onImagesChange={(images) => setNotePanel((current) => current ? { ...current, images, status: "editing", error: undefined } : current)}
+          onError={(error) => setNotePanel((current) => current ? { ...current, status: "error", error } : current)}
           onSave={() => void saveNote(notePanel)}
           onClose={() => setNotePanel(null)}
           onMove={(x, y) => setNotePanel((current) => current ? { ...current, x, y } : current)}
@@ -749,12 +752,16 @@ export function LearningSelectionLookup({
 function NotePopover({
   panel,
   onChange,
+  onImagesChange,
+  onError,
   onSave,
   onClose,
   onMove,
 }: {
   panel: NotePanelState;
   onChange: (note: string) => void;
+  onImagesChange: (images: PendingNoteImage[]) => void;
+  onError: (error: string) => void;
   onSave: () => void;
   onClose: () => void;
   onMove: (x: number, y: number) => void;
@@ -794,6 +801,17 @@ function NotePopover({
     setDragging(true);
   }
 
+  async function pasteImages(event: ClipboardEvent<HTMLTextAreaElement>) {
+    try {
+      const pasted = await readPastedNoteImages(event.clipboardData);
+      if (!pasted.length) return;
+      if (panel.images.length + pasted.length > MAX_NOTE_IMAGES) throw new Error(`노트에는 이미지를 최대 ${MAX_NOTE_IMAGES}개까지 저장할 수 있습니다.`);
+      onImagesChange([...panel.images, ...pasted]);
+    } catch (error) {
+      onError((error as Error).message || String(error));
+    }
+  }
+
   return (
     <aside className={`note-popover ${dragging ? "dragging" : ""}`} role="dialog" aria-label="선택 텍스트 노트" style={{ left: panel.x, top: panel.y }}>
       <header onPointerDown={startDrag} title="드래그해서 이동">
@@ -806,20 +824,22 @@ function NotePopover({
         </button>
       </header>
       <label>
-        <span>이 선택에 남길 말</span>
+        <span>Markdown 노트 · 그림은 클립보드에서 붙여넣기</span>
         <textarea
           autoFocus
           maxLength={5000}
           rows={7}
           value={panel.note}
           onChange={(event) => onChange(event.target.value)}
-          placeholder="나중에 다시 볼 생각이나 질문, 연결할 내용을 적어보세요."
+          onPaste={(event) => void pasteImages(event)}
+          placeholder="내용을 적거나, 복사한 그림을 ⌘V로 붙여넣으세요."
         />
       </label>
+      <NoteImageGallery images={panel.images} onRemove={(imageId) => onImagesChange(panel.images.filter((image) => image.id !== imageId))} />
       {panel.error ? <p className="lookup-error">{panel.error}</p> : null}
       <footer>
-        <small>{panel.note.length.toLocaleString()} / 5,000</small>
-        <button type="button" onClick={onSave} disabled={!panel.note.trim() || panel.status === "saving"}>
+        <small>{panel.note.length.toLocaleString()} / 5,000 · 이미지 {panel.images.length}/{MAX_NOTE_IMAGES}</small>
+        <button type="button" onClick={onSave} disabled={(!panel.note.trim() && !panel.images.length) || panel.status === "saving"}>
           {panel.status === "saving" ? <Loader2 size={15} className="spin" /> : <Save size={15} />}
           {panel.status === "saving" ? "저장 중" : "노트 저장"}
         </button>

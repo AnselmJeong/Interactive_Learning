@@ -1,11 +1,12 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ClipboardEvent } from "react";
 import { ArrowRight, BookOpen, Download, Search, Trash2, Upload } from "lucide-react";
 import type { DocumentProgressSnapshot, DocumentSummary, LearningActivityDay, ProjectProgressSnapshot, ProjectSummary, SourceSummary } from "../../../shared/rpc-types";
-import type { MaterialAnnotation } from "../../../shared/artifact-types";
+import type { MaterialAnnotation, NoteImageUpload } from "../../../shared/artifact-types";
 import type { TutorMessage } from "../../../shared/tutor-types";
 import { AnnotationInlineScope } from "./AnnotationInlineScope";
 import { MarkdownContent } from "./MarkdownContent";
 import { TutorBlockRenderer } from "./TutorBlockRenderer";
+import { MAX_NOTE_IMAGES, NoteImageGallery, noteImageUpload, readPastedNoteImages, type PendingNoteImage } from "./NoteImages";
 
 type LibraryPageProps = {
   project: ProjectSummary | null;
@@ -173,7 +174,7 @@ type AnnotationPageProps = {
   onExport: (annotationIds: string[]) => void;
   exporting: boolean;
   onDelete: (annotation: MaterialAnnotation) => void;
-  onUpdateNote: (annotationId: string, note: string) => Promise<void>;
+  onUpdateNote: (annotationId: string, note: string, imagesToAdd?: NoteImageUpload[], imageIdsToRemove?: string[]) => Promise<void>;
 };
 
 type AnnotationFilter = "all" | "highlight" | "note" | "question" | "lookup" | "image";
@@ -243,6 +244,9 @@ export function AnnotationPage({ project, annotations, documents, sources, selec
   const [documentId, setDocumentId] = useState("all");
   const [editingNoteId, setEditingNoteId] = useState<string | null>(null);
   const [noteDraft, setNoteDraft] = useState("");
+  const [pendingNoteImages, setPendingNoteImages] = useState<PendingNoteImage[]>([]);
+  const [removedNoteImageIds, setRemovedNoteImageIds] = useState<string[]>([]);
+  const [noteEditError, setNoteEditError] = useState<string | null>(null);
   const [noteBusy, setNoteBusy] = useState(false);
   const [learningMessage, setLearningMessage] = useState<TutorMessage | null>(null);
   const [learningMessageStatus, setLearningMessageStatus] = useState<"idle" | "loading" | "ready" | "unavailable">("idle");
@@ -260,6 +264,18 @@ export function AnnotationPage({ project, annotations, documents, sources, selec
   });
   const selected = annotations.find((annotation) => annotation.id === selectedAnnotationId) || filtered[0] || null;
   const selectedSource = selected?.sourceId ? sources.find((source) => source.id === selected.sourceId) : null;
+
+  async function pasteNoteImages(event: ClipboardEvent<HTMLTextAreaElement>) {
+    const pasted = await readPastedNoteImages(event.clipboardData);
+    if (!pasted.length) return;
+    const existingCount = selected?.result.kind === "note"
+      ? (selected.result.images || []).filter((image) => !removedNoteImageIds.includes(image.id)).length
+      : 0;
+    if (existingCount + pendingNoteImages.length + pasted.length > MAX_NOTE_IMAGES) {
+      throw new Error(`노트에는 이미지를 최대 ${MAX_NOTE_IMAGES}개까지 저장할 수 있습니다.`);
+    }
+    setPendingNoteImages((current) => [...current, ...pasted]);
+  }
 
   useEffect(() => {
     let cancelled = false;
@@ -377,16 +393,44 @@ export function AnnotationPage({ project, annotations, documents, sources, selec
               )}
               {editingNoteId === selected.id && selected.result.kind === "note" ? (
                 <div className="annotation-note-editor">
-                  <textarea value={noteDraft} onChange={(event) => setNoteDraft(event.currentTarget.value)} aria-label="노트 편집" autoFocus />
-                  <div><button type="button" className="renovation-secondary" onClick={() => setEditingNoteId(null)} disabled={noteBusy}>취소</button><button type="button" className="renovation-primary" disabled={noteBusy || !noteDraft.trim()} onClick={() => {
+                  <textarea
+                    value={noteDraft}
+                    onChange={(event) => setNoteDraft(event.currentTarget.value)}
+                    onPaste={(event) => void pasteNoteImages(event).then(() => setNoteEditError(null)).catch((error) => setNoteEditError((error as Error).message || String(error)))}
+                    aria-label="노트 편집"
+                    placeholder="Markdown을 편집하거나 그림을 붙여넣으세요."
+                    autoFocus
+                  />
+                  <NoteImageGallery
+                    images={(selected.result.images || []).filter((image) => !removedNoteImageIds.includes(image.id))}
+                    onRemove={(imageId) => setRemovedNoteImageIds((current) => [...current, imageId])}
+                  />
+                  <NoteImageGallery
+                    images={pendingNoteImages}
+                    onRemove={(imageId) => setPendingNoteImages((current) => current.filter((image) => image.id !== imageId))}
+                  />
+                  {noteEditError ? <p className="lookup-error">{noteEditError}</p> : null}
+                  <div className="annotation-note-editor-actions"><button type="button" className="renovation-secondary" onClick={() => setEditingNoteId(null)} disabled={noteBusy}>취소</button><button type="button" className="renovation-primary" disabled={noteBusy || (!noteDraft.trim() && !pendingNoteImages.length && !(selected.result.images || []).some((image) => !removedNoteImageIds.includes(image.id)))} onClick={() => {
                     setNoteBusy(true);
-                    void onUpdateNote(selected.id, noteDraft).then(() => setEditingNoteId(null)).catch(() => undefined).finally(() => setNoteBusy(false));
+                    void onUpdateNote(selected.id, noteDraft, pendingNoteImages.map(noteImageUpload), removedNoteImageIds)
+                      .then(() => setEditingNoteId(null)).catch((error) => setNoteEditError((error as Error).message || String(error))).finally(() => setNoteBusy(false));
                   }}>저장</button></div>
                 </div>
-              ) : isQuestionAnnotation(selected) || isLookupAnnotation(selected) ? null : <div className="annotation-body"><MarkdownContent content={annotationBody(selected)} /></div>}
+              ) : isQuestionAnnotation(selected) || isLookupAnnotation(selected) ? null : (
+                <div className="annotation-body">
+                  <MarkdownContent content={annotationBody(selected)} />
+                  {selected.result.kind === "note" ? <NoteImageGallery images={selected.result.images || []} /> : null}
+                </div>
+              )}
               <div className="annotation-detail-actions">
                 {selectedSource ? <button type="button" className="renovation-primary" onClick={() => onOpenAnnotation(selected)}>본문에서 보기 <ArrowRight size={16} /></button> : null}
-                {selected.result.kind === "note" ? <button type="button" className="renovation-secondary" onClick={() => { setEditingNoteId(selected.id); setNoteDraft(selected.result.kind === "note" ? selected.result.note : ""); }}>편집</button> : null}
+                {selected.result.kind === "note" ? <button type="button" className="renovation-secondary" onClick={() => {
+                  setEditingNoteId(selected.id);
+                  setNoteDraft(selected.result.kind === "note" ? selected.result.note : "");
+                  setPendingNoteImages([]);
+                  setRemovedNoteImageIds([]);
+                  setNoteEditError(null);
+                }}>편집</button> : null}
                 <button type="button" className="annotation-delete-action" onClick={() => onDelete(selected)}>삭제</button>
               </div>
             </div>

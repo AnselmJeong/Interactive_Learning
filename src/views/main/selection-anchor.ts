@@ -21,7 +21,6 @@ export const ANNOTATION_SELECTION_IGNORE_SELECTOR = [
   ".source-annotation-list",
   ".chat-annotation-list",
   ".source-mark-list",
-  ".annotation-inline-link",
 ].join(", ");
 
 export type ResolvedTextAnchor = {

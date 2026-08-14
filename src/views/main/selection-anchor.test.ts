@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import type { MaterialAnnotation, TextSelectionAnchor } from "../../shared/artifact-types";
-import { findTextMatches, resolveTextSelectionAnchor } from "./selection-anchor";
+import { ANNOTATION_SELECTION_IGNORE_SELECTOR, findTextMatches, resolveTextSelectionAnchor } from "./selection-anchor";
 
 function annotationWithAnchor(anchor: TextSelectionAnchor): MaterialAnnotation {
   return {
@@ -36,6 +36,10 @@ function fakeRoot(textContent: string) {
 }
 
 describe("selection anchor text matching", () => {
+  test("allows selecting an already annotated inline link so another note can be attached", () => {
+    expect(ANNOTATION_SELECTION_IGNORE_SELECTOR).not.toContain(".annotation-inline-link");
+  });
+
   test("finds repeated exact matches in order", () => {
     expect(findTextMatches("alpha beta alpha beta", "alpha beta")).toEqual([
       { startOffset: 0, endOffset: 10 },

@@ -9,6 +9,7 @@ import type {
   MaterialAnnotationSurface,
   MaterialArtifacts,
   MaterialStatus,
+  NoteImageUpload,
   NoteResult,
   QuestionThreadResult,
   QualityStatus,
@@ -369,7 +370,24 @@ export type AppRPC = {
         };
         response: MaterialAnnotation;
       };
-      "annotations.updateNote": { params: { annotationId: string; note: string }; response: MaterialAnnotation };
+      "annotations.saveNote": {
+        params: {
+          materialId: string;
+          chunkId: string;
+          surface?: MaterialAnnotationSurface;
+          anchorMessageId?: string | null;
+          anchorBlockId?: string | null;
+          textAnchor?: TextSelectionAnchor | null;
+          selectedText: string;
+          note: string;
+          images?: NoteImageUpload[];
+        };
+        response: MaterialAnnotation;
+      };
+      "annotations.updateNote": {
+        params: { annotationId: string; note: string; imagesToAdd?: NoteImageUpload[]; imageIdsToRemove?: string[] };
+        response: MaterialAnnotation;
+      };
       "annotations.updateQuestionThread": { params: { annotationId: string; thread: QuestionThreadResult }; response: MaterialAnnotation };
       "annotations.delete": { params: { annotationId: string }; response: { deleted: boolean; syncWarning?: string } };
       "sessions.list": { params: { materialId: string }; response: SessionSummary[] };
