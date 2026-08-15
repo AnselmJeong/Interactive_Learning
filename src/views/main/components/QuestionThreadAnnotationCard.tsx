@@ -5,6 +5,7 @@ import { questionMessages } from "../../../shared/question-thread";
 import { InlineMarkdownContent, MarkdownContent } from "./MarkdownContent";
 import { QuestionWebSources } from "./QuestionWebSources";
 import { SideChatVisualRenderer } from "./SideChatVisualRenderer";
+import { AnnotationExternalHtmlAttachment } from "./AnnotationExternalHtmlAttachment";
 
 type QuestionThreadAnnotationCardProps = {
   annotation: MaterialAnnotation;
@@ -113,6 +114,7 @@ export function QuestionThreadAnnotationCard({
               <MessageSquare size={14} /> 대화 계속
             </button>
           </footer>
+          <AnnotationExternalHtmlAttachment annotation={annotation} compact />
         </div>
       </div>
     </article>

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ClipboardEvent, type PointerEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type ClipboardEvent, type PointerEvent } from "react";
 import { Bookmark, Globe2, Highlighter, Image as ImageIcon, Loader2, LocateFixed, MessageSquare, Save, Search, Sparkles, StickyNote, Trash2, X } from "lucide-react";
 import type { ImageLookupResult, LookupResult, MaterialAnnotation, MaterialArtifacts, TextSelectionAnchor } from "../../../shared/artifact-types";
 import type { ChatSubmitShortcut } from "../../../shared/settings-types";
@@ -17,7 +17,8 @@ import { QuestionWebSources } from "./QuestionWebSources";
 import { HighlightStylePicker } from "./HighlightStylePicker";
 import { HighlightRemoveMenu, type HighlightMenuTarget } from "./HighlightRemoveMenu";
 import { DEFAULT_SHORTCUT_HIGHLIGHT_STYLE, type HighlightStyle } from "../highlight-styles";
-import { NoteImageGallery, noteImageUpload, readPastedNoteImages } from "./NoteImages";
+import { MAX_NOTE_IMAGES, NoteImageGallery, noteImageUpload, readNoteImageFiles, readPastedNoteImages } from "./NoteImages";
+import { AnnotationExternalHtmlAttachment } from "./AnnotationExternalHtmlAttachment";
 
 type RpcRequest = (method: string, params: unknown) => Promise<unknown>;
 
@@ -487,6 +488,27 @@ export function ImmersiveSourceView({
     }
   }
 
+  async function uploadNoteImages(mark: MaterialAnnotation, event: ChangeEvent<HTMLInputElement>) {
+    try {
+      const selected = await readNoteImageFiles(Array.from(event.currentTarget.files ?? []));
+      if (!selected.length) return;
+      const existingCount = mark.result.kind === "note" ? (mark.result.images || []).length : 0;
+      if (existingCount + selected.length > MAX_NOTE_IMAGES) throw new Error(`노트에는 이미지를 최대 ${MAX_NOTE_IMAGES}개까지 저장할 수 있습니다.`);
+      const saved = await request("annotations.updateNote", {
+        annotationId: mark.id,
+        note: annotationNote(mark),
+        imagesToAdd: selected.map(noteImageUpload),
+      }) as MaterialAnnotation;
+      setAnnotations((current) => [saved, ...current.filter((annotation) => annotation.id !== saved.id)]);
+      setNoteSaveError((current) => current?.annotationId === mark.id ? null : current);
+      onAnnotationSaved?.(saved);
+    } catch (error) {
+      setNoteSaveError({ annotationId: mark.id, message: (error as Error).message || String(error) });
+    } finally {
+      event.currentTarget.value = "";
+    }
+  }
+
   async function removeMark(markId: string) {
     await removeAnnotation(markId);
     if (editingMarkId === markId) setEditingMarkId(null);
@@ -866,6 +888,13 @@ export function ImmersiveSourceView({
                               rows={editingMarkId === mark.id ? 3 : 1}
                             />
                             {mark.result.kind === "note" ? <NoteImageGallery images={mark.result.images || []} /> : null}
+                            <div className="source-note-attachment-actions">
+                              <label>
+                                <ImageIcon size={14} /> 이미지 추가
+                                <input type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden onChange={(event) => void uploadNoteImages(mark, event)} />
+                              </label>
+                            </div>
+                            <AnnotationExternalHtmlAttachment annotation={mark} compact />
                             {noteSaveError?.annotationId === mark.id ? <p className="lookup-error">{noteSaveError.message}</p> : null}
                           </>
                         ) : null}
@@ -1185,6 +1214,7 @@ function SavedAnnotationCard({
       ) : (
         <p className="lookup-result-summary">표시된 텍스트입니다.</p>
       )}
+      <AnnotationExternalHtmlAttachment annotation={annotation} compact />
     </article>
   );
 }

@@ -193,6 +193,52 @@ export type HighlightResult = {
 export type MaterialAnnotationKind = "define" | "lookup" | "question" | "image" | "note" | "highlight";
 export type MaterialAnnotationSurface = "chat" | "source";
 
+export type ExternalHtmlDependency = {
+  name: string;
+  version: string;
+  originalUrl: string;
+  bundledAssetId: string;
+  sha256: string;
+  license: string;
+};
+
+export type ExternalHtmlAttachment = {
+  kind: "external_html";
+  schemaVersion: 1;
+  id: string;
+  title: string;
+  originalFileName: string;
+  originalByteSize: number;
+  runnableByteSize: number;
+  originalSha256: string;
+  runnableSha256: string;
+  compatibility: "self_contained" | "localized";
+  importerVersion: 1;
+  dependencies: ExternalHtmlDependency[];
+  importedAt: number;
+};
+
+export type AnnotationAttachment = ExternalHtmlAttachment;
+
+export type ExternalHtmlImportRejection = {
+  code: string;
+  message: string;
+};
+
+export type ExternalHtmlImportPreview = {
+  previewId: string;
+  /** Null while an applet is staged for a note that has not been saved yet. */
+  annotationId: string | null;
+  title: string;
+  originalFileName: string;
+  originalByteSize: number;
+  status: "ready" | "ready_after_localization" | "rejected";
+  dependencies: ExternalHtmlDependency[];
+  blockedCapabilities: string[];
+  rejectionReasons: ExternalHtmlImportRejection[];
+  expiresAt: number;
+};
+
 export type TextSelectionAnchor = {
   version: 1;
   surface: MaterialAnnotationSurface;
@@ -227,6 +273,7 @@ export type MaterialAnnotation = {
   normalizedText: string;
   result: LookupResult | QuestionThreadResult | ImageLookupResult | NoteResult | HighlightResult;
   sourceMeta: LookupSourceMeta[];
+  attachments?: AnnotationAttachment[];
   createdAt: number;
   updatedAt: number;
   syncWarning?: string;

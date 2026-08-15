@@ -329,6 +329,26 @@ describe("annotation side-chat service", () => {
     expect(existsSync(assetPath)).toBe(false);
   });
 
+  test("allows an empty note only while composing it with a staged HTML applet", async () => {
+    await expect(service.saveNote({
+      materialId: "material-1",
+      chunkId: "chunk-1",
+      surface: "chat",
+      selectedText: "selected claim",
+      note: "",
+    })).rejects.toThrow("노트 내용, 이미지 또는 HTML applet");
+
+    const saved = await service.saveNote({
+      materialId: "material-1",
+      chunkId: "chunk-1",
+      surface: "chat",
+      selectedText: "selected claim",
+      note: "",
+      allowEmpty: true,
+    });
+    expect(saved.result).toEqual({ kind: "note", note: "" });
+  });
+
   test("grounds an opted-in side-chat turn with Ollama web sources and preserves them on the answer", async () => {
     const searchQueries: string[] = [];
     const webCalls: ChatParams[] = [];

@@ -2,8 +2,7 @@ import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { MaterialAnnotation, NoteImageAttachment, NoteImageUpload } from "../shared/artifact-types";
 import { getMaterialAnnotation } from "./annotation-store";
-import { getDb } from "./project-db";
-import { dataPath } from "./paths";
+import { annotationAssetDir } from "./annotation-assets";
 
 export const MAX_NOTE_IMAGE_COUNT = 8;
 export const MAX_NOTE_IMAGE_BYTES = 8_000_000;
@@ -17,16 +16,6 @@ const EXTENSION_BY_MIME = {
 } as const;
 
 type SupportedMimeType = keyof typeof EXTENSION_BY_MIME;
-
-function projectRoot(projectId: string) {
-  const row = getDb().query<{ root_path: string | null }, [string]>("SELECT root_path FROM projects WHERE id = ?").get(projectId);
-  if (!row) throw new Error("Project not found");
-  return row.root_path || dataPath("projects");
-}
-
-function annotationAssetDir(annotation: Pick<MaterialAnnotation, "projectId" | "materialId" | "id">) {
-  return join(projectRoot(annotation.projectId), annotation.projectId, "materials", annotation.materialId, "annotation-assets", annotation.id);
-}
 
 function assetPath(annotation: Pick<MaterialAnnotation, "projectId" | "materialId" | "id">, imageId: string, mimeType: SupportedMimeType) {
   return join(annotationAssetDir(annotation), `${imageId}.${EXTENSION_BY_MIME[mimeType]}`);
@@ -106,10 +95,6 @@ export async function saveNoteImageUploads(
 
 export async function removeNoteImageFiles(annotation: Pick<MaterialAnnotation, "projectId" | "materialId" | "id">, images: NoteImageAttachment[]) {
   await Promise.all(images.map((image) => rm(assetPath(annotation, image.id, image.mimeType), { force: true })));
-}
-
-export async function removeAllNoteImageFiles(annotation: Pick<MaterialAnnotation, "projectId" | "materialId" | "id">) {
-  await rm(annotationAssetDir(annotation), { recursive: true, force: true });
 }
 
 export function resolveNoteImageAsset(annotationId: string, imageId: string) {

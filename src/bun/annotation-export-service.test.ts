@@ -5,6 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AnnotationExportService } from "./annotation-export-service";
 import { closeDbForTests, getDb } from "./project-db";
+import { saveMaterialAnnotation } from "./annotation-store";
+import { ExternalHtmlImportService } from "./external-html-import-service";
+import { readZipEntries } from "./archive-reader";
 
 describe("annotation readable export", () => {
   let tempRoot = "";
@@ -63,5 +66,27 @@ describe("annotation readable export", () => {
     const archiveText = (await readFile(result.zipPath)).toString("utf8");
     expect(archiveText).toContain("assets/note-1-image-1.png");
     expect(archiveText).toContain("![diagram.png](assets/note-1-image-1.png)");
+  });
+
+  test("exports external HTML originals, manifests, README, and licenses without runnable snapshots", async () => {
+    const now = Date.now();
+    getDb().query("INSERT INTO projects (id, title, root_path, created_at, updated_at) VALUES ('p1', 'Applets', ?, ?, ?)").run(tempRoot, now, now);
+    getDb().query("INSERT INTO learning_materials (id, project_id, title, status, created_at, updated_at) VALUES ('m1', 'p1', 'Material', 'ready', ?, ?)").run(now, now);
+    const annotation = saveMaterialAnnotation({ materialId: "m1", chunkId: "chunk", kind: "note", selectedText: "Applet", result: { kind: "note", note: "Interactive" } });
+    const htmlPath = join(tempRoot, "chart.html");
+    await writeFile(htmlPath, "<!doctype html><html><title>Chart</title><script src=\"https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js\"></script><body><canvas></canvas></body></html>", "utf8");
+    const importer = new ExternalHtmlImportService(async () => htmlPath);
+    const preview = await importer.prepare(annotation.id);
+    const committed = await importer.commit(annotation.id, preview!.previewId, annotation.updatedAt);
+    const attachmentId = committed.attachments?.[0]?.id;
+
+    const result = await new AnnotationExportService().exportReadable("p1", [annotation.id], tempRoot);
+    const files = readZipEntries(await Bun.file(result.zipPath).bytes());
+    const prefix = `Applets-annotations/assets/${annotation.id}/${attachmentId}`;
+    expect(files.has(`${prefix}/original.html`)).toBe(true);
+    expect(files.has(`${prefix}/manifest.json`)).toBe(true);
+    expect(files.has(`${prefix}/README.txt`)).toBe(true);
+    expect(files.has(`${prefix}/licenses/chart.js.txt`)).toBe(true);
+    expect([...files.keys()].some((path) => path.endsWith("runnable.html"))).toBe(false);
   });
 });

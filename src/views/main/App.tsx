@@ -35,6 +35,7 @@ import { AnnotationInlineScope } from "./components/AnnotationInlineScope";
 import { HighlightRemoveMenu, type HighlightMenuTarget } from "./components/HighlightRemoveMenu";
 import { QuestionThreadAnnotationCard } from "./components/QuestionThreadAnnotationCard";
 import { AdditionalExploration } from "./components/AdditionalExploration";
+import { AnnotationExternalHtmlAttachment, EXTERNAL_HTML_ACTION_EVENT, publishExternalHtmlCapability, type ExternalHtmlActionEventDetail } from "./components/AnnotationExternalHtmlAttachment";
 import { figureIdForExplanationAnnotation } from "./figure-annotations";
 import { stripFigureMarkdown } from "./figure-text";
 import { placeAnnotationsForMessages, shouldRenderInlineAnnotation } from "./annotation-placement";
@@ -406,6 +407,7 @@ function ChatSavedAnnotationCard({
       ) : (
         <p>저장된 표시입니다.</p>
       )}
+      <AnnotationExternalHtmlAttachment annotation={annotation} compact />
     </article>
   );
 }
@@ -2484,6 +2486,43 @@ export function App({ request }: { request: RpcRequest }) {
     setSelectedProjectAnnotationId(annotation.id);
     if (annotation.syncWarning) setStatus(annotation.syncWarning);
   }, []);
+  useEffect(() => {
+    const handleExternalHtmlAction = (event: Event) => {
+      const detail = (event as CustomEvent<ExternalHtmlActionEventDetail>).detail;
+      if (!detail?.payload) return;
+      const run = async () => {
+        const payload = detail.payload;
+        switch (payload.action) {
+          case "prepare": return request("annotations.prepareExternalHtmlImport", { annotationId: payload.annotationId });
+          case "commit": {
+            const annotation = await request("annotations.commitExternalHtmlImport", payload) as MaterialAnnotation;
+            handleAnnotationSaved(annotation);
+            return annotation;
+          }
+          case "cancel": return request("annotations.cancelExternalHtmlImport", { previewId: payload.previewId });
+          case "open": return request("annotations.openExternalHtml", { annotationId: payload.annotationId, attachmentId: payload.attachmentId });
+          case "remove": {
+            const annotation = await request("annotations.removeExternalHtml", payload) as MaterialAnnotation;
+            handleAnnotationSaved(annotation);
+            return annotation;
+          }
+          case "export": return request("annotations.exportExternalHtmlOriginal", { annotationId: payload.annotationId, attachmentId: payload.attachmentId });
+        }
+      };
+      void run().then(detail.resolve, detail.reject);
+    };
+    window.addEventListener(EXTERNAL_HTML_ACTION_EVENT, handleExternalHtmlAction);
+    return () => window.removeEventListener(EXTERNAL_HTML_ACTION_EVENT, handleExternalHtmlAction);
+  }, [handleAnnotationSaved, request]);
+  useEffect(() => {
+    let cancelled = false;
+    void request("annotations.externalHtmlCapability", {}).then((result) => {
+      if (cancelled) return;
+      const enabled = Boolean((result as { enabled?: boolean })?.enabled);
+      publishExternalHtmlCapability(enabled);
+    }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [request]);
   const addAdditionalExploration = useCallback(async (message: TutorMessage, choice: string) => {
     if (!artifacts) throw new Error("학습 자료를 불러오지 못했습니다.");
     const existingTitles = savedAdditionalExplorationTitles(artifacts.annotations || [], message.id);
@@ -2935,6 +2974,11 @@ export function App({ request }: { request: RpcRequest }) {
           />
         ) : (
           <>
+        <MilestoneConfetti
+          active={Boolean(session)}
+          sessionId={session?.id || null}
+          progressPercent={progressPercent}
+        />
         <header className="topbar">
           <div>
             <p className="project-title">
@@ -3049,11 +3093,6 @@ export function App({ request }: { request: RpcRequest }) {
         ) : null}
 
         <div className="tutor-shell">
-          <MilestoneConfetti
-            active={Boolean(session)}
-            sessionId={session?.id || null}
-            progressPercent={progressPercent}
-          />
           <section className="tutor-surface" ref={tutorSurfaceRef}>
           {viewMode === "guide" ? (
             <LearningGuideView

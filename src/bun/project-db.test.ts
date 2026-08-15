@@ -206,6 +206,7 @@ describe("project database migrations", () => {
       .map((column) => column.name);
 
     expect(columns).toContain("anchor_json");
+    expect(columns).toContain("attachments_json");
     const sql = getDb()
       .query<{ sql: string | null }, []>("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'material_annotations'")
       .get()?.sql || "";

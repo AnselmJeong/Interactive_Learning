@@ -1,7 +1,8 @@
 import type { AiChatClient } from "./openai-compatible-client";
 import type { CourseArtifactService } from "./course-artifact-service";
 import { deleteMaterialAnnotation, getMaterialAnnotation, saveMaterialAnnotation, updateMaterialAnnotationResult } from "./annotation-store";
-import { removeAllNoteImageFiles, removeNoteImageFiles, saveNoteImageUploads } from "./annotation-image-assets";
+import { removeNoteImageFiles, saveNoteImageUploads } from "./annotation-image-assets";
+import { removeAllAnnotationAssets } from "./annotation-assets";
 import { writeMaterialAnnotationsSnapshot } from "./project-bundle-sync";
 import type {
   ImageLookupItem,
@@ -86,6 +87,8 @@ type SaveNoteInput = SelectionLookupInput & {
   textAnchor?: TextSelectionAnchor | null;
   note: string;
   images?: NoteImageUpload[];
+  /** Used only by the RPC composition that immediately commits a staged applet. */
+  allowEmpty?: boolean;
 };
 
 async function writeAnnotationsSnapshotRecoverable(materialId: string) {
@@ -1245,7 +1248,7 @@ export class AnnotationService {
   async saveNote(input: SaveNoteInput) {
     const note = input.note.trim().slice(0, 5000);
     const uploads = input.images || [];
-    if (!note && !uploads.length) throw new Error("노트 내용이나 이미지를 추가해 주세요.");
+    if (!note && !uploads.length && !input.allowEmpty) throw new Error("노트 내용, 이미지 또는 HTML applet을 추가해 주세요.");
     const artifacts = await this.materials.getArtifacts(input.materialId);
     if (!artifacts.sourceChunks.some((chunk) => chunk.id === input.chunkId)) throw new Error("Source chunk not found");
     const annotationId = crypto.randomUUID();
@@ -1274,7 +1277,7 @@ export class AnnotationService {
       const syncWarning = await writeAnnotationsSnapshotRecoverable(saved.materialId);
       return this.withAssetUrls(syncWarning ? { ...saved, syncWarning } : saved);
     } catch (error) {
-      await removeAllNoteImageFiles(context).catch(() => undefined);
+      await removeAllAnnotationAssets(context).catch(() => undefined);
       throw error;
     }
   }
@@ -1312,11 +1315,9 @@ export class AnnotationService {
     const existing = getMaterialAnnotation(annotationId);
     const deleted = deleteMaterialAnnotation(annotationId);
     if (existing) {
-      if (existing.kind === "note") {
-        await removeAllNoteImageFiles(existing).catch((error) => {
-          console.warn(`[annotations] Failed to remove note image assets: ${(error as Error).message}`);
-        });
-      }
+      await removeAllAnnotationAssets(existing).catch((error) => {
+        console.warn(`[annotations] Failed to remove annotation assets: ${(error as Error).message}`);
+      });
       const syncWarning = await writeAnnotationsSnapshotRecoverable(existing.materialId);
       return { deleted, syncWarning };
     }

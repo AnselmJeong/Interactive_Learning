@@ -8,6 +8,8 @@ import { ProjectService } from "./project-service";
 import { ProjectTransferService } from "./project-transfer-service";
 import { SettingsService } from "./settings-service";
 import { readZipEntries } from "./archive-reader";
+import { saveMaterialAnnotation, getMaterialAnnotation } from "./annotation-store";
+import { ExternalHtmlImportService, validateExternalHtmlAttachment } from "./external-html-import-service";
 
 let tempRoot = "";
 
@@ -50,12 +52,26 @@ describe("project transfer", () => {
     getDb().query(`INSERT INTO learning_materials (id, project_id, title, material_type, status, manifest_path, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
       .run("material-1", project.id, "Material", "source_course", "ready", join(materialDir, "material_manifest.json"), now, now);
     getDb().query("INSERT INTO material_sources (material_id, source_id, ordinal) VALUES (?, ?, ?)").run("material-1", "source-1", 0);
+    const appletPath = join(tempRoot, "portable-applet.html");
+    await writeFile(appletPath, "<!doctype html><html><title>Portable applet</title><body><script>document.body.dataset.ready='1'</script></body></html>", "utf8");
+    const annotation = saveMaterialAnnotation({
+      materialId: "material-1",
+      chunkId: "chunk-1",
+      sourceId: "source-1",
+      kind: "highlight",
+      selectedText: "Portable selection",
+      result: { kind: "highlight" },
+    });
+    const appletImporter = new ExternalHtmlImportService(async () => appletPath);
+    const appletPreview = await appletImporter.prepare(annotation.id);
+    const annotationWithApplet = await appletImporter.commit(annotation.id, appletPreview!.previewId, annotation.updatedAt);
     const exported = await new ProjectTransferService().exportTransfer(project.id);
     expect(exported.counts.documents).toBe(1);
 
     const files = readZipEntries(await Bun.file(exported.zipPath).bytes());
     expect(files.has("transfer.json")).toBe(true);
     expect(files.has("project/state.json")).toBe(true);
+    expect([...files.keys()].some((path) => path.endsWith(`/annotation-assets/${annotation.id}/external-html/${annotationWithApplet.attachments?.[0]?.id}/original.html`))).toBe(true);
     expect([...files.values()].some((bytes) => new TextDecoder().decode(bytes).includes("/Users/private"))).toBe(false);
 
     closeDbForTests();
@@ -78,6 +94,10 @@ describe("project transfer", () => {
     const importedFigures = JSON.parse(await readFile(join(targetProjects, project.id, "materials", "material-1", "figures.json"), "utf8")) as Array<{ assetPath: string; assetUrl: string }>;
     expect(importedFigures[0]?.assetPath.startsWith(join(targetProjects, project.id))).toBe(true);
     expect(importedFigures[0]?.assetUrl.startsWith("file:")).toBe(true);
+    const importedAnnotation = getMaterialAnnotation(annotation.id);
+    const importedAttachment = importedAnnotation?.attachments?.[0];
+    if (!importedAnnotation || !importedAttachment || importedAttachment.kind !== "external_html") throw new Error("Imported applet attachment is missing");
+    expect((await validateExternalHtmlAttachment(importedAnnotation, importedAttachment)).original.length).toBeGreaterThan(0);
   });
 
   test("fast-forwards a sequential handoff without treating project open as a local edit", async () => {

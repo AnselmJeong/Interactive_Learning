@@ -4530,6 +4530,26 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
   outline: 2px solid rgba(37, 111, 104, 0.2);
   border-color: #256f68;
 }
+.note-applet-draft { display: grid; gap: 8px; }
+.note-attachment-draft-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.note-attachment-import { width: fit-content; min-height: 34px; display: inline-flex; align-items: center; gap: 7px; padding: 0 11px; border: 1px dashed var(--line-strong); border-radius: 8px; background: var(--surface-soft); color: var(--muted); cursor: pointer; font: 750 12px/1 var(--sans); }
+.note-attachment-import:hover:not(:disabled) { border-style: solid; color: var(--ink); }
+.note-attachment-import:disabled { cursor: not-allowed; opacity: 0.55; }
+.note-applet-draft-card { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 9px; align-items: start; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-soft); }
+.note-applet-draft-card > svg { margin-top: 2px; color: var(--accent); }
+.note-applet-draft-card > div { min-width: 0; display: grid; gap: 3px; }
+.note-applet-draft-card strong,
+.note-applet-draft-card span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.note-applet-draft-card strong { color: var(--ink); font-size: 12px; }
+.note-applet-draft-card span,
+.note-applet-draft-card small { color: var(--muted); font-size: 10px; line-height: 1.4; }
+.note-applet-draft-card.rejected { border-color: color-mix(in srgb, var(--danger) 36%, var(--line)); }
+.note-applet-draft-card.rejected > svg,
+.note-applet-draft-card.rejected small { color: var(--danger); }
+.note-applet-draft-card > button { border: 0; background: transparent; color: var(--muted); cursor: pointer; padding: 2px; }
+.source-note-attachment-actions { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 7px; }
+.source-note-attachment-actions label { min-height: 32px; display: inline-flex; align-items: center; gap: 6px; padding: 0 9px; border: 1px dashed var(--line-strong); border-radius: 7px; background: var(--surface-soft); color: var(--muted); cursor: pointer; font: 700 11px/1 var(--sans); }
+.source-note-attachment-actions label:hover { border-style: solid; color: var(--ink); }
 .note-popover > footer {
   display: flex;
   align-items: center;
@@ -5949,6 +5969,36 @@ button:disabled { opacity: 0.48; cursor: not-allowed; }
 .annotation-note-editor { margin-bottom: 32px; }
 .annotation-note-editor textarea { width: 100%; min-height: 210px; resize: vertical; padding: 16px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--panel); color: var(--ink); font: 400 16px/1.7 var(--editorial-serif); }
 .annotation-note-editor-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 10px; }
+.external-html-attachment { position: relative; display: grid; gap: 8px; margin: 18px 0; font-family: var(--sans); }
+.external-html-import-button { width: fit-content; min-height: 36px; display: inline-flex; gap: 7px; align-items: center; padding: 0 11px; border: 1px dashed var(--line-strong); border-radius: 8px; background: var(--surface-soft); color: var(--muted); cursor: pointer; font-weight: 700; }
+.external-html-import-button:hover:not(:disabled) { border-style: solid; color: var(--ink); }
+.external-html-attachment-card { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 11px; align-items: center; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-soft); }
+.external-html-attachment-card > svg { color: var(--accent); }
+.external-html-attachment-card > div:nth-child(2) { min-width: 0; display: grid; gap: 3px; }
+.external-html-attachment-card strong,
+.external-html-attachment-card span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.external-html-attachment-card strong { color: var(--ink); font-size: 13px; }
+.external-html-attachment-card span { color: var(--muted); font-size: 11px; }
+.external-html-attachment-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; }
+.external-html-attachment-actions button { min-height: 31px; display: inline-flex; gap: 5px; align-items: center; padding: 0 9px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); color: var(--ink); cursor: pointer; font: 700 11px/1 var(--sans); }
+.external-html-attachment-actions button.danger { color: var(--danger); }
+.external-html-attachment.compact { margin: 12px 0 0; }
+.external-html-attachment.compact .external-html-attachment-card { grid-template-columns: auto minmax(0, 1fr); }
+.external-html-attachment.compact .external-html-attachment-actions { grid-column: 1 / -1; justify-content: flex-start; }
+.external-html-preview { z-index: 8; display: grid; gap: 13px; padding: 16px; border: 1px solid var(--line-strong); border-radius: 10px; background: var(--panel); box-shadow: 0 16px 44px color-mix(in srgb, black 18%, transparent); }
+.external-html-preview header,
+.external-html-preview footer { display: flex; gap: 8px; align-items: center; justify-content: space-between; }
+.external-html-preview header button { border: 0; background: transparent; color: var(--muted); cursor: pointer; }
+.external-html-preview dl { display: grid; gap: 8px; margin: 0; }
+.external-html-preview dl > div { display: grid; grid-template-columns: 70px minmax(0, 1fr); gap: 10px; }
+.external-html-preview dt { color: var(--muted); font-size: 11px; font-weight: 750; }
+.external-html-preview dd { margin: 0; color: var(--ink); font-size: 12px; line-height: 1.45; }
+.external-html-preview p,
+.external-html-preview ul { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
+.external-html-preview footer { justify-content: flex-end; }
+.external-html-preview footer button { min-height: 34px; padding: 0 12px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); color: var(--ink); cursor: pointer; font-weight: 700; }
+.external-html-preview footer button.primary { border-color: var(--accent); background: var(--accent); color: white; }
+.external-html-error { margin: 0; color: var(--danger); font-size: 12px; line-height: 1.5; }
 
 .progress-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(260px, 310px); gap: clamp(34px, 5vw, 78px); padding: 68px clamp(30px, 7vw, 100px); }
 .progress-main { min-width: 0; max-width: 880px; }

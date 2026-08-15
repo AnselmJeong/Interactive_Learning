@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState, type ClipboardEvent, type PointerEvent, type RefObject } from "react";
-import { Image as ImageIcon, Loader2, MessageSquare, Save, Search, StickyNote, Trash2, X } from "lucide-react";
-import type { ImageLookupResult, LookupResult, MaterialAnnotation, QuestionThreadResult, TextSelectionAnchor } from "../../../shared/artifact-types";
+import { useEffect, useRef, useState, type ChangeEvent, type ClipboardEvent, type PointerEvent, type RefObject } from "react";
+import { FileCode2, Image as ImageIcon, Loader2, MessageSquare, Save, Search, StickyNote, Trash2, Upload, X } from "lucide-react";
+import type { ExternalHtmlImportPreview, ImageLookupResult, LookupResult, MaterialAnnotation, QuestionThreadResult, TextSelectionAnchor } from "../../../shared/artifact-types";
 import type { ChatSubmitShortcut } from "../../../shared/settings-types";
 import { MarkdownContent } from "./MarkdownContent";
 import { highlightAnnotationIdsForRange } from "../annotation-inline-links";
@@ -10,7 +10,8 @@ import { questionThreadFromResult } from "../../../shared/question-thread";
 import { SelectionSideChat, clampSideChatPoint, type SelectionSideChatState } from "./SelectionSideChat";
 import { HighlightStylePicker } from "./HighlightStylePicker";
 import { DEFAULT_SHORTCUT_HIGHLIGHT_STYLE, type HighlightStyle } from "../highlight-styles";
-import { MAX_NOTE_IMAGES, NoteImageGallery, noteImageUpload, readPastedNoteImages, type PendingNoteImage } from "./NoteImages";
+import { MAX_NOTE_IMAGES, NoteImageGallery, noteImageUpload, readNoteImageFiles, readPastedNoteImages, type PendingNoteImage } from "./NoteImages";
+import { useExternalHtmlCapability } from "./AnnotationExternalHtmlAttachment";
 
 type RpcRequest = (method: string, params: unknown) => Promise<unknown>;
 type LookupAction = "lookup" | "image";
@@ -45,6 +46,8 @@ type NotePanelState = {
   y: number;
   note: string;
   images: PendingNoteImage[];
+  appletPreview?: ExternalHtmlImportPreview;
+  appletBusy?: boolean;
   error?: string;
 };
 
@@ -136,6 +139,7 @@ export function LearningSelectionLookup({
   const [notePanel, setNotePanel] = useState<NotePanelState | null>(null);
   const [sideChat, setSideChat] = useState<SideChatSession | null>(null);
   const [closedDraft, setClosedDraft] = useState<SideChatSession | null>(null);
+  const externalHtmlEnabled = useExternalHtmlCapability();
   const selectionTimerRef = useRef<number | null>(null);
   const lookupRequestSeqRef = useRef(0);
   const sideChatRef = useRef<SideChatSession | null>(null);
@@ -560,7 +564,8 @@ export function LearningSelectionLookup({
   async function saveNote(panel: NotePanelState) {
     if (!materialId || panel.status === "saving") return;
     const note = panel.note.trim();
-    if (!note && !panel.images.length) return;
+    const appletPreview = panel.appletPreview?.status !== "rejected" ? panel.appletPreview : undefined;
+    if (!note && !panel.images.length && !appletPreview) return;
     setNotePanel({ ...panel, status: "saving", error: undefined });
     try {
       const saved = (await request("annotations.saveNote", {
@@ -573,6 +578,7 @@ export function LearningSelectionLookup({
         selectedText: panel.selection.text,
         note,
         images: panel.images.map(noteImageUpload),
+        ...(appletPreview ? { externalHtmlPreviewId: appletPreview.previewId } : {}),
       })) as MaterialAnnotation;
       onAnnotationSaved?.(saved);
       setNotePanel(null);
@@ -585,6 +591,34 @@ export function LearningSelectionLookup({
         error: `저장 실패: ${(error as Error).message || String(error)}`,
       });
     }
+  }
+
+  async function prepareNoteApplet(panel: NotePanelState) {
+    if (panel.appletBusy) return;
+    setNotePanel({ ...panel, appletBusy: true, error: undefined });
+    try {
+      if (panel.appletPreview && panel.appletPreview.status !== "rejected") {
+        await request("annotations.cancelExternalHtmlImport", { previewId: panel.appletPreview.previewId });
+      }
+      const preview = await request("annotations.prepareExternalHtmlImport", { annotationId: null }) as ExternalHtmlImportPreview | null;
+      setNotePanel((current) => current ? { ...current, appletBusy: false, ...(preview ? { appletPreview: preview } : {}) } : current);
+    } catch (error) {
+      setNotePanel((current) => current ? { ...current, appletBusy: false, status: "error", error: (error as Error).message || String(error) } : current);
+    }
+  }
+
+  async function removeNoteApplet(panel: NotePanelState) {
+    if (panel.appletPreview && panel.appletPreview.status !== "rejected") {
+      await request("annotations.cancelExternalHtmlImport", { previewId: panel.appletPreview.previewId }).catch(() => undefined);
+    }
+    setNotePanel((current) => current ? { ...current, appletPreview: undefined, appletBusy: false, status: "editing", error: undefined } : current);
+  }
+
+  async function closeNotePanel(panel: NotePanelState) {
+    if (panel.appletPreview && panel.appletPreview.status !== "rejected") {
+      await request("annotations.cancelExternalHtmlImport", { previewId: panel.appletPreview.previewId }).catch(() => undefined);
+    }
+    setNotePanel(null);
   }
 
   useEffect(() => {
@@ -708,9 +742,12 @@ export function LearningSelectionLookup({
           panel={notePanel}
           onChange={(note) => setNotePanel((current) => current ? { ...current, note, status: "editing", error: undefined } : current)}
           onImagesChange={(images) => setNotePanel((current) => current ? { ...current, images, status: "editing", error: undefined } : current)}
+          externalHtmlEnabled={externalHtmlEnabled}
+          onPrepareApplet={() => void prepareNoteApplet(notePanel)}
+          onRemoveApplet={() => void removeNoteApplet(notePanel)}
           onError={(error) => setNotePanel((current) => current ? { ...current, status: "error", error } : current)}
           onSave={() => void saveNote(notePanel)}
-          onClose={() => setNotePanel(null)}
+          onClose={() => void closeNotePanel(notePanel)}
           onMove={(x, y) => setNotePanel((current) => current ? { ...current, x, y } : current)}
         />
       ) : null}
@@ -753,6 +790,9 @@ function NotePopover({
   panel,
   onChange,
   onImagesChange,
+  externalHtmlEnabled,
+  onPrepareApplet,
+  onRemoveApplet,
   onError,
   onSave,
   onClose,
@@ -761,12 +801,16 @@ function NotePopover({
   panel: NotePanelState;
   onChange: (note: string) => void;
   onImagesChange: (images: PendingNoteImage[]) => void;
+  externalHtmlEnabled: boolean;
+  onPrepareApplet: () => void;
+  onRemoveApplet: () => void;
   onError: (error: string) => void;
   onSave: () => void;
   onClose: () => void;
   onMove: (x: number, y: number) => void;
 }) {
   const dragRef = useRef<{ offsetX: number; offsetY: number } | null>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
   const [dragging, setDragging] = useState(false);
 
   useEffect(() => {
@@ -812,6 +856,19 @@ function NotePopover({
     }
   }
 
+  async function chooseImages(event: ChangeEvent<HTMLInputElement>) {
+    try {
+      const selected = await readNoteImageFiles(Array.from(event.currentTarget.files ?? []));
+      if (!selected.length) return;
+      if (panel.images.length + selected.length > MAX_NOTE_IMAGES) throw new Error(`노트에는 이미지를 최대 ${MAX_NOTE_IMAGES}개까지 저장할 수 있습니다.`);
+      onImagesChange([...panel.images, ...selected]);
+    } catch (error) {
+      onError((error as Error).message || String(error));
+    } finally {
+      event.currentTarget.value = "";
+    }
+  }
+
   return (
     <aside className={`note-popover ${dragging ? "dragging" : ""}`} role="dialog" aria-label="선택 텍스트 노트" style={{ left: panel.x, top: panel.y }}>
       <header onPointerDown={startDrag} title="드래그해서 이동">
@@ -824,7 +881,7 @@ function NotePopover({
         </button>
       </header>
       <label>
-        <span>Markdown 노트 · 그림은 클립보드에서 붙여넣기</span>
+        <span>텍스트는 선택 사항 · 이미지와 HTML applet을 함께 첨부할 수 있습니다</span>
         <textarea
           autoFocus
           maxLength={5000}
@@ -832,14 +889,41 @@ function NotePopover({
           value={panel.note}
           onChange={(event) => onChange(event.target.value)}
           onPaste={(event) => void pasteImages(event)}
-          placeholder="내용을 적거나, 복사한 그림을 ⌘V로 붙여넣으세요."
+          placeholder="내용을 적거나 비워 둔 채 첨부만 저장할 수 있습니다. 그림은 ⌘V로도 붙여넣을 수 있어요."
         />
       </label>
       <NoteImageGallery images={panel.images} onRemove={(imageId) => onImagesChange(panel.images.filter((image) => image.id !== imageId))} />
+      <div className="note-attachment-draft-actions">
+        <input ref={imageInputRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif" multiple hidden onChange={(event) => void chooseImages(event)} />
+        <button type="button" className="note-attachment-import" onClick={() => imageInputRef.current?.click()} disabled={panel.status === "saving" || panel.images.length >= MAX_NOTE_IMAGES}>
+          <ImageIcon size={15} /> 이미지 추가
+        </button>
+        {externalHtmlEnabled ? (
+          <button type="button" className="note-attachment-import" onClick={onPrepareApplet} disabled={panel.appletBusy || panel.status === "saving"}>
+            {panel.appletBusy ? <Loader2 size={15} className="spin" /> : <Upload size={15} />}
+            {panel.appletPreview ? "HTML applet 교체" : "HTML applet 추가"}
+          </button>
+        ) : null}
+      </div>
+      {externalHtmlEnabled && panel.appletPreview ? (
+        <div className="note-applet-draft">
+          {panel.appletPreview ? (
+            <div className={`note-applet-draft-card ${panel.appletPreview.status === "rejected" ? "rejected" : ""}`}>
+              <FileCode2 size={18} aria-hidden="true" />
+              <div>
+                <strong>{panel.appletPreview.title}</strong>
+                <span>{panel.appletPreview.originalFileName} · {panel.appletPreview.status === "rejected" ? "가져올 수 없음" : panel.appletPreview.status === "ready_after_localization" ? "offline 변환 후 첨부" : "offline 첨부"}</span>
+                {panel.appletPreview.rejectionReasons.map((reason) => <small key={`${reason.code}-${reason.message}`}>{reason.message}</small>)}
+              </div>
+              <button type="button" onClick={onRemoveApplet} disabled={panel.appletBusy || panel.status === "saving"} aria-label="HTML applet 제거"><X size={15} /></button>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
       {panel.error ? <p className="lookup-error">{panel.error}</p> : null}
       <footer>
         <small>{panel.note.length.toLocaleString()} / 5,000 · 이미지 {panel.images.length}/{MAX_NOTE_IMAGES}</small>
-        <button type="button" onClick={onSave} disabled={(!panel.note.trim() && !panel.images.length) || panel.status === "saving"}>
+        <button type="button" onClick={onSave} disabled={(!panel.note.trim() && !panel.images.length && panel.appletPreview?.status !== "ready" && panel.appletPreview?.status !== "ready_after_localization") || panel.status === "saving" || panel.appletBusy}>
           {panel.status === "saving" ? <Loader2 size={15} className="spin" /> : <Save size={15} />}
           {panel.status === "saving" ? "저장 중" : "노트 저장"}
         </button>

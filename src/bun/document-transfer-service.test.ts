@@ -9,6 +9,8 @@ import { configureAppDataBase, configureDatabaseBase } from "./paths";
 import { closeDbForTests, getDb } from "./project-db";
 import { ProjectService } from "./project-service";
 import { SettingsService } from "./settings-service";
+import { getMaterialAnnotation, saveMaterialAnnotation } from "./annotation-store";
+import { ExternalHtmlImportService, validateExternalHtmlAttachment } from "./external-html-import-service";
 
 let tempRoot = "";
 
@@ -66,6 +68,19 @@ describe("document transfer bridge", () => {
 
   test("imports a document into another project with remapped IDs and portable paths", async () => {
     const { project } = await seedDocument();
+    const appletPath = join(tempRoot, "document-applet.html");
+    await writeFile(appletPath, "<!doctype html><html><title>Document applet</title><body>Portable</body></html>", "utf8");
+    const sourceAnnotation = saveMaterialAnnotation({
+      materialId: "material-1",
+      chunkId: "chunk-1",
+      sourceId: "source-1",
+      kind: "note",
+      selectedText: "Document selection",
+      result: { kind: "note", note: "Remember" },
+    });
+    const appletImporter = new ExternalHtmlImportService(async () => appletPath);
+    const appletPreview = await appletImporter.prepare(sourceAnnotation.id);
+    await appletImporter.commit(sourceAnnotation.id, appletPreview!.previewId, sourceAnnotation.updatedAt);
     const destination = await new ProjectService().create({ title: "Destination" });
     const service = new DocumentTransferService();
     const exported = await service.export(project.id, "document-1");
@@ -90,6 +105,11 @@ describe("document transfer bridge", () => {
     expect(new DocumentService().list(destination.id)).toMatchObject([
       { id: result.documentId, title: "A book", sourceCount: 1 },
     ]);
+    const importedAnnotationRow = getDb().query<{ id: string }, [string]>("SELECT id FROM material_annotations WHERE project_id = ?").get(destination.id);
+    const importedAnnotation = importedAnnotationRow ? getMaterialAnnotation(importedAnnotationRow.id) : null;
+    const importedAttachment = importedAnnotation?.attachments?.[0];
+    if (!importedAnnotation || !importedAttachment || importedAttachment.kind !== "external_html") throw new Error("Remapped document applet attachment is missing");
+    expect((await validateExternalHtmlAttachment(importedAnnotation, importedAttachment)).original.length).toBeGreaterThan(0);
 
     const duplicate = await service.prepareImport(exported.zipPath, destination.id);
     expect(duplicate.classification).toBe("no_changes");

@@ -32,20 +32,15 @@ async function imageDimensions(file: File) {
   }
 }
 
-export async function readPastedNoteImages(clipboardData: DataTransfer): Promise<PendingNoteImage[]> {
-  const files = [...clipboardData.items]
-    .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
-    .map((item) => item.getAsFile())
-    .filter((file): file is File => Boolean(file));
-  if (!files.length) return [];
+export async function readNoteImageFiles(files: File[]): Promise<PendingNoteImage[]> {
   return Promise.all(files.map(async (file, index) => {
-    if (!SUPPORTED_NOTE_IMAGE_TYPES.has(file.type)) throw new Error("PNG, JPEG, WebP 또는 GIF 이미지만 붙여넣을 수 있습니다.");
+    if (!SUPPORTED_NOTE_IMAGE_TYPES.has(file.type)) throw new Error("PNG, JPEG, WebP 또는 GIF 이미지만 추가할 수 있습니다.");
     if (!file.size || file.size > MAX_NOTE_IMAGE_BYTES) throw new Error("이미지 한 개는 8MB 이하여야 합니다.");
     const url = await readAsDataUrl(file);
     const dataBase64 = url.slice(url.indexOf(",") + 1);
     return {
       id: `pending-${crypto.randomUUID()}`,
-      fileName: file.name || `pasted-image-${index + 1}`,
+      fileName: file.name || `note-image-${index + 1}`,
       mimeType: file.type,
       dataBase64,
       byteSize: file.size,
@@ -53,6 +48,15 @@ export async function readPastedNoteImages(clipboardData: DataTransfer): Promise
       ...await imageDimensions(file),
     };
   }));
+}
+
+export async function readPastedNoteImages(clipboardData: DataTransfer): Promise<PendingNoteImage[]> {
+  const files = [...clipboardData.items]
+    .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+    .map((item) => item.getAsFile())
+    .filter((file): file is File => Boolean(file));
+  if (!files.length) return [];
+  return readNoteImageFiles(files);
 }
 
 export function noteImageUpload(image: PendingNoteImage): NoteImageUpload {

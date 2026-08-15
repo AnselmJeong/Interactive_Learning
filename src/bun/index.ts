@@ -31,6 +31,8 @@ import { createFigureAssetServer } from "./figure-asset-server";
 import { createBookCoverAssetServer } from "./book-cover-asset-server";
 import { createAnnotationAssetServer } from "./annotation-asset-server";
 import { resolveNoteImageAsset } from "./annotation-image-assets";
+import { ExternalHtmlImportService } from "./external-html-import-service";
+import { ExternalHtmlViewer } from "./external-html-viewer";
 
 configureAppDataBase(Utils.paths.userData);
 configureDatabaseBase(stableDatabaseBase(Utils.paths.userData));
@@ -133,6 +135,26 @@ async function chooseProjectTransferPath() {
     allowsMultipleSelection: false,
   });
   return firstSelectedPath(selected);
+}
+
+async function chooseExternalHtmlPath() {
+  const current = await settings.get();
+  const selected = await Utils.openFileDialog({
+    startingFolder: existsSync(current.defaultDownloadFolder) ? current.defaultDownloadFolder : Utils.paths.home,
+    allowedFileTypes: "html,htm",
+    canChooseFiles: true,
+    canChooseDirectory: false,
+    allowsMultipleSelection: false,
+  });
+  return firstSelectedPath(selected);
+}
+
+const externalHtmlImports = new ExternalHtmlImportService(chooseExternalHtmlPath);
+const externalHtmlViewer = new ExternalHtmlViewer();
+const externalHtmlAnnotationsEnabled = process.env.LEARNIE_EXTERNAL_HTML_ANNOTATIONS === "1";
+
+function requireExternalHtmlAnnotations() {
+  if (!externalHtmlAnnotationsEnabled) throw new Error("External HTML annotations are disabled in this build.");
 }
 
 async function providerClient(input: AiProviderConnectionInput = {}) {
@@ -416,10 +438,54 @@ const rpc = BrowserView.defineRPC<AppRPC>({
       "annotations.listProject": ({ projectId }) => annotations.withAssetUrlsForMany(listProjectAnnotations(projectId)),
       "annotations.exportReadable": ({ projectId, annotationIds, destinationFolder }) => annotationExports.exportReadable(projectId, annotationIds, destinationFolder),
       "annotations.save": (params) => annotations.save(params),
-      "annotations.saveNote": (params) => annotations.saveNote(params),
+      "annotations.saveNote": async ({ externalHtmlPreviewId, ...params }) => {
+        if (externalHtmlPreviewId) requireExternalHtmlAnnotations();
+        const saved = await annotations.saveNote({ ...params, allowEmpty: Boolean(externalHtmlPreviewId) });
+        if (!externalHtmlPreviewId) return saved;
+        try {
+          const annotation = await externalHtmlImports.commit(saved.id, externalHtmlPreviewId, saved.updatedAt);
+          return annotations.withAssetUrls(annotation);
+        } catch (error) {
+          await annotations.delete(saved.id).catch((cleanupError) => {
+            console.warn(`[external-html] Failed to roll back note after applet import failure: ${(cleanupError as Error).message}`);
+          });
+          throw error;
+        }
+      },
       "annotations.updateNote": (params) => annotations.updateNote(params),
       "annotations.updateQuestionThread": (params) => annotations.updateQuestionThread(params),
-      "annotations.delete": ({ annotationId }) => annotations.delete(annotationId),
+      "annotations.externalHtmlCapability": () => ({ enabled: externalHtmlAnnotationsEnabled }),
+      "annotations.prepareExternalHtmlImport": ({ annotationId }) => {
+        requireExternalHtmlAnnotations();
+        return externalHtmlImports.prepare(annotationId || null);
+      },
+      "annotations.commitExternalHtmlImport": async ({ annotationId, previewId, expectedAnnotationUpdatedAt }) => {
+        requireExternalHtmlAnnotations();
+        const annotation = await externalHtmlImports.commit(annotationId, previewId, expectedAnnotationUpdatedAt);
+        return annotations.withAssetUrls(annotation);
+      },
+      "annotations.cancelExternalHtmlImport": ({ previewId }) => {
+        requireExternalHtmlAnnotations();
+        return externalHtmlImports.cancel(previewId);
+      },
+      "annotations.openExternalHtml": ({ annotationId, attachmentId }) => {
+        requireExternalHtmlAnnotations();
+        return externalHtmlViewer.open(annotationId, attachmentId);
+      },
+      "annotations.removeExternalHtml": async ({ annotationId, attachmentId, expectedAnnotationUpdatedAt }) => {
+        requireExternalHtmlAnnotations();
+        externalHtmlViewer.close();
+        const annotation = await externalHtmlImports.remove(annotationId, attachmentId, expectedAnnotationUpdatedAt);
+        return annotations.withAssetUrls(annotation);
+      },
+      "annotations.exportExternalHtmlOriginal": ({ annotationId, attachmentId }) => {
+        requireExternalHtmlAnnotations();
+        return externalHtmlImports.exportOriginal(annotationId, attachmentId);
+      },
+      "annotations.delete": ({ annotationId }) => {
+        externalHtmlViewer.close();
+        return annotations.delete(annotationId);
+      },
       "sessions.list": ({ materialId }) => tutor.listSessions(materialId),
       "sessions.start": ({ materialId, mode, sessionId }) => tutor.start(materialId, { mode, sessionId }),
       "sessions.load": ({ sessionId }) => tutor.load(sessionId),
@@ -528,4 +594,6 @@ const mainWindow = createMainWindow(rpc as never);
 installApplicationMenu(() => sendToView("app.openAbout", {}));
 Electrobun.events.on("before-quit", () => {
   tutor.markGeneratingMessageSetsInterrupted();
+  externalHtmlImports.clear();
+  externalHtmlViewer.shutdown();
 });

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { closeDbForTests, getDb } from "./project-db";
 import { listMaterialAnnotations, listProjectAnnotations, replaceMaterialAnnotations, saveMaterialAnnotation } from "./annotation-store";
-import type { TextSelectionAnchor } from "../shared/artifact-types";
+import type { ExternalHtmlAttachment, TextSelectionAnchor } from "../shared/artifact-types";
 
 describe("annotation store", () => {
   let tempRoot = "";
@@ -139,5 +139,40 @@ describe("annotation store", () => {
     const loaded = listProjectAnnotations("project-1");
     expect(loaded.map((annotation) => annotation.id)).toEqual([second.id, first.id]);
     expect(listProjectAnnotations("missing-project")).toEqual([]);
+  });
+
+  test("drops malformed or non-portable attachment fields without losing the annotation", () => {
+    const saved = saveMaterialAnnotation({
+      materialId: "material-1",
+      chunkId: "chunk-1",
+      kind: "highlight",
+      selectedText: "portable trace",
+      result: { kind: "highlight" },
+    });
+    getDb().query("UPDATE material_annotations SET attachments_json = ? WHERE id = ?").run("{bad json", saved.id);
+    expect(listMaterialAnnotations("material-1")[0]).toMatchObject({ attachments: [], syncWarning: expect.any(String) });
+
+    const attachment = {
+      kind: "external_html",
+      schemaVersion: 1,
+      id: "12345678-1234-1234-1234-123456789abc",
+      title: "Applet",
+      originalFileName: "applet.html",
+      originalByteSize: 100,
+      runnableByteSize: 120,
+      originalSha256: "a".repeat(64),
+      runnableSha256: "b".repeat(64),
+      compatibility: "self_contained",
+      importerVersion: 1,
+      dependencies: [],
+      importedAt: Date.now(),
+      rawHtml: "<script>should not persist</script>",
+      absolutePath: "/private/file.html",
+    } satisfies ExternalHtmlAttachment & { rawHtml: string; absolutePath: string };
+    replaceMaterialAnnotations("material-1", [{ ...saved, attachments: [attachment] }]);
+    const raw = getDb().query<{ attachments_json: string }, [string]>("SELECT attachments_json FROM material_annotations WHERE id = ?").get(saved.id)?.attachments_json || "";
+    expect(raw).not.toContain("should not persist");
+    expect(raw).not.toContain("/private/file.html");
+    expect(listMaterialAnnotations("material-1")[0]?.attachments?.[0]).toMatchObject({ id: attachment.id, title: "Applet" });
   });
 });

@@ -339,6 +339,7 @@ export function getDb() {
       normalized_text TEXT NOT NULL,
       result_json TEXT NOT NULL,
       source_meta_json TEXT NOT NULL DEFAULT '[]',
+      attachments_json TEXT NOT NULL DEFAULT '[]',
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );
@@ -499,6 +500,9 @@ export function getDb() {
       )
       WHERE scope = 'session' AND anchor_message_id IS NOT NULL;
     `);
+  }
+  if (!annotationColumns.includes("attachments_json")) {
+    db.exec("ALTER TABLE material_annotations ADD COLUMN attachments_json TEXT NOT NULL DEFAULT '[]';");
   }
   migrateMaterialAnnotationKindCheck(db);
   db.exec(`
@@ -810,19 +814,20 @@ function migrateMaterialAnnotationKindCheck(database: Database) {
         normalized_text TEXT NOT NULL,
         result_json TEXT NOT NULL,
         source_meta_json TEXT NOT NULL DEFAULT '[]',
+        attachments_json TEXT NOT NULL DEFAULT '[]',
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL
       );
 
       INSERT INTO material_annotations
        (id, project_id, material_id, source_id, chunk_id, surface, scope, session_id, anchor_message_id, anchor_block_id, anchor_json, kind, selected_text, normalized_text,
-        result_json, source_meta_json, created_at, updated_at)
+        result_json, source_meta_json, attachments_json, created_at, updated_at)
       SELECT
         id, project_id, material_id, source_id, chunk_id, surface,
         CASE WHEN anchor_message_id IS NOT NULL OR anchor_block_id IS NOT NULL THEN 'session' ELSE 'material' END,
         (SELECT learning_messages.session_id FROM learning_messages WHERE learning_messages.id = material_annotations_old.anchor_message_id),
         anchor_message_id, anchor_block_id, anchor_json, kind, selected_text, normalized_text,
-        result_json, source_meta_json, created_at, updated_at
+        result_json, source_meta_json, attachments_json, created_at, updated_at
       FROM material_annotations_old;
 
       DROP TABLE material_annotations_old;

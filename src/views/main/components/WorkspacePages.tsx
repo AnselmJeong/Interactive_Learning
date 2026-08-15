@@ -7,6 +7,7 @@ import { AnnotationInlineScope } from "./AnnotationInlineScope";
 import { MarkdownContent } from "./MarkdownContent";
 import { TutorBlockRenderer } from "./TutorBlockRenderer";
 import { MAX_NOTE_IMAGES, NoteImageGallery, noteImageUpload, readPastedNoteImages, type PendingNoteImage } from "./NoteImages";
+import { AnnotationExternalHtmlAttachment } from "./AnnotationExternalHtmlAttachment";
 
 type LibraryPageProps = {
   project: ProjectSummary | null;
@@ -422,6 +423,7 @@ export function AnnotationPage({ project, annotations, documents, sources, selec
                   {selected.result.kind === "note" ? <NoteImageGallery images={selected.result.images || []} /> : null}
                 </div>
               )}
+              <AnnotationExternalHtmlAttachment annotation={selected} />
               <div className="annotation-detail-actions">
                 {selectedSource ? <button type="button" className="renovation-primary" onClick={() => onOpenAnnotation(selected)}>본문에서 보기 <ArrowRight size={16} /></button> : null}
                 {selected.result.kind === "note" ? <button type="button" className="renovation-secondary" onClick={() => {

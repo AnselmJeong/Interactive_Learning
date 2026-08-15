@@ -14,6 +14,7 @@ import type {
   QuestionThreadResult,
   QualityStatus,
   DocumentType,
+  ExternalHtmlImportPreview,
   SourceType,
   TextSelectionAnchor,
 } from "./artifact-types";
@@ -381,6 +382,7 @@ export type AppRPC = {
           selectedText: string;
           note: string;
           images?: NoteImageUpload[];
+          externalHtmlPreviewId?: string;
         };
         response: MaterialAnnotation;
       };
@@ -389,6 +391,22 @@ export type AppRPC = {
         response: MaterialAnnotation;
       };
       "annotations.updateQuestionThread": { params: { annotationId: string; thread: QuestionThreadResult }; response: MaterialAnnotation };
+      "annotations.externalHtmlCapability": { params: {}; response: { enabled: boolean } };
+      "annotations.prepareExternalHtmlImport": { params: { annotationId?: string | null }; response: ExternalHtmlImportPreview | null };
+      "annotations.commitExternalHtmlImport": {
+        params: { annotationId: string; previewId: string; expectedAnnotationUpdatedAt: number };
+        response: MaterialAnnotation;
+      };
+      "annotations.cancelExternalHtmlImport": { params: { previewId: string }; response: { cancelled: boolean } };
+      "annotations.openExternalHtml": { params: { annotationId: string; attachmentId: string }; response: { opened: true } };
+      "annotations.removeExternalHtml": {
+        params: { annotationId: string; attachmentId: string; expectedAnnotationUpdatedAt: number };
+        response: MaterialAnnotation;
+      };
+      "annotations.exportExternalHtmlOriginal": {
+        params: { annotationId: string; attachmentId: string };
+        response: { exported: boolean; fileName?: string };
+      };
       "annotations.delete": { params: { annotationId: string }; response: { deleted: boolean; syncWarning?: string } };
       "sessions.list": { params: { materialId: string }; response: SessionSummary[] };
       "sessions.start": { params: { materialId: string; mode: "new" | "continue"; sessionId?: string }; response: { session: SessionSnapshot; context: TutorContext; messageSet: LearningMessageSetSummary; firstTurn?: TutorTurnOutput } };

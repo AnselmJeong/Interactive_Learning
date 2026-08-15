@@ -1,13 +1,15 @@
 import { existsSync } from "node:fs";
 import { copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { getDb } from "./project-db";
 import { SettingsService } from "./settings-service";
 import { writeZipFromDirectory } from "./archive-writer";
 import type { AnnotationReadableExport } from "../shared/rpc-types";
-import type { NoteImageAttachment } from "../shared/artifact-types";
+import type { ExternalHtmlAttachment, NoteImageAttachment } from "../shared/artifact-types";
 import { resolveNoteImageAsset } from "./annotation-image-assets";
+import { getMaterialAnnotation } from "./annotation-store";
+import { validateExternalHtmlAttachment } from "./external-html-import-service";
 
 type ExportAnnotationRow = {
   id: string;
@@ -16,6 +18,7 @@ type ExportAnnotationRow = {
   result_json: string;
   source_meta_json: string;
   anchor_json: string | null;
+  attachments_json: string;
   created_at: number;
   document_title: string | null;
   document_type: "book" | "article" | null;
@@ -91,7 +94,7 @@ export class AnnotationExportService {
     if (!ids.length) throw new Error("내보낼 annotation이 없습니다.");
     const placeholders = ids.map(() => "?").join(", ");
     const rows = getDb().query<ExportAnnotationRow, string[]>(`
-      SELECT a.id, a.kind, a.selected_text, a.result_json, a.source_meta_json, a.anchor_json, a.created_at,
+      SELECT a.id, a.kind, a.selected_text, a.result_json, a.source_meta_json, a.anchor_json, a.attachments_json, a.created_at,
              d.title AS document_title, d.document_type, s.title AS source_title, p.title AS project_title
       FROM material_annotations a
       JOIN projects p ON p.id = a.project_id
@@ -113,6 +116,7 @@ export class AnnotationExportService {
     let currentDocument = "";
     let currentSource = "";
     const assetsToCopy: Array<{ sourcePath: string; relativePath: string }> = [];
+    const assetsToWrite: Array<{ contents: string; relativePath: string }> = [];
     for (const row of rows) {
       const documentTitle = row.document_title || "분류되지 않은 자료";
       if (documentTitle !== currentDocument) {
@@ -136,6 +140,34 @@ export class AnnotationExportService {
       }).filter(Boolean).join("\n\n");
       const body = resultMarkdown(row.result_json, imageLines);
       if (body) lines.push(body, "");
+      const attachmentMetadata = json<ExternalHtmlAttachment[]>(row.attachments_json, [])
+        .filter((attachment) => attachment?.kind === "external_html" && attachment.schemaVersion === 1);
+      const annotation = getMaterialAnnotation(row.id);
+      if (annotation) {
+        for (const attachment of attachmentMetadata) {
+          const validated = await validateExternalHtmlAttachment(annotation, attachment);
+          const base = `assets/${row.id}/${attachment.id}`;
+          assetsToCopy.push(
+            { sourcePath: validated.originalPath, relativePath: `${base}/original.html` },
+            { sourcePath: join(validated.dir, "manifest.json"), relativePath: `${base}/manifest.json` },
+          );
+          for (const dependency of attachment.dependencies) {
+            assetsToCopy.push({ sourcePath: join(validated.dir, "licenses", `${dependency.name}.txt`), relativePath: `${base}/licenses/${dependency.name}.txt` });
+          }
+          assetsToWrite.push({
+            relativePath: `${base}/README.txt`,
+            contents: [
+              attachment.title,
+              "",
+              "이 파일은 Learnie annotation에 사용자가 직접 첨부한 외부 HTML 원본입니다.",
+              "original.html은 신뢰할 수 없는 실행 코드로 취급하세요.",
+              "Learnie 내부 실행본은 sandbox 정책에 종속되므로 이 내보내기에 포함하지 않았습니다.",
+              "",
+            ].join("\n"),
+          });
+          lines.push(`대화형 설명 첨부: ${attachment.title} (assets/${row.id}/${attachment.id}/original.html)`, "");
+        }
+      }
       const links = sourceLinks(row.source_meta_json);
       if (links.length) lines.push("참고:", ...links, "");
     }
@@ -149,13 +181,22 @@ export class AnnotationExportService {
     const exportRoot = join(staging, `${safeFilePart(projectTitle)}-annotations`);
     try {
       await mkdir(exportRoot, { recursive: true });
-      if (assetsToCopy.length) {
+      if (assetsToCopy.length || assetsToWrite.length) {
         await mkdir(join(exportRoot, "assets"), { recursive: true });
-        await Promise.all(assetsToCopy.map((asset) => copyFile(asset.sourcePath, join(exportRoot, asset.relativePath))));
+        await Promise.all(assetsToCopy.map(async (asset) => {
+          const destination = join(exportRoot, asset.relativePath);
+          await mkdir(dirname(destination), { recursive: true });
+          await copyFile(asset.sourcePath, destination);
+        }));
+        await Promise.all(assetsToWrite.map(async (asset) => {
+          const destination = join(exportRoot, asset.relativePath);
+          await mkdir(dirname(destination), { recursive: true });
+          await writeFile(destination, asset.contents, "utf8");
+        }));
       }
       await writeFile(join(exportRoot, "annotations.md"), `${lines.join("\n").trim()}\n`, "utf8");
       await writeZipFromDirectory(staging, zipPath);
-      return { zipPath, fileName: zipPath.split("/").pop() || fileName, projectId, annotationCount: rows.length, assetCount: assetsToCopy.length };
+      return { zipPath, fileName: zipPath.split("/").pop() || fileName, projectId, annotationCount: rows.length, assetCount: assetsToCopy.length + assetsToWrite.length };
     } finally {
       await rm(staging, { recursive: true, force: true });
     }

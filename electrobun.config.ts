@@ -29,6 +29,8 @@ export default {
       "buddy/milestones/milestone-85.gif": "views/main/assets/buddy-milestone-85.gif",
       "buddy/milestones/milestone-100.gif": "views/main/assets/buddy-milestone-100.gif",
       "node_modules/katex/dist/katex.min.css": "views/main/katex.min.css",
+      "node_modules/chart.js/dist/chart.umd.js": "external-html-dependencies/chart.js-4.4.1.umd.js",
+      "node_modules/chart.js/LICENSE.md": "external-html-dependencies/chart.js-4.4.1-LICENSE.md",
       "python/pyproject.toml": "python/pyproject.toml",
       "python/uv.lock": "python/uv.lock",
       "python/src": "python/src",
