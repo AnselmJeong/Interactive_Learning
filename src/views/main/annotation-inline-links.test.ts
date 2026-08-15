@@ -5,6 +5,7 @@ import {
   inlineClasses,
   isInteractiveInlineAnnotation,
   resolveTextNodeRangeOffsets,
+  resolveTextNodeRangeSegments,
 } from "./annotation-inline-links";
 
 function annotation(kind: MaterialAnnotation["kind"]): MaterialAnnotation {
@@ -97,5 +98,40 @@ describe("annotation inline links", () => {
       start: { nodeIndex: 0, nodeOffset: 0 },
       end: { nodeIndex: 0, nodeOffset: firstParagraphLength },
     });
+  });
+
+  test("splits an annotation into the text before and after a skipped math node", () => {
+    expect(resolveTextNodeRangeSegments(
+      ["막전위는 ".length, "V_mV_mV_m".length, " 시간에 따라 변한다.".length],
+      new Set([1]),
+      0,
+      "막전위는 V_mV_mV_m 시간에 따라 변한다.".length
+    )).toEqual([
+      {
+        start: { nodeIndex: 0, nodeOffset: 0 },
+        end: { nodeIndex: 0, nodeOffset: "막전위는 ".length },
+      },
+      {
+        start: { nodeIndex: 2, nodeOffset: 0 },
+        end: { nodeIndex: 2, nodeOffset: " 시간에 따라 변한다.".length },
+      },
+    ]);
+  });
+
+  test("returns no visual segments when the selection contains only skipped math nodes", () => {
+    expect(resolveTextNodeRangeSegments([3, 5, 4], new Set([1]), 3, 8)).toEqual([]);
+  });
+
+  test("preserves partial offsets around a skipped math node", () => {
+    expect(resolveTextNodeRangeSegments([5, 4, 6], new Set([1]), 2, 12)).toEqual([
+      {
+        start: { nodeIndex: 0, nodeOffset: 2 },
+        end: { nodeIndex: 0, nodeOffset: 5 },
+      },
+      {
+        start: { nodeIndex: 2, nodeOffset: 0 },
+        end: { nodeIndex: 2, nodeOffset: 3 },
+      },
+    ]);
   });
 });

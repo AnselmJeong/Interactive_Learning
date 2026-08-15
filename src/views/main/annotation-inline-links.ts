@@ -57,6 +57,50 @@ export function resolveTextNodeRangeOffsets(textLengths: number[], startOffset: 
   return start && end ? { start, end } : null;
 }
 
+export function resolveTextNodeRangeSegments(
+  textLengths: number[],
+  skippedNodeIndices: ReadonlySet<number>,
+  startOffset: number,
+  endOffset: number
+) {
+  if (endOffset <= startOffset) return [];
+
+  const segments: Array<{
+    start: { nodeIndex: number; nodeOffset: number };
+    end: { nodeIndex: number; nodeOffset: number };
+  }> = [];
+  let current: (typeof segments)[number] | null = null;
+  let cursor = 0;
+
+  for (let nodeIndex = 0; nodeIndex < textLengths.length; nodeIndex += 1) {
+    const length = Math.max(0, textLengths[nodeIndex] || 0);
+    const next = cursor + length;
+    const nodeStartOffset = Math.max(0, startOffset - cursor);
+    const nodeEndOffset = Math.min(length, endOffset - cursor);
+    const intersectsSelection = length > 0 && nodeStartOffset < nodeEndOffset;
+
+    if (intersectsSelection && skippedNodeIndices.has(nodeIndex)) {
+      if (current) segments.push(current);
+      current = null;
+    } else if (intersectsSelection) {
+      if (!current) {
+        current = {
+          start: { nodeIndex, nodeOffset: nodeStartOffset },
+          end: { nodeIndex, nodeOffset: nodeEndOffset },
+        };
+      } else {
+        current.end = { nodeIndex, nodeOffset: nodeEndOffset };
+      }
+    }
+
+    cursor = next;
+    if (cursor >= endOffset) break;
+  }
+
+  if (current) segments.push(current);
+  return segments;
+}
+
 function textNodesForOffsets(root: HTMLElement, startOffset: number, endOffset: number) {
   const nodes: Text[] = [];
   let cursor = 0;
@@ -82,10 +126,35 @@ function rangeForTextOffsets(root: HTMLElement, startOffset: number, endOffset: 
   return range;
 }
 
-function hasIgnoredTextNode(root: HTMLElement, resolved: ResolvedTextAnchor) {
-  return textNodesForOffsets(root, resolved.startOffset, resolved.endOffset).some((node) =>
-    Boolean(elementFromNode(node)?.closest(ANNOTATION_SELECTION_IGNORE_SELECTOR))
-  );
+function hasUnsupportedIgnoredTextNode(root: HTMLElement, resolved: ResolvedTextAnchor, allowKatex: boolean) {
+  return textNodesForOffsets(root, resolved.startOffset, resolved.endOffset).some((node) => {
+    const element = elementFromNode(node);
+    if (!element?.closest(ANNOTATION_SELECTION_IGNORE_SELECTOR)) return false;
+    return !allowKatex || !element.closest(".katex");
+  });
+}
+
+function rangesForTextOffsetsExcludingKatex(root: HTMLElement, startOffset: number, endOffset: number) {
+  const textNodes = allTextNodes(root);
+  const skippedNodeIndices = new Set<number>();
+  textNodes.forEach((node, nodeIndex) => {
+    if (elementFromNode(node)?.closest(".katex")) skippedNodeIndices.add(nodeIndex);
+  });
+
+  return resolveTextNodeRangeSegments(
+    textNodes.map((node) => node.data.length),
+    skippedNodeIndices,
+    startOffset,
+    endOffset
+  ).map((segment) => {
+    const startNode = textNodes[segment.start.nodeIndex];
+    const endNode = textNodes[segment.end.nodeIndex];
+    if (!startNode || !endNode) return null;
+    const range = root.ownerDocument.createRange();
+    range.setStart(startNode, segment.start.nodeOffset);
+    range.setEnd(endNode, segment.end.nodeOffset);
+    return range;
+  }).filter((range): range is Range => Boolean(range));
 }
 
 const INLINE_ANNOTATION_CONTAINER_SELECTOR = [
@@ -213,67 +282,92 @@ export function applyAnnotationInlineLinks(input: {
     const item = [...group].sort((a, b) => Number(isInteractiveInlineAnnotation(b.annotation)) - Number(isInteractiveInlineAnnotation(a.annotation))
       || b.annotation.updatedAt - a.annotation.updatedAt)[0]!;
     if (accepted.some((anchor) => rangesOverlap(anchor, item.anchor))) continue;
-    if (hasIgnoredTextNode(input.root, item.anchor)) continue;
-    const range = rangeForTextOffsets(input.root, item.anchor.startOffset, item.anchor.endOffset);
-    if (!range || !range.toString().trim()) continue;
-    if (!rangeIsInlineSafe(input.root, range)) {
-      range.detach();
+    const splitHighlightAroundKatex = item.annotation.kind === "highlight";
+    if (hasUnsupportedIgnoredTextNode(input.root, item.anchor, splitHighlightAroundKatex)) continue;
+    const fullRange = rangeForTextOffsets(input.root, item.anchor.startOffset, item.anchor.endOffset);
+    if (!fullRange || !fullRange.toString().trim()) continue;
+    if (!rangeIsInlineSafe(input.root, fullRange)) {
+      fullRange.detach();
       continue;
     }
+    const ranges = (splitHighlightAroundKatex
+      ? rangesForTextOffsetsExcludingKatex(input.root, item.anchor.startOffset, item.anchor.endOffset)
+      : [fullRange])
+      .filter((range) => {
+        const keep = Boolean(range.toString().trim()) && rangeIsInlineSafe(input.root, range);
+        if (!keep) range.detach();
+        return keep;
+      });
+    if (splitHighlightAroundKatex) fullRange.detach();
+    if (!ranges.length) continue;
 
     const interactive = isInteractiveInlineAnnotation(item.annotation);
-    const wrapper = input.root.ownerDocument.createElement(inlineAnnotationTagName(item.annotation));
-    wrapper.id = annotationInlineId(item.annotation.id);
-    wrapper.className = [
-      inlineClasses(item.annotation, group.some(({ annotation }) => annotation.id === input.activeAnnotationId) ? item.annotation.id : null),
-      ...new Set(group.map(({ annotation }) => `annotation-kind-${annotation.kind}`)),
-    ].join(" ");
-    wrapper.dataset.annotationId = item.annotation.id;
-    wrapper.dataset.annotationIds = group.map(({ annotation }) => annotation.id).join(" ");
-    wrapper.dataset.annotationKind = item.annotation.kind;
-    if (group.length > 1) {
-      wrapper.dataset.annotationCount = String(group.length);
-      wrapper.setAttribute("aria-label", `${range.toString().trim()} · 저장된 기록 ${group.length}개`);
-    }
-    if (interactive) {
-      wrapper.setAttribute("href", annotationHasCard(item.annotation) ? `#${annotationCardId(item.annotation.id)}` : `#${annotationInlineId(item.annotation.id)}`);
-      wrapper.addEventListener("click", (event) => {
-        const selection = wrapper.ownerDocument.defaultView?.getSelection();
-        if (selection && !selection.isCollapsed) return;
-        event.preventDefault();
-        input.onActivateAnnotation?.(item.annotation);
-      });
-    } else if (input.onActivateHighlight) {
-      wrapper.tabIndex = 0;
-      wrapper.setAttribute("role", "button");
-      wrapper.setAttribute("aria-label", "표시 삭제 메뉴 열기");
-      const activateHighlight = () => {
-        input.onActivateHighlight?.(item.annotation, wrapper.getBoundingClientRect());
-      };
-      wrapper.addEventListener("click", (event) => {
-        const selection = wrapper.ownerDocument.defaultView?.getSelection();
-        if (selection && !selection.isCollapsed) return;
-        event.preventDefault();
-        activateHighlight();
-      });
-      wrapper.addEventListener("keydown", (event) => {
-        const keyboardEvent = event as KeyboardEvent;
-        if (keyboardEvent.key !== "Enter" && keyboardEvent.key !== " ") return;
-        event.preventDefault();
-        activateHighlight();
-      });
+    const activeAnnotationId = group.some(({ annotation }) => annotation.id === input.activeAnnotationId)
+      ? item.annotation.id
+      : null;
+    const annotationIds = group.map(({ annotation }) => annotation.id).join(" ");
+    let appliedFragments = 0;
+
+    for (let fragmentIndex = ranges.length - 1; fragmentIndex >= 0; fragmentIndex -= 1) {
+      const range = ranges[fragmentIndex]!;
+      const wrapper = input.root.ownerDocument.createElement(inlineAnnotationTagName(item.annotation));
+      if (fragmentIndex === 0) wrapper.id = annotationInlineId(item.annotation.id);
+      wrapper.className = [
+        inlineClasses(item.annotation, activeAnnotationId),
+        ...new Set(group.map(({ annotation }) => `annotation-kind-${annotation.kind}`)),
+      ].join(" ");
+      wrapper.dataset.annotationId = item.annotation.id;
+      wrapper.dataset.annotationIds = annotationIds;
+      wrapper.dataset.annotationKind = item.annotation.kind;
+      if (ranges.length > 1) wrapper.dataset.annotationFragment = `${fragmentIndex + 1}/${ranges.length}`;
+      if (group.length > 1 && fragmentIndex === ranges.length - 1) {
+        wrapper.dataset.annotationCount = String(group.length);
+        wrapper.setAttribute("aria-label", `${range.toString().trim()} · 저장된 기록 ${group.length}개`);
+      }
+      if (interactive) {
+        wrapper.setAttribute("href", annotationHasCard(item.annotation) ? `#${annotationCardId(item.annotation.id)}` : `#${annotationInlineId(item.annotation.id)}`);
+        wrapper.addEventListener("click", (event) => {
+          const selection = wrapper.ownerDocument.defaultView?.getSelection();
+          if (selection && !selection.isCollapsed) return;
+          event.preventDefault();
+          input.onActivateAnnotation?.(item.annotation);
+        });
+      } else if (input.onActivateHighlight) {
+        wrapper.tabIndex = fragmentIndex === 0 ? 0 : -1;
+        wrapper.setAttribute("role", "button");
+        wrapper.setAttribute("aria-label", "표시 삭제 메뉴 열기");
+        const activateHighlight = () => {
+          input.onActivateHighlight?.(item.annotation, wrapper.getBoundingClientRect());
+        };
+        wrapper.addEventListener("click", (event) => {
+          const selection = wrapper.ownerDocument.defaultView?.getSelection();
+          if (selection && !selection.isCollapsed) return;
+          event.preventDefault();
+          activateHighlight();
+        });
+        wrapper.addEventListener("keydown", (event) => {
+          const keyboardEvent = event as KeyboardEvent;
+          if (keyboardEvent.key !== "Enter" && keyboardEvent.key !== " ") return;
+          event.preventDefault();
+          activateHighlight();
+        });
+      }
+
+      try {
+        const fragment = range.extractContents();
+        wrapper.appendChild(fragment);
+        range.insertNode(wrapper);
+        appliedFragments += 1;
+      } catch {
+        wrapper.remove();
+      } finally {
+        range.detach();
+      }
     }
 
-    try {
-      const fragment = range.extractContents();
-      wrapper.appendChild(fragment);
-      range.insertNode(wrapper);
+    if (appliedFragments > 0) {
       accepted.push(item.anchor);
       applied += 1;
-    } catch {
-      wrapper.remove();
-    } finally {
-      range.detach();
     }
   }
 
