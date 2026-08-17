@@ -21,6 +21,7 @@ from preppy.paths import (
     MANIFEST_FILENAME,
     TABLES_FILENAME,
 )
+from preppy.split.classify import is_chapter_like
 
 _IMAGE_LINK_RE = re.compile(r"!\[[^\]]*\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
 _REMOTE_SCHEME_RE = re.compile(r"^(https?://|data:)", re.IGNORECASE)
@@ -181,6 +182,42 @@ def _check_diagnostics_present(output_dir: Path, report: InspectReport) -> None:
                 InspectIssue(
                     "error",
                     f"Conversion reported a fatal error: {error.get('message')}",
+                )
+            )
+
+    # Diagnostics already contains conversion quality findings, but older
+    # inspect behavior silently ignored them. Surface warning/error severities
+    # so a structurally valid pack does not look issue-free when conversion
+    # quality is suspect. Informational notices remain diagnostics-only.
+    for warning in data.get("quality", {}).get("warnings", []):
+        severity = warning.get("severity", "warning")
+        if severity == "info":
+            continue
+        issue_severity: Severity = "error" if severity == "error" else "warning"
+        code = warning.get("code", "quality")
+        message = warning.get("message", "Conversion quality issue")
+        report.issues.append(
+            InspectIssue(issue_severity, f"Conversion quality [{code}]: {message}")
+        )
+
+    chapter_detection = data.get("chapter_detection", {})
+    if chapter_detection.get("method") == "docling-headers":
+        missed = [
+            candidate
+            for candidate in chapter_detection.get("candidates", [])
+            if not candidate.get("selected")
+            and candidate.get("reason") in {"docling-title", "docling-section-header"}
+            and is_chapter_like(candidate.get("title", ""))
+        ]
+        if missed:
+            examples = ", ".join(
+                repr(candidate.get("title", "")) for candidate in missed[:3]
+            )
+            report.issues.append(
+                InspectIssue(
+                    "warning",
+                    f"Diagnostics contain {len(missed)} unselected chapter-like "
+                    f"PDF heading(s): {examples}.",
                 )
             )
     if not (output_dir / DOCUMENT_FILENAME).exists():

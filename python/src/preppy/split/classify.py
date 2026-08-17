@@ -65,6 +65,17 @@ DEFAULT_CHAPTER_PATTERN = re.compile(
     r"^(chapter|part|book)\b|^\d+\s|^\d+\.(?!\d)|^[ivxlcdm]+[.\s]", re.IGNORECASE
 )
 
+# Publishers often place a geometric bullet in the same text box as a
+# semantic heading. PDF extractors are inconsistent about whether that glyph
+# is kept, split into its own item, or dropped. Treat common list/geometric
+# marks as presentation, not as part of the title. The range is deliberately
+# limited: ordinary punctuation such as quotes, parentheses, and section
+# signs remains untouched.
+_LEADING_HEADING_DECORATION_RE = re.compile(
+    r"^[\u2022\u2023\u2043\u204c\u204d\u2219\u25a0-\u25ff"
+    r"\u2610-\u2612\u2713\u2714\u2756]+\s*"
+)
+
 
 def compile_boundary_pattern(boundary_pattern: str | None) -> re.Pattern[str] | None:
     if not boundary_pattern:
@@ -84,6 +95,7 @@ def normalize_title(value: str | None) -> str:
     value = "".join(char for char in value if char >= " " or char in "\t\n\r")
     value = re.sub(r"\s+", " ", value).strip()
     value = re.sub(r"\s*[|/]+\s*", " ", value)
+    value = _LEADING_HEADING_DECORATION_RE.sub("", value)
     return value.strip()
 
 

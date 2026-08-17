@@ -15,6 +15,7 @@ from preppy.engines.pdf_docling import (
     _select_outline_units,
 )
 from preppy.models import SourceLocator
+from preppy.split.classify import is_chapter_like, normalize_title
 from preppy.split.plan import SplitCandidate, apply_matter_flags
 
 
@@ -77,6 +78,54 @@ def test_repeated_non_edge_headings_are_not_running_headers() -> None:
     ]
 
     assert _running_heading_refs(flat_items, doc) == set()  # type: ignore[arg-type]
+
+
+def test_heading_normalization_strips_common_decorative_prefixes() -> None:
+    assert normalize_title("■CHAPTER 7 PRACTICALITIES") == "CHAPTER 7 PRACTICALITIES"
+    assert normalize_title("● Chapter 8") == "Chapter 8"
+    assert normalize_title("◆ 9. Artifacts") == "9. Artifacts"
+    assert normalize_title("■") == ""
+
+
+def test_is_chapter_like_accepts_decorated_chapter_titles() -> None:
+    assert is_chapter_like("■ CHAPTER 7 PRACTICALITIES")
+    assert is_chapter_like("● Chapter 8")
+    assert is_chapter_like("◆ 9. Artifacts")
+
+
+def test_decorated_docling_chapter_headings_are_all_selected() -> None:
+    doc = _Doc()
+    flat_items = [
+        _heading(
+            0,
+            1,
+            "■ CHAPTER 7 PRACTICALITIES OF DATA COLLECTION",
+            [72, 570, 267, 510],
+        ),
+        _heading(1, 17, "■ CHAPTER 8", [72, 570, 149, 560]),
+        _heading(2, 31, "■", [72, 570, 80, 560]),
+        _heading(3, 31, "CHAPTER 9", [84, 570, 149, 560]),
+        _heading(4, 74, "■ CHAPTER 10", [72, 570, 156, 560]),
+        _heading(5, 124, "● CHAPTER 11", [72, 570, 156, 560]),
+        _heading(6, 149, "◆ CHAPTER 12", [72, 570, 156, 560]),
+    ]
+
+    candidates = _detect_candidates(
+        flat_items, None, Path("sample.pdf"), doc, set()  # type: ignore[arg-type]
+    )
+    selected = [candidate for candidate in candidates if candidate.selected]
+
+    assert [candidate.title for candidate in selected] == [
+        "CHAPTER 7 PRACTICALITIES OF DATA COLLECTION",
+        "CHAPTER 8",
+        "CHAPTER 9",
+        "CHAPTER 10",
+        "CHAPTER 11",
+        "CHAPTER 12",
+    ]
+    assert all(candidate.kind == "chapter" for candidate in selected)
+    assert all(candidate.reason == "docling-section-header" for candidate in selected)
+    assert all(candidate.title != "" for candidate in candidates)
 
 
 def test_outline_tree_selects_chapters_below_part_containers() -> None:
