@@ -2187,8 +2187,11 @@ export function App({ request }: { request: RpcRequest }) {
     return titles;
   }, [artifacts, sourceTitleById]);
   const displayModuleTitle = useCallback((module: { id: string; title: string }) => {
-    return displayableModuleTitle(module.title, sourceTitlesForModule(module.id)) || module.title;
-  }, [sourceTitlesForModule]);
+    const title = displayableModuleTitle(module.title, sourceTitlesForModule(module.id));
+    if (title) return title;
+    const moduleIndex = artifacts?.coursePlan.modules.findIndex((item) => item.id === module.id) ?? -1;
+    return moduleIndex >= 0 ? `Module ${moduleIndex + 1}` : "Module";
+  }, [artifacts?.coursePlan.modules, sourceTitlesForModule]);
   const selectedModuleTitle = selectedModule ? displayModuleTitle(selectedModule) : "";
 
   useEffect(() => {

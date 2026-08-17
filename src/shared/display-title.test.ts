@@ -40,6 +40,16 @@ describe("display title text", () => {
     expect(displayableModuleTitle("science: from myth to mind")).toBe("Science: From Myth to Mind");
   });
 
+  test("removes source titles from module paths despite hyphen differences", () => {
+    const sourceTitles = ["MEG EEG Primer 01"];
+
+    expect(displayableModuleTitle(
+      "MEG-EEG Primer - 01 > ■ GENERAL PRINCIPLES OF GOOD EXPERIMENTATION",
+      sourceTitles,
+    )).toBe("General Principles of Good Experimentation");
+    expect(displayableModuleTitle("MEG-EEG Primer - 01", sourceTitles)).toBe("");
+  });
+
   test("removes only known file extensions from source fallbacks", () => {
     expect(displayableSourceTitle("", "/tmp/The Laws of Thought.md")).toBe("The Laws of Thought");
     expect(displayableSourceTitle("Version 1.0", "version.md")).toBe("Version 1.0");

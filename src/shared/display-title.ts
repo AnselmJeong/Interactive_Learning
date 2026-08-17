@@ -88,16 +88,18 @@ export function titleCasedSourceTitle(title: string, fallbackFileName = "") {
 
 export function comparableHeadingTitle(title: string) {
   return displayableCourseTitle(title)
+    .normalize("NFKC")
     .replace(/\.[A-Za-z0-9]+$/u, "")
+    .replace(/[-‐‑‒–—]+/gu, " ")
     .replace(/\s+/g, " ")
     .trim()
-    .toLowerCase();
+    .toLocaleLowerCase();
 }
 
 export function cleanHeadingParts(parts: string[], leadingTitles: string[] = []) {
   const normalized = parts.map((part) => displayableCourseTitle(part.trim())).filter(Boolean);
   if (
-    normalized.length > 1
+    normalized.length > 0
     && leadingTitles.some((title) => comparableHeadingTitle(title) === comparableHeadingTitle(normalized[0] || ""))
   ) {
     return normalized.slice(1);
@@ -117,7 +119,7 @@ export function displayableOutlineTitle(title: string, leadingTitles: string[] =
     .trim();
   const parts = normalized.split(" › ").map((part) => part.trim()).filter(Boolean);
   if (
-    parts.length > 1
+    parts.length > 0
     && leadingTitles.some((leadingTitle) => comparableHeadingTitle(leadingTitle) === comparableHeadingTitle(parts[0] || ""))
   ) {
     return parts.slice(1).join(" › ");
