@@ -58,6 +58,7 @@ export function normalizeMarkdownContent(content: string): string {
   return normalizeLegacySelectedMath(content)
     .split(PROTECTED_MARKDOWN_SEGMENT)
     .map((segment) => {
+      if (segment.startsWith("$$")) return `\n$$\n${segment.slice(2, -2).trim()}\n$$\n`;
       if (segment.startsWith("```") || segment.startsWith("`") || segment.startsWith("$")) return segment;
       const normalized = segment
         .replace(/\\\[([\s\S]*?)\\\]/gu, (_, formula: string) => `\n$$\n${formula.trim()}\n$$\n`)

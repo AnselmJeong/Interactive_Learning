@@ -1,12 +1,14 @@
 import { memo, useState, type ReactNode } from "react";
-import type { MaterialAnnotation } from "../../../shared/artifact-types";
+import type { MaterialAnnotation, SourceFigure } from "../../../shared/artifact-types";
 import type { SourceRef, TutorContentBlock } from "../../../shared/tutor-types";
 import { plainDisplayText } from "../../../shared/display-title";
-import { stripMarkdownImageTokens } from "../../../shared/markdown-image-text";
+import { stripLeadingFigureCaption, stripMarkdownImageTokens } from "../../../shared/markdown-image-text";
+import { restoreLegacyDisplayMathFlow, splitMarkdownPipes } from "../../../shared/markdown-pipes";
 import { AnnotationInlineScope } from "./AnnotationInlineScope";
 import { MarkdownContent } from "./MarkdownContent";
 import { SourceFigureCard } from "./SourceFigureCard";
 import { shouldAutoRenderSourceFigure } from "../source-figure-filter";
+import { sourceFiguresReferencedByText } from "../source-figure-reference";
 
 type RpcRequest = (method: string, params: unknown) => Promise<unknown>;
 
@@ -14,10 +16,10 @@ type CompareTableBlock = Extract<TutorContentBlock, { type: "compare_table" }>;
 type FlowBlock = Extract<TutorContentBlock, { type: "flow" }>;
 
 function pipeCells(line: string) {
-  return line
+  const trimmedLine = line
     .replace(/^\s*\|/, "")
-    .replace(/\|\s*$/, "")
-    .split("|")
+    .replace(/\|\s*$/, "");
+  return splitMarkdownPipes(trimmedLine)
     .map((cell) => cell.trim())
     .filter(Boolean);
 }
@@ -58,7 +60,7 @@ function splitFlowTitle(firstPart: string) {
 function parseLoosePipeFlow(text: string): FlowBlock | null {
   const normalized = text.replace(/\s+/g, " ").trim();
   if (!normalized.includes("|")) return null;
-  const parts = normalized.split("|").map((part) => part.trim()).filter(Boolean);
+  const parts = splitMarkdownPipes(normalized).map((part) => part.trim()).filter(Boolean);
   if (parts.length < 3) return null;
   const { title, firstStep } = splitFlowTitle(parts[0] || "");
   const stepParts = firstStep ? [firstStep, ...parts.slice(1)] : parts.slice(1);
@@ -70,7 +72,7 @@ function parseLoosePipeFlow(text: string): FlowBlock | null {
 }
 
 function parsePipeStructure(text: string): CompareTableBlock | FlowBlock | null {
-  if ((text.match(/\|/g) || []).length < 2) return null;
+  if (splitMarkdownPipes(text).length < 3) return null;
   return parseMarkdownPipeTable(text) || parseLoosePipeFlow(text);
 }
 
@@ -261,33 +263,50 @@ export const TutorBlockRenderer = memo(function TutorBlockRenderer({
   const visibleBlocks = blocks.filter((block) => block.type !== "visual_ref" && (block.type !== "source_quote" || block.showToLearner));
   if (!visibleBlocks.length) return null;
   const renderedFigureIds = new Set<string>();
+  const allSourceFigures = Array.from(sourceRefById?.values() || []).reduce<SourceFigure[]>((figures, ref) => {
+    for (const figure of ref.figures || []) {
+      if (!figures.some((candidate) => candidate.id === figure.id)) figures.push(figure);
+    }
+    return figures;
+  }, []);
 
-  function figuresFor(refId: string | null) {
-    if (!refId || !sourceRefById || !materialId || !request) return [];
-    const figures = sourceRefById.get(refId)?.figures || [];
+  function claimFigures(figures: SourceFigure[], autoRendered: boolean) {
     return figures.filter((figure) => {
-      if (!shouldAutoRenderSourceFigure(figure)) return false;
+      if (autoRendered && !shouldAutoRenderSourceFigure(figure)) return false;
       if (renderedFigureIds.has(figure.id)) return false;
       renderedFigureIds.add(figure.id);
       return true;
     });
   }
 
+  function figuresFor(refId: string | null) {
+    if (!refId || !sourceRefById || !materialId || !request) return [];
+    return claimFigures(sourceRefById.get(refId)?.figures || [], true);
+  }
+
+  function mentionedFiguresFor(block: TutorContentBlock, refId: string | null) {
+    if (!materialId || !request) return [];
+    const scopedChunkIds = new Set([
+      ...(refId ? [refId] : []),
+      ...fallbackSourceRefs.map((ref) => ref.chunkId),
+    ]);
+    const sameSourceFigures = allSourceFigures.filter((figure) => (
+      Array.from(scopedChunkIds).some((chunkId) => chunkId.startsWith(`${figure.sourceId}-`))
+    ));
+    const candidates = sameSourceFigures.length ? sameSourceFigures : allSourceFigures;
+    return claimFigures(sourceFiguresReferencedByText(JSON.stringify(block), candidates), false);
+  }
+
   function fallbackFigures() {
     if (!materialId || !request) return [];
-    return fallbackSourceRefs.flatMap((ref) => ref.figures || []).filter((figure) => {
-      if (!shouldAutoRenderSourceFigure(figure)) return false;
-      if (renderedFigureIds.has(figure.id)) return false;
-      renderedFigureIds.add(figure.id);
-      return true;
-    });
+    return claimFigures(fallbackSourceRefs.flatMap((ref) => ref.figures || []), true);
   }
 
   return (
     <div className="tutor-block-stack">
       {visibleBlocks.map((block, index) => {
         const refId = blockSourceRef(block);
-        const figures = figuresFor(refId);
+        const figures = [...figuresFor(refId), ...mentionedFiguresFor(block, refId)];
         const lookupChunkId = refId || fallbackSourceRefs[0]?.chunkId || undefined;
         const lookupBlockId = messageId ? `${messageId}:block-${index}` : undefined;
         const inlineAnnotations = lookupBlockId ? inlineAnnotationsByBlockId?.get(lookupBlockId) || [] : [];
@@ -359,6 +378,10 @@ export const TutorBlockRenderer = memo(function TutorBlockRenderer({
 
 function TutorBlock({ block }: { block: TutorContentBlock }) {
   if (block.type === "visual_ref") return null;
+  if (block.type === "flow") {
+    const restoredMath = restoreLegacyDisplayMathFlow(block.title, block.steps);
+    if (restoredMath) return <TutorBlock block={{ type: "paragraph", body: restoredMath }} />;
+  }
   if (block.type === "hook") {
     return (
       <section className="tutor-block hook-block">
@@ -380,10 +403,12 @@ function TutorBlock({ block }: { block: TutorContentBlock }) {
   }
 
   if (block.type === "guided_reading") {
+    const body = stripLeadingFigureCaption(block.body);
+    if (!body) return null;
     return (
       <section className="tutor-block guided-reading-block">
         <span>함께 읽기</span>
-        <MarkdownContent content={block.body} compact />
+        <MarkdownContent content={body} compact />
       </section>
     );
   }

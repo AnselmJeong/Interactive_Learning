@@ -36,6 +36,19 @@ describe("MarkdownContent normalization", () => {
     expect(normalized).toContain("`\\(x\\)`");
   });
 
+  test("normalizes same-line display delimiters for KaTeX display rendering", () => {
+    const content = String.raw`$$p(s|x) = \frac{p(x|s)\,p(s)}{p(x)}$$`;
+    const normalized = normalizeMarkdownContent(content);
+    const html = renderToStaticMarkup(createElement(MarkdownContent, { content }));
+
+    expect(normalized).toBe(String.raw`
+$$
+p(s|x) = \frac{p(x|s)\,p(s)}{p(x)}
+$$
+`);
+    expect(html).toContain('class="katex-display"');
+  });
+
   test("renders bare scientific subscript identifiers from stored tutor messages", () => {
     const content = "시냅스 전류는 sj와 V_syn에 의존하고, 외부 입력 I_ext_i와 가중치 wij는 Gsyn으로 조절됩니다.";
     const normalized = normalizeMarkdownContent(content);

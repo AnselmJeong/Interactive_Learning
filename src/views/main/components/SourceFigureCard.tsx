@@ -27,7 +27,7 @@ function cleanLocator(locator: string) {
 }
 
 function captionFor(figure: SourceFigure) {
-  return figure.caption?.trim() || "Figure from source";
+  return figure.caption?.trim() || figure.title?.trim() || "Figure from source";
 }
 
 const figureAssetUrlCache = new Map<string, string>();

@@ -17,7 +17,8 @@ import type { LearningMessageBatchStatus, LearningMessageSetStatus, LearningMess
 import { normalizeLearningLevel, tutorLevelInstruction, type LearningLevel } from "../shared/learning-levels";
 import type { AiProviderId, TutorLanguage } from "../shared/settings-types";
 import { canonicalFigureChunkId } from "../shared/source-figure-placement";
-import { stripMarkdownImageTokens } from "../shared/markdown-image-text";
+import { stripLeadingFigureCaption, stripMarkdownImageTokens } from "../shared/markdown-image-text";
+import { splitMarkdownPipes } from "../shared/markdown-pipes";
 import { isGroundedVisual } from "./visual-grammar";
 import {
   compilePreparedLearningIr,
@@ -471,10 +472,10 @@ type CompareTableBlock = Extract<TutorContentBlock, { type: "compare_table" }>;
 type FlowBlock = Extract<TutorContentBlock, { type: "flow" }>;
 
 function pipeCells(line: string) {
-  return line
+  const trimmedLine = line
     .replace(/^\s*\|/, "")
-    .replace(/\|\s*$/, "")
-    .split("|")
+    .replace(/\|\s*$/, "");
+  return splitMarkdownPipes(trimmedLine)
     .map((cell) => cell.trim())
     .filter(Boolean);
 }
@@ -515,7 +516,7 @@ function splitFlowTitle(firstPart: string) {
 function parseLoosePipeFlow(text: string): FlowBlock | null {
   const normalized = text.replace(/\s+/g, " ").trim();
   if (!normalized.includes("|")) return null;
-  const parts = normalized.split("|").map((part) => part.trim()).filter(Boolean);
+  const parts = splitMarkdownPipes(normalized).map((part) => part.trim()).filter(Boolean);
   if (parts.length < 3) return null;
   const { title, firstStep } = splitFlowTitle(parts[0] || "");
   const stepParts = firstStep ? [firstStep, ...parts.slice(1)] : parts.slice(1);
@@ -529,7 +530,7 @@ function parseLoosePipeFlow(text: string): FlowBlock | null {
 }
 
 function parsePipeStructureBlock(text: string): CompareTableBlock | FlowBlock | null {
-  if ((text.match(/\|/g) || []).length < 2) return null;
+  if (splitMarkdownPipes(text).length < 3) return null;
   return parseMarkdownPipeTable(text) || parseLoosePipeFlow(text);
 }
 
@@ -3684,7 +3685,7 @@ export class TutorService {
     // The chunk the learner is on right now. Teaching stays anchored to THIS chunk so the
     // lesson walks the source one semantic chunk at a time instead of dumping the whole module.
     const focusLine = focusChunk
-      ? `Current source chunk to teach now (focus on THIS chunk, do not jump ahead): [${focusChunk.id}] ${stripMarkdownImageTokens(focusChunk.text)}`
+      ? `Current source chunk to teach now (focus on THIS chunk, do not jump ahead): [${focusChunk.id}] ${stripLeadingFigureCaption(stripMarkdownImageTokens(focusChunk.text))}`
       : "";
     // The very first turn of a brand-new session: the big opening block should preview the WHOLE
     // source's content (so the learner knows what they will learn), not give study advice.
@@ -3738,6 +3739,7 @@ FORMAT CONTRACT: every explanatory block MUST use exactly one of these four form
 3. Table: use compare_table only for a true grid with stable columns and parallel rows, such as X vs Y, category comparisons, or dimensions shared by every row.
 4. Numbered flow: use flow for a sequence, cause/effect chain, historical development, argument path, adaptation strategy, or any "A leads to B leads to C" structure.
 Structural formats MUST be their own JSON blocks. Never put bullets, numbered steps, pipe-separated structures, or table-like text inside paragraph.body or guided_reading.body. A paragraph/guided_reading body is prose only.
+Never copy a figure or table caption into guided_reading. If the source chunk begins with a caption and then continues with body prose, teach only the body prose.
 If you need bullets, return {"type":"bullets","items":[...]}. If you need ordered steps, return {"type":"flow","steps":[...]}. If you need a grid, return {"type":"compare_table","columns":[...],"rows":[...]}.
 Before writing a structured explanation, decide explicitly which of the four formats fits. If it is not a true row/column comparison, do NOT use compare_table. If order or causality matters, use flow rather than bullets. If the points are parallel and unordered, bullets are appropriate.
 Do not emit Mermaid syntax unless a Mermaid renderer is explicitly available; this app currently expects structured blocks, not mermaid code fences.
@@ -3759,7 +3761,7 @@ Concepts: ${concepts.map((concept) => `${concept.name}: ${concept.definition}`).
 ${courseOverviewLine}
 	${focusLine}
 	${annotationContext}
-	Surrounding source chunks (context only — teach the current chunk above): ${chunks.map((chunk) => `[${chunk.id}] ${stripMarkdownImageTokens(chunk.text)}`).join("\n\n")}
+	Surrounding source chunks (context only — teach the current chunk above): ${chunks.map((chunk) => `[${chunk.id}] ${stripLeadingFigureCaption(stripMarkdownImageTokens(chunk.text))}`).join("\n\n")}
 Available visual ids: ${visualIds.join(", ")}
 Block schema:
 - hook: {"type":"hook","body":"short intriguing opening"}
@@ -3848,7 +3850,9 @@ Output schema: {"message":"plain text fallback summary","blocks":[/* 2-4 blocks 
     const intent = classifyIntent(payload.userText || "", payload.event);
     const isDigression = DIGRESSION_INTENTS.has(intent);
     const ready = payload.event === "user_message" && intent === "satisfied";
-    const focusLine = focusChunk ? `Current source chunk to teach now: [${focusChunk.id}] ${stripMarkdownImageTokens(focusChunk.text)}` : "";
+    const focusLine = focusChunk
+      ? `Current source chunk to teach now: [${focusChunk.id}] ${stripLeadingFigureCaption(stripMarkdownImageTokens(focusChunk.text))}`
+      : "";
     const text = await client.chatText({
       temperature: 0.5,
       messages: [
@@ -3864,6 +3868,7 @@ ${levelInstruction}
 Answer the learner's actual latest turn. Do not grade, do not say to stick closer to the source, and do not repeat a canned fallback.
 Use the source chunks as primary context, but use your own knowledge when it helps. Be concise and scannable, not discursive. The goal is to understand without reading a wall of text.
 For repair text, use plain short sentences or simple bullet points. Do not simulate flows or tables with pipe characters, markdown tables, mermaid, or numbered pseudo-diagrams.
+Do not copy a figure or table caption into the learner-facing explanation.
 Teach one source chunk at a time; stay on the current chunk below and do not race ahead.
 If the learner is asking a question, answer directly first. If they gave an interpretation, connect their wording to the source and refine it.
 Current topic: ${module.title}
@@ -3871,7 +3876,7 @@ Internal objective: ${module.learningGoal}
 Concepts: ${concepts.map((concept) => `${concept.name}: ${concept.definition}`).join("\n")}
 ${focusLine}
 ${annotationContext}
-Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${stripMarkdownImageTokens(chunk.text)}`).join("\n\n")}`,
+Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${stripLeadingFigureCaption(stripMarkdownImageTokens(chunk.text))}`).join("\n\n")}`,
         },
         ...clampHistory(session.messages),
         {
@@ -4047,7 +4052,7 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${stripMarkdow
       requiredStartBlocks.push({
         type: "guided_reading",
         sourceRef: firstChunk?.id,
-        body: trimSentence(stripMarkdownImageTokens(firstChunk?.text || "") || lecturePlan?.guidedReading.plainParaphrase || String(fallbackMessage || module.learningGoal)),
+        body: trimSentence(stripLeadingFigureCaption(stripMarkdownImageTokens(firstChunk?.text || "")) || lecturePlan?.guidedReading.plainParaphrase || String(fallbackMessage || module.learningGoal)),
       });
     }
 
@@ -4100,7 +4105,7 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${stripMarkdow
 
   private ensureReflectionAiView(block: TutorContentBlock, focusChunk: SourceChunk | undefined, lecturePlan: LectureModulePlan | undefined): TutorContentBlock {
     if (block.type !== "reflection" || block.aiView?.trim()) return block;
-    const basis = lecturePlan?.guidedReading.plainParaphrase || stripMarkdownImageTokens(focusChunk?.text || "");
+    const basis = lecturePlan?.guidedReading.plainParaphrase || stripLeadingFigureCaption(stripMarkdownImageTokens(focusChunk?.text || ""));
     const view = trimSentence(
       basis
         ? `저라면 이 질문을 이렇게 보겠습니다. ${basis.replace(/\s+/g, " ")}`
@@ -4111,7 +4116,7 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${stripMarkdow
   }
 
   private moduleContentSummary(module: CourseModule, focusChunk: SourceChunk | undefined, lecturePlan: LectureModulePlan | undefined) {
-    const basis = lecturePlan?.guidedReading.plainParaphrase || stripMarkdownImageTokens(focusChunk?.text || "") || module.learningGoal || module.title;
+    const basis = lecturePlan?.guidedReading.plainParaphrase || stripLeadingFigureCaption(stripMarkdownImageTokens(focusChunk?.text || "")) || module.learningGoal || module.title;
     return stripTldrLead(trimSentence(basis.replace(/\s+/g, " "), 230));
   }
 
@@ -4235,6 +4240,7 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${stripMarkdow
     if (block.type === "reflection") {
       return { ...block, body: clean(block.body), aiView: block.aiView ? clean(block.aiView) : undefined };
     }
+    if (block.type === "guided_reading") return { ...block, body: stripLeadingFigureCaption(clean(block.body)) };
     return { ...block, body: clean(block.body) };
   }
 
