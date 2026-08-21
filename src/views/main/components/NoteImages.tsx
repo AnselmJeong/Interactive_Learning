@@ -1,4 +1,6 @@
-import { Image as ImageIcon, X } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { Image as ImageIcon, Maximize2, Minimize2, X } from "lucide-react";
 import type { NoteImageAttachment, NoteImageUpload } from "../../../shared/artifact-types";
 
 export const MAX_NOTE_IMAGES = 8;
@@ -76,20 +78,99 @@ export function NoteImageGallery({
   images: Array<NoteImageAttachment | PendingNoteImage>;
   onRemove?: (imageId: string) => void;
 }) {
+  const [previewImage, setPreviewImage] = useState<NoteImageAttachment | PendingNoteImage | null>(null);
+  const [fitToViewport, setFitToViewport] = useState(true);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const previewTriggerRef = useRef<HTMLButtonElement | null>(null);
+
+  function closePreview() {
+    setPreviewImage(null);
+    requestAnimationFrame(() => previewTriggerRef.current?.focus());
+  }
+
+  useEffect(() => {
+    if (!previewImage) return;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    closeButtonRef.current?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closePreview();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [previewImage]);
+
   if (!images.length) return null;
   return (
-    <div className="note-image-gallery" aria-label={`노트 이미지 ${images.length}개`}>
-      {images.map((image) => (
-        <figure key={image.id}>
-          {image.url ? <img src={image.url} alt={image.fileName} loading="lazy" /> : <span><ImageIcon size={20} /> 이미지를 불러올 수 없음</span>}
-          {onRemove ? (
-            <button type="button" onClick={() => onRemove(image.id)} aria-label={`${image.fileName} 제거`} title="이미지 제거">
-              <X size={14} />
-            </button>
-          ) : null}
-          <figcaption>{image.fileName}</figcaption>
-        </figure>
-      ))}
-    </div>
+    <>
+      <div className="note-image-gallery" aria-label={`노트 이미지 ${images.length}개`}>
+        {images.map((image) => (
+          <figure key={image.id}>
+            {image.url ? (
+              <button
+                type="button"
+                className="note-image-preview-trigger"
+                onClick={(event) => {
+                  previewTriggerRef.current = event.currentTarget;
+                  setFitToViewport(true);
+                  setPreviewImage(image);
+                }}
+                aria-label={`${image.fileName} 크게 보기`}
+                title="클릭하여 크게 보기"
+              >
+                <img src={image.url} alt={image.fileName} loading="lazy" />
+                <span><Maximize2 size={15} /> 크게 보기</span>
+              </button>
+            ) : <span><ImageIcon size={20} /> 이미지를 불러올 수 없음</span>}
+            {onRemove ? (
+              <button className="note-image-remove" type="button" onClick={() => onRemove(image.id)} aria-label={`${image.fileName} 제거`} title="이미지 제거">
+                <X size={14} />
+              </button>
+            ) : null}
+            <figcaption>{image.fileName}</figcaption>
+          </figure>
+        ))}
+      </div>
+      {previewImage?.url ? createPortal(
+        <div
+          className="note-image-lightbox"
+          role="dialog"
+          aria-modal="true"
+          aria-label={`${previewImage.fileName} 원본 이미지`}
+        >
+          <header>
+            <div>
+              <strong>{previewImage.fileName}</strong>
+              {previewImage.width && previewImage.height ? <small>{previewImage.width} × {previewImage.height}px</small> : null}
+            </div>
+            <nav aria-label="이미지 보기 옵션">
+              <button
+                type="button"
+                onClick={() => setFitToViewport((current) => !current)}
+                aria-label={fitToViewport ? "원본 크기로 보기" : "화면에 맞추기"}
+                aria-pressed={fitToViewport}
+                title={fitToViewport ? "원본 크기로 보기" : "화면에 맞추기"}
+              >
+                {fitToViewport ? <Maximize2 size={17} /> : <Minimize2 size={17} />}
+                {fitToViewport ? "원본 크기" : "화면 맞춤"}
+              </button>
+              <button ref={closeButtonRef} type="button" onClick={closePreview} aria-label="이미지 미리보기 닫기" title="닫기">
+                <X size={20} />
+              </button>
+            </nav>
+          </header>
+          <div
+            className={`note-image-lightbox-canvas ${fitToViewport ? "fit" : "actual"}`}
+            onMouseDown={(event) => { if (event.target === event.currentTarget) closePreview(); }}
+          >
+            <img src={previewImage.url} alt={previewImage.fileName} />
+          </div>
+        </div>,
+        document.body,
+      ) : null}
+    </>
   );
 }
