@@ -397,6 +397,7 @@ const rpc = BrowserView.defineRPC<AppRPC>({
       "documents.refreshProjectMetadata": ({ projectId }) => documents.refreshProjectMetadata(projectId),
       "documents.searchMetadata": ({ projectId, documentId, input }) => documents.searchMetadata(projectId, documentId, input),
       "documents.applyMetadata": ({ projectId, documentId, metadata }) => documents.applyMetadata(projectId, documentId, metadata),
+      "documents.applyManualMetadata": ({ projectId, documentId, title }) => documents.applyManualMetadata(projectId, documentId, title),
       "documents.previewRemoval": ({ projectId, documentId }) => sources.previewDocumentRemoval(projectId, documentId),
       "documents.remove": ({ projectId, documentId, impactToken }) => sources.removeDocument(projectId, documentId, impactToken),
       "documents.previewSourceRemoval": ({ projectId, documentId, sourceId }) => sources.previewRemoval(projectId, documentId, sourceId),

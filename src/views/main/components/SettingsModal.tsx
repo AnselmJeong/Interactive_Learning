@@ -371,7 +371,7 @@ export function SettingsModal({
             <span>
               Google Books API key (optional)
               <small>
-                {googleBooksKeySaved ? `Saved via ${providerStatus.googleBooksKeyState.apiKeySource}` : "Not saved · imported books keep bibliography blank"}
+                {googleBooksKeySaved ? `Saved via ${providerStatus.googleBooksKeyState.apiKeySource} · ISBN book lookup only` : "Not saved · ISBN book lookup disabled · Crossref articles remain available"}
               </small>
             </span>
             <input

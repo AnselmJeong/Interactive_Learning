@@ -2,13 +2,17 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { basename, extname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { getDb } from "./project-db";
-import { BookMetadataService, type BookMetadata } from "./book-metadata-service";
+import { BookMetadataService } from "./book-metadata-service";
+import { CrossrefMetadataService } from "./crossref-metadata-service";
 import { AiProviderSettingsService } from "./ai-provider-settings";
+import { SourceService } from "./source-service";
+import { titleQueryFromFilename } from "./document-metadata-text";
 import { writeProjectDocumentIndex } from "./project-bundle-sync";
 import { dataPath } from "./paths";
 import type {
   DocumentSummary,
-  BookMetadataSearchInput,
+  DocumentMetadataCandidate,
+  DocumentMetadataSearchInput,
   LearningProgressSummary,
   PreparationProgressSummary,
   SourceSummary,
@@ -203,7 +207,9 @@ function aggregateFor(documentId: string): AggregateRow {
 }
 
 export class DocumentService {
-  private readonly metadata = new BookMetadataService();
+  private readonly books = new BookMetadataService();
+  private readonly papers = new CrossrefMetadataService();
+  private readonly sources = new SourceService();
   private readonly secrets = new AiProviderSettingsService();
   private coverUrlFor: (path: string, documentId?: string) => string = (path) => pathToFileURL(path).href;
 
@@ -228,6 +234,36 @@ export class DocumentService {
   }
   private async persistDocumentIndex(projectId: string) {
     await writeProjectDocumentIndex(projectId, this.projectRoot(projectId));
+  }
+
+  private async renameArticleSources(projectId: string, documentId: string, title: string) {
+    const sourceIds = getDb().query<{ id: string }, [string, string]>(
+      "SELECT id FROM project_sources WHERE project_id = ? AND document_id = ? ORDER BY source_ordinal, created_at"
+    ).all(projectId, documentId);
+    await Promise.all(sourceIds.map((source) => this.sources.rename(projectId, source.id, title)));
+  }
+
+  private async applyProviderMetadata(current: DocumentSummary, metadata: DocumentMetadataCandidate) {
+    const now = Date.now();
+    const coverImagePath = current.documentType === "book"
+      ? await this.saveCover(current.projectId, current.id, metadata.coverUrl).catch(() => null)
+      : null;
+    getDb().query(`UPDATE project_documents SET
+      title = ?, subtitle = ?, description = ?, authors_json = ?, publisher = ?, published_date = ?,
+      isbn_10 = ?, isbn_13 = ?, journal = ?, doi = ?, language = ?,
+      cover_image_path = COALESCE(?, cover_image_path), provider = ?, provider_volume_id = ?,
+      metadata_status = 'found', metadata_fetched_at = ?, updated_at = ?
+      WHERE id = ? AND project_id = ?`)
+      .run(
+        metadata.title.trim(), metadata.subtitle, metadata.description, JSON.stringify(metadata.authors), metadata.publisher,
+        metadata.publishedDate, metadata.isbn10, metadata.isbn13, metadata.journal, metadata.doi, metadata.language,
+        coverImagePath, metadata.provider, metadata.providerRecordId, now, now, current.id, current.projectId,
+      );
+    if (current.documentType === "article") {
+      await this.renameArticleSources(current.projectId, current.id, metadata.title.trim());
+    }
+    await this.persistDocumentIndex(current.projectId);
+    return this.get(current.projectId, current.id);
   }
 
   private async saveCover(projectId: string, documentId: string, coverUrl: string | null) {
@@ -285,24 +321,22 @@ export class DocumentService {
 
   async refreshMetadata(projectId: string, documentId: string) {
     const current = this.get(projectId, documentId);
-    if (current.documentType !== "book") return current;
+    // A Crossref title search can return multiple exact-title records, so an
+    // article result is never applied silently. The modal pre-fills its title
+    // from the filename and lets the learner select the matching DOI.
+    if (current.documentType === "article") return current;
     const apiKey = await this.secrets.getGoogleBooksApiKey();
-    // A filename is useful only as a private lookup hint. Until the optional key
-    // is supplied, do not turn that hint into learner-facing bibliography.
     if (!apiKey.value) return current;
     try {
       const row = getDb().query<DocumentRow, [string, string]>("SELECT * FROM project_documents WHERE project_id = ? AND id = ?").get(projectId, documentId);
       if (!row) throw new Error("Document not found");
-      const metadata = await this.metadata.lookupByFilename(metadataFilename(row), apiKey.value);
+      const metadata = await this.books.lookupByFilename(metadataFilename(row), apiKey.value);
       if (!metadata) {
         getDb().query("UPDATE project_documents SET metadata_status = 'not_found', metadata_fetched_at = ?, updated_at = ? WHERE id = ?").run(Date.now(), Date.now(), documentId);
         await this.persistDocumentIndex(projectId);
         return this.get(projectId, documentId);
       }
-      const now = Date.now();
-      const coverImagePath = await this.saveCover(projectId, documentId, metadata.coverUrl).catch(() => null);
-      getDb().query(`UPDATE project_documents SET title = ?, subtitle = ?, description = ?, authors_json = ?, publisher = ?, published_date = ?, isbn_10 = ?, isbn_13 = ?, language = ?, cover_image_path = COALESCE(?, cover_image_path), provider = 'google_books', provider_volume_id = ?, metadata_status = 'found', metadata_fetched_at = ?, updated_at = ? WHERE id = ?`)
-        .run(metadata.title, metadata.subtitle, metadata.description, JSON.stringify(metadata.authors), metadata.publisher, metadata.publishedDate, metadata.isbn10, metadata.isbn13, metadata.language, coverImagePath, metadata.providerVolumeId, now, now, documentId);
+      return await this.applyProviderMetadata(current, metadata);
     } catch {
       getDb().query("UPDATE project_documents SET metadata_status = 'failed', metadata_fetched_at = ?, updated_at = ? WHERE id = ?").run(Date.now(), Date.now(), documentId);
     }
@@ -311,37 +345,44 @@ export class DocumentService {
   }
 
   async refreshProjectMetadata(projectId: string) {
-    const apiKey = await this.secrets.getGoogleBooksApiKey();
-    if (!apiKey.value) return this.list(projectId);
-    const books = this.list(projectId).filter((document) => document.documentType === "book" && document.metadataStatus !== "manual");
-    await Promise.all(books.map((document) => this.refreshMetadata(projectId, document.id)));
+    const documents = this.list(projectId).filter((document) => document.documentType === "book" && document.metadataStatus !== "manual");
+    await Promise.all(documents.map((document) => this.refreshMetadata(projectId, document.id)));
     return this.list(projectId);
   }
 
-  async searchMetadata(projectId: string, documentId: string, input: BookMetadataSearchInput) {
+  async searchMetadata(projectId: string, documentId: string, input: DocumentMetadataSearchInput) {
     const current = this.get(projectId, documentId);
-    if (current.documentType !== "book") throw new Error("책에만 서지 정보를 적용할 수 있습니다.");
-    const apiKey = await this.secrets.getGoogleBooksApiKey();
-    if (!apiKey.value) throw new Error("Settings에서 Google Books API key를 먼저 입력하세요.");
-    return this.metadata.searchManually(input, apiKey.value);
+    if (current.documentType === "book") {
+      const apiKey = await this.secrets.getGoogleBooksApiKey();
+      if (!apiKey.value) throw new Error("Settings에서 Google Books API key를 먼저 입력하세요.");
+      return this.books.searchByIsbn(input.isbn || "", apiKey.value);
+    }
+    const row = getDb().query<DocumentRow, [string, string]>("SELECT * FROM project_documents WHERE project_id = ? AND id = ?").get(projectId, documentId);
+    if (!row) throw new Error("Document not found");
+    return this.papers.searchByTitle(input.title?.trim() || titleQueryFromFilename(metadataFilename(row)));
   }
 
-  async applyMetadata(projectId: string, documentId: string, metadata: BookMetadata) {
+  async applyMetadata(projectId: string, documentId: string, metadata: DocumentMetadataCandidate) {
     const current = this.get(projectId, documentId);
-    if (current.documentType !== "book") throw new Error("책에만 서지 정보를 적용할 수 있습니다.");
-    if (!metadata.providerVolumeId || !metadata.title.trim()) throw new Error("Google Books 검색 결과를 다시 선택하세요.");
+    if (!metadata.providerRecordId || !metadata.title.trim()) throw new Error("서지 정보 검색 결과를 다시 선택하세요.");
+    if (current.documentType === "book" && metadata.provider !== "google_books") throw new Error("도서는 Google Books 검색 결과만 적용할 수 있습니다.");
+    if (current.documentType === "article" && metadata.provider !== "crossref") throw new Error("논문은 Crossref 검색 결과만 적용할 수 있습니다.");
+    return this.applyProviderMetadata(current, metadata);
+  }
+
+  async applyManualMetadata(projectId: string, documentId: string, value: string) {
+    const current = this.get(projectId, documentId);
+    const title = value.replace(/\s+/gu, " ").trim();
+    if (!title) throw new Error("직접 사용할 제목을 입력하세요.");
+    if (title.length > 240) throw new Error("제목은 240자 이하여야 합니다.");
     const now = Date.now();
-    const coverImagePath = await this.saveCover(projectId, documentId, metadata.coverUrl).catch(() => null);
     getDb().query(`UPDATE project_documents
-      SET title = ?, subtitle = ?, description = ?, authors_json = ?, publisher = ?, published_date = ?,
-          isbn_10 = ?, isbn_13 = ?, language = ?, cover_image_path = COALESCE(?, cover_image_path),
-          provider = 'google_books', provider_volume_id = ?, metadata_status = 'manual', metadata_fetched_at = ?, updated_at = ?
+      SET title = ?, subtitle = NULL, description = NULL, authors_json = '[]', publisher = NULL, published_date = NULL,
+          isbn_10 = NULL, isbn_13 = NULL, journal = NULL, doi = NULL, language = NULL, cover_image_path = NULL,
+          provider = 'manual', provider_volume_id = NULL, metadata_status = 'manual', metadata_fetched_at = ?, updated_at = ?
       WHERE id = ? AND project_id = ?`)
-      .run(
-        metadata.title.trim(), metadata.subtitle, metadata.description, JSON.stringify(metadata.authors), metadata.publisher,
-        metadata.publishedDate, metadata.isbn10, metadata.isbn13, metadata.language, coverImagePath,
-        metadata.providerVolumeId, now, now, documentId, projectId,
-      );
+      .run(title, now, now, documentId, projectId);
+    if (current.documentType === "article") await this.renameArticleSources(projectId, documentId, title);
     await this.persistDocumentIndex(projectId);
     return this.get(projectId, documentId);
   }

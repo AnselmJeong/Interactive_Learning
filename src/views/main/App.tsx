@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import { BarChart3, BookOpen, Check, Download, Highlighter, Info, LibraryBig, Loader2, LocateFixed, MessageSquare, Moon, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Pencil, Play, Send, Settings, Sparkles, Sun, Trash2, Upload, X } from "lucide-react";
-import type { AnnotationReadableExport, BookMetadataCandidate, BookMetadataSearchInput, DocumentRemovalImpact, DocumentSummary, MaterialProgressSnapshot, MaterialSummary, PreparedSourceImport, ProjectProgressSnapshot, ProjectSummary, SourceRemovalImpact, SourceSummary } from "../../shared/rpc-types";
+import type { AnnotationReadableExport, DocumentMetadataCandidate, DocumentMetadataSearchInput, DocumentRemovalImpact, DocumentSummary, MaterialProgressSnapshot, MaterialSummary, PreparedSourceImport, ProjectProgressSnapshot, ProjectSummary, SourceRemovalImpact, SourceSummary } from "../../shared/rpc-types";
 import type { ProjectTransferExport, ProjectTransferPreview, SessionReadableExport } from "../../shared/project-transfer-types";
 import type { DocumentTransferExport, DocumentTransferImportPreview, DocumentTransferImportResult } from "../../shared/document-transfer-types";
 import type { AppSettings, AiProviderStatus, ChatSubmitShortcut, ProviderModel } from "../../shared/settings-types";
@@ -1189,18 +1189,18 @@ export function App({ request }: { request: RpcRequest }) {
   async function exportDocumentTransfer(document: DocumentSummary) {
     if (!activeProject) return;
     setBusy(true);
-    setStatus("이 책의 transfer를 만드는 중");
+    setStatus("이 책·논문의 transfer를 만드는 중");
     try {
       const result = (await request("documents.exportTransfer", { projectId: activeProject.id, documentId: document.id })) as DocumentTransferExport;
       setStatus(`${document.title}: ${result.fileName} 내보내기 완료`);
     } catch (error) {
-      setStatus(`책 내보내기 실패: ${(error as Error).message}`);
+      setStatus(`책·논문 내보내기 실패: ${(error as Error).message}`);
     } finally {
       setBusy(false);
     }
   }
 
-  async function searchBookMetadata(document: DocumentSummary, input: BookMetadataSearchInput) {
+  async function searchDocumentMetadata(document: DocumentSummary, input: DocumentMetadataSearchInput) {
     if (!activeProject) return [];
     setMetadataBusy(true);
     try {
@@ -1208,13 +1208,13 @@ export function App({ request }: { request: RpcRequest }) {
         projectId: activeProject.id,
         documentId: document.id,
         input,
-      })) as BookMetadataCandidate[];
+      })) as DocumentMetadataCandidate[];
     } finally {
       setMetadataBusy(false);
     }
   }
 
-  async function applyBookMetadata(document: DocumentSummary, metadata: BookMetadataCandidate) {
+  async function applyDocumentMetadata(document: DocumentSummary, metadata: DocumentMetadataCandidate) {
     if (!activeProject) return;
     setMetadataBusy(true);
     try {
@@ -1223,11 +1223,31 @@ export function App({ request }: { request: RpcRequest }) {
         documentId: document.id,
         metadata,
       })) as DocumentSummary;
-      setDocuments((current) => current.map((item) => item.id === updated.id ? updated : item));
+      await refreshSources(activeProject.id);
       setMetadataDocument(null);
       setStatus(`${updated.title}의 서지 정보를 적용했습니다.`);
     } catch (error) {
       setStatus(`서지 정보 적용 실패: ${(error as Error).message}`);
+      throw error;
+    } finally {
+      setMetadataBusy(false);
+    }
+  }
+
+  async function applyManualDocumentMetadata(document: DocumentSummary, title: string) {
+    if (!activeProject) return;
+    setMetadataBusy(true);
+    try {
+      const updated = (await request("documents.applyManualMetadata", {
+        projectId: activeProject.id,
+        documentId: document.id,
+        title,
+      })) as DocumentSummary;
+      await refreshSources(activeProject.id);
+      setMetadataDocument(null);
+      setStatus(`${updated.title}을(를) 직접 입력한 제목으로 저장했습니다.`);
+    } catch (error) {
+      setStatus(`제목 저장 실패: ${(error as Error).message}`);
       throw error;
     } finally {
       setMetadataBusy(false);
@@ -2764,7 +2784,7 @@ export function App({ request }: { request: RpcRequest }) {
           <nav className="workspace-navigation" aria-label="Workspace">
             <p>Workspace</p>
             <button type="button" className={workspaceRoute === "library" ? "active" : ""} onClick={() => setWorkspaceRoute("library")}>
-              <LibraryBig size={19} /> <span>라이브러리</span>
+              <LibraryBig size={19} /> <span>프로젝트</span>
             </button>
             <button type="button" className={workspaceRoute === "learning" ? "active" : ""} onClick={continueWorkspaceLearning}>
               <BookOpen size={19} /> <span>학습 공간</span>
@@ -2947,7 +2967,9 @@ export function App({ request }: { request: RpcRequest }) {
             sources={state.sources}
             selectedDocumentId={selectedDocumentId}
             progress={projectProgress}
+            busy={busy}
             onImport={() => void chooseAndImportSources()}
+            onExportProject={(project) => void exportProjectTransfer(project)}
             onOpenDocument={learnFromDocument}
             onFindMetadata={setMetadataDocument}
             onDeleteDocument={(document) => void deleteDocument(document)}
@@ -3434,8 +3456,9 @@ export function App({ request }: { request: RpcRequest }) {
           document={metadataDocument}
           busy={metadataBusy}
           onClose={() => setMetadataDocument(null)}
-          onSearch={(input) => searchBookMetadata(metadataDocument, input)}
-          onApply={(metadata) => applyBookMetadata(metadataDocument, metadata)}
+          onSearch={(input) => searchDocumentMetadata(metadataDocument, input)}
+          onApply={(metadata) => applyDocumentMetadata(metadataDocument, metadata)}
+          onApplyManual={(title) => applyManualDocumentMetadata(metadataDocument, title)}
         />
       ) : null}
       {destructiveConfirmation ? (

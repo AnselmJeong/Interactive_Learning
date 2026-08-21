@@ -1,6 +1,9 @@
 import { expect, test } from "bun:test";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import type { MaterialAnnotation } from "../../../shared/artifact-types";
-import { activityCalendar, annotationListPreview, lookupKeyword, questionAnswer, questionPrompt } from "./WorkspacePages";
+import type { ProjectSummary } from "../../../shared/rpc-types";
+import { activityCalendar, annotationListPreview, LibraryPage, lookupKeyword, questionAnswer, questionPrompt } from "./WorkspacePages";
 
 function annotation(kind: MaterialAnnotation["kind"], selectedText: string): MaterialAnnotation {
   return {
@@ -19,6 +22,38 @@ function annotation(kind: MaterialAnnotation["kind"], selectedText: string): Mat
     updatedAt: 0,
   };
 }
+
+test("project workspace names the concept consistently and exposes export", () => {
+  const project: ProjectSummary = {
+    id: "project-1",
+    title: "Cognitive Neuroscience",
+    description: null,
+    rootPath: "/tmp/projects",
+    createdAt: 0,
+    updatedAt: 0,
+    lastOpenedAt: null,
+    archivedAt: null,
+    learningLevel: "medium",
+  };
+  const html = renderToStaticMarkup(createElement(LibraryPage, {
+    project,
+    documents: [],
+    sources: [],
+    selectedDocumentId: null,
+    progress: null,
+    busy: false,
+    onImport: () => undefined,
+    onExportProject: () => undefined,
+    onOpenDocument: () => undefined,
+    onFindMetadata: () => undefined,
+    onDeleteDocument: () => undefined,
+  }));
+
+  expect(html).toContain("나의 프로젝트");
+  expect(html).toContain("Current project");
+  expect(html).toContain("프로젝트 내보내기");
+  expect(html).not.toContain("나의 라이브러리");
+});
 
 test("highlight record list does not repeat its selected text as a preview", () => {
   expect(annotationListPreview(annotation("highlight", "이미 제목으로 표시되는 하이라이트"))).toBeNull();

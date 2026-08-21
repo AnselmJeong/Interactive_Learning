@@ -93,12 +93,12 @@ export type DocumentSummary = {
   updatedAt: number;
 };
 
-export type BookMetadataSearchInput = {
+export type DocumentMetadataSearchInput = {
   title?: string;
   isbn?: string;
 };
 
-export type BookMetadataCandidate = {
+export type DocumentMetadataCandidate = {
   title: string;
   subtitle: string | null;
   description: string | null;
@@ -107,9 +107,12 @@ export type BookMetadataCandidate = {
   publishedDate: string | null;
   isbn10: string | null;
   isbn13: string | null;
+  journal: string | null;
+  doi: string | null;
   language: string | null;
   coverUrl: string | null;
-  providerVolumeId: string;
+  provider: "google_books" | "crossref";
+  providerRecordId: string;
 };
 
 export type SourceProgressSnapshot = {
@@ -312,8 +315,9 @@ export type AppRPC = {
       "documents.listSources": { params: { projectId: string; documentId: string }; response: SourceSummary[] };
       "documents.refreshMetadata": { params: { projectId: string; documentId: string }; response: DocumentSummary };
       "documents.refreshProjectMetadata": { params: { projectId: string }; response: DocumentSummary[] };
-      "documents.searchMetadata": { params: { projectId: string; documentId: string; input: BookMetadataSearchInput }; response: BookMetadataCandidate[] };
-      "documents.applyMetadata": { params: { projectId: string; documentId: string; metadata: BookMetadataCandidate }; response: DocumentSummary };
+      "documents.searchMetadata": { params: { projectId: string; documentId: string; input: DocumentMetadataSearchInput }; response: DocumentMetadataCandidate[] };
+      "documents.applyMetadata": { params: { projectId: string; documentId: string; metadata: DocumentMetadataCandidate }; response: DocumentSummary };
+      "documents.applyManualMetadata": { params: { projectId: string; documentId: string; title: string }; response: DocumentSummary };
       "documents.previewRemoval": { params: { projectId: string; documentId: string }; response: DocumentRemovalImpact };
       "documents.remove": { params: { projectId: string; documentId: string; impactToken: string }; response: { removed: boolean; documentId: string } };
       "documents.previewSourceRemoval": { params: { projectId: string; documentId: string; sourceId: string }; response: SourceRemovalImpact };

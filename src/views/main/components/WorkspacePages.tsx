@@ -15,7 +15,9 @@ type LibraryPageProps = {
   sources: SourceSummary[];
   selectedDocumentId: string | null;
   progress: ProjectProgressSnapshot | null;
+  busy: boolean;
   onImport: () => void;
+  onExportProject: (project: ProjectSummary) => void;
   onOpenDocument: (documentId: string) => void;
   onFindMetadata: (document: DocumentSummary) => void;
   onDeleteDocument: (document: DocumentSummary) => void;
@@ -47,7 +49,7 @@ function withoutLeadingIndex(title: string) {
   return title.replace(/^\s*\d+[.)]?\s+/, "").trim() || title;
 }
 
-export function LibraryPage({ project, documents, sources, selectedDocumentId, progress, onImport, onOpenDocument, onFindMetadata, onDeleteDocument }: LibraryPageProps) {
+export function LibraryPage({ project, documents, sources, selectedDocumentId, progress, busy, onImport, onExportProject, onOpenDocument, onFindMetadata, onDeleteDocument }: LibraryPageProps) {
   const [query, setQuery] = useState("");
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const filteredDocuments = documents.filter((document) => {
@@ -70,19 +72,25 @@ export function LibraryPage({ project, documents, sources, selectedDocumentId, p
     <div className="renovation-page library-page">
       <header className="renovation-header">
         <div>
-          <p className="renovation-kicker">Library</p>
-          <h2>나의 라이브러리</h2>
+          <p className="renovation-kicker">Project</p>
+          <h2>나의 프로젝트</h2>
           <span>책 {documents.filter((document) => document.documentType === "book").length}권 · 논문 {documents.filter((document) => document.documentType === "article").length}편 · 마지막 학습 {formatRelativeTime(activeDocument?.lastStudiedAt || null)}</span>
         </div>
         <label className="library-search">
           <Search size={19} aria-hidden="true" />
-          <input value={query} onChange={(event) => setQuery(event.currentTarget.value)} placeholder="제목이나 저자로 검색" aria-label="라이브러리 검색" />
+          <input value={query} onChange={(event) => setQuery(event.currentTarget.value)} placeholder="제목이나 저자로 검색" aria-label="프로젝트 자료 검색" />
         </label>
       </header>
 
       <div className="renovation-scroll">
         <section className="library-hero">
-          <h3>{heroTitle}</h3>
+          <div>
+            <p>Current project</p>
+            <h3>{heroTitle}</h3>
+          </div>
+          <button type="button" className="library-project-export" disabled={!project || busy} onClick={() => { if (project) onExportProject(project); }}>
+            <Download size={17} aria-hidden="true" /> 프로젝트 내보내기
+          </button>
         </section>
 
         <section className="library-collection">
@@ -117,15 +125,13 @@ export function LibraryPage({ project, documents, sources, selectedDocumentId, p
                       </span>
                     </button>
                     <div className="document-tile-actions">
-                      {document.documentType === "book" ? (
-                        <button
-                          type="button"
-                          className="document-tile-action document-metadata-action"
-                          onClick={() => onFindMetadata(document)}
-                          aria-label={`${title} 서지 정보 찾기`}
-                          title="서지 정보 찾기"
-                        ><Search size={16} aria-hidden="true" /></button>
-                      ) : null}
+                      <button
+                        type="button"
+                        className="document-tile-action document-metadata-action"
+                        onClick={() => onFindMetadata(document)}
+                        aria-label={`${title} 서지 정보 설정`}
+                        title="서지 정보 설정"
+                      ><Search size={16} aria-hidden="true" /></button>
                       <button
                         type="button"
                         className="document-tile-action document-delete-action"
