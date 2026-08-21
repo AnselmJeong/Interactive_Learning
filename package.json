@@ -4,9 +4,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "LEARNIE_PROJECT_ROOT=$PWD LEARNIE_EXTERNAL_HTML_ANNOTATIONS=1 electrobun dev",
-    "dev:watch": "LEARNIE_PROJECT_ROOT=$PWD LEARNIE_EXTERNAL_HTML_ANNOTATIONS=1 electrobun dev --watch",
-    "start": "LEARNIE_PROJECT_ROOT=$PWD LEARNIE_EXTERNAL_HTML_ANNOTATIONS=1 electrobun run",
+    "dev": "LEARNIE_PROJECT_ROOT=$PWD electrobun dev",
+    "dev:watch": "LEARNIE_PROJECT_ROOT=$PWD electrobun dev --watch",
+    "start": "LEARNIE_PROJECT_ROOT=$PWD electrobun run",
     "prepare:python-runtime": "bun run scripts/prepare-python-runtime.ts",
     "build:dev": "bun install && bun run prepare:python-runtime && electrobun build",
     "build:stable": "bun run prepare:python-runtime && electrobun build --env=stable",

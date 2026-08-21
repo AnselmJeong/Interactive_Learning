@@ -151,7 +151,7 @@ async function chooseExternalHtmlPath() {
 
 const externalHtmlImports = new ExternalHtmlImportService(chooseExternalHtmlPath);
 const externalHtmlViewer = new ExternalHtmlViewer();
-const externalHtmlAnnotationsEnabled = process.env.LEARNIE_EXTERNAL_HTML_ANNOTATIONS === "1";
+const externalHtmlAnnotationsEnabled = true;
 
 function requireExternalHtmlAnnotations() {
   if (!externalHtmlAnnotationsEnabled) throw new Error("External HTML annotations are disabled in this build.");

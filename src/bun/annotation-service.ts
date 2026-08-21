@@ -1248,7 +1248,7 @@ export class AnnotationService {
   async saveNote(input: SaveNoteInput) {
     const note = input.note.trim().slice(0, 5000);
     const uploads = input.images || [];
-    if (!note && !uploads.length && !input.allowEmpty) throw new Error("노트 내용, 이미지 또는 HTML applet을 추가해 주세요.");
+    if (!note && !uploads.length && !input.allowEmpty) throw new Error("노트 내용, 이미지 또는 대화형 설명을 추가해 주세요.");
     const artifacts = await this.materials.getArtifacts(input.materialId);
     if (!artifacts.sourceChunks.some((chunk) => chunk.id === input.chunkId)) throw new Error("Source chunk not found");
     const annotationId = crypto.randomUUID();

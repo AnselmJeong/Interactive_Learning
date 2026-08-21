@@ -336,7 +336,7 @@ describe("annotation side-chat service", () => {
       surface: "chat",
       selectedText: "selected claim",
       note: "",
-    })).rejects.toThrow("노트 내용, 이미지 또는 HTML applet");
+    })).rejects.toThrow("노트 내용, 이미지 또는 대화형 설명");
 
     const saved = await service.saveNote({
       materialId: "material-1",

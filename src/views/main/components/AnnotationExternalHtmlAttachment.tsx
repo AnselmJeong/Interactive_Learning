@@ -136,12 +136,12 @@ export function AnnotationExternalHtmlAttachment({ annotation, compact = false }
         </div>
       ) : (
         <button type="button" className="external-html-import-button" onClick={() => void prepare()} disabled={Boolean(busy)}>
-          {busy === "prepare" ? <Loader2 className="spin" size={15} /> : <Upload size={15} />} HTML applet 가져오기
+          {busy === "prepare" ? <Loader2 className="spin" size={15} /> : <Upload size={15} />} 대화형 설명 가져오기
         </button>
       )}
 
       {preview ? (
-        <div className="external-html-preview" role="dialog" aria-modal="false" aria-label="HTML applet 호환성 확인">
+        <div className="external-html-preview" role="dialog" aria-modal="false" aria-label="대화형 설명 호환성 확인">
           <header><strong>{preview.title}</strong><button type="button" onClick={() => void cancelPreview()} aria-label="가져오기 닫기"><X size={16} /></button></header>
           <dl>
             <div><dt>원본</dt><dd>{preview.originalFileName} · {formatBytes(preview.originalByteSize)}</dd></div>

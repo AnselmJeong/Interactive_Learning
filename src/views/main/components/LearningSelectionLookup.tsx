@@ -881,7 +881,7 @@ function NotePopover({
         </button>
       </header>
       <label>
-        <span>텍스트는 선택 사항 · 이미지와 HTML applet을 함께 첨부할 수 있습니다</span>
+        <span>텍스트는 선택 사항 · 이미지와 대화형 설명을 함께 첨부할 수 있습니다</span>
         <textarea
           autoFocus
           maxLength={5000}
@@ -901,7 +901,7 @@ function NotePopover({
         {externalHtmlEnabled ? (
           <button type="button" className="note-attachment-import" onClick={onPrepareApplet} disabled={panel.appletBusy || panel.status === "saving"}>
             {panel.appletBusy ? <Loader2 size={15} className="spin" /> : <Upload size={15} />}
-            {panel.appletPreview ? "HTML applet 교체" : "HTML applet 추가"}
+            {panel.appletPreview ? "대화형 설명 교체" : "대화형 설명 추가"}
           </button>
         ) : null}
       </div>
@@ -915,7 +915,7 @@ function NotePopover({
                 <span>{panel.appletPreview.originalFileName} · {panel.appletPreview.status === "rejected" ? "가져올 수 없음" : panel.appletPreview.status === "ready_after_localization" ? "offline 변환 후 첨부" : "offline 첨부"}</span>
                 {panel.appletPreview.rejectionReasons.map((reason) => <small key={`${reason.code}-${reason.message}`}>{reason.message}</small>)}
               </div>
-              <button type="button" onClick={onRemoveApplet} disabled={panel.appletBusy || panel.status === "saving"} aria-label="HTML applet 제거"><X size={15} /></button>
+              <button type="button" onClick={onRemoveApplet} disabled={panel.appletBusy || panel.status === "saving"} aria-label="대화형 설명 제거"><X size={15} /></button>
             </div>
           ) : null}
         </div>
