@@ -30,7 +30,7 @@
 .learn-diagram-host .pele-node.learn-note > :is(rect, path, polygon) { fill: transparent; stroke-dasharray: 5 4; }
 .learn-diagram-host .pele-node.learn-note .pele-label { fill: var(--ink-soft); }
 .learn-diagram-host .pele-cluster.learn-dashed > rect { fill: transparent; stroke-dasharray: 6 5; stroke: var(--line-strong); }
-.learn-diagram-host .pele-math .katex { font-size: 1em; color: var(--ink); }
+.learn-diagram-host svg.pele-math { color: inherit; }
 .learn-diagram > figcaption { color: var(--ink-soft); font-size: .86em; line-height: 1.6; }
 .learn-diagram > figcaption .markdown-content p { margin: 0; }
 .side-chat-visual.diagram .learn-diagram-host { font-size: var(--ln-font-size-sm, 14px); }

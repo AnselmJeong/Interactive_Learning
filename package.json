@@ -27,6 +27,7 @@
     "electrobun": "^1.18.1",
     "katex": "^0.17.0",
     "lucide-react": "^0.468.0",
+    "mathjax-full": "3.2.2",
     "parse5": "7.3.0",
     "pele": "^1.13.0",
     "react": "^19",
