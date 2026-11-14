@@ -137,3 +137,129 @@
   .source-html { font-size: 16px; }
   .rich-html th, .rich-html td { padding: .65em; }
 }
+
+/* ── Learning palette ──────────────────────────────────────────────────────
+   Muted paper-and-ink hues so lessons have quiet colour cues without
+   competing with the text: ochre for emphasis, teal for structure, slate for
+   framing, clay for pitfalls, plum for reflection. Each has a soft wash. */
+:root {
+  --learn-ochre: #94701f;
+  --learn-teal: #2d6a63;
+  --learn-slate: #3e5878;
+  --learn-clay: #9b5240;
+  --learn-plum: #6b4c79;
+  --learn-ochre-soft: #f7f0e1;
+  --learn-teal-soft: #e8f1ef;
+  --learn-slate-soft: #ebf0f6;
+  --learn-clay-soft: #f8ece7;
+  --learn-plum-soft: #f2edf5;
+}
+:root[data-theme="dark"] {
+  --learn-ochre: #d9b766;
+  --learn-teal: #8fc5ba;
+  --learn-slate: #a6bcdb;
+  --learn-clay: #e2a28c;
+  --learn-plum: #c9abd6;
+  --learn-ochre-soft: rgba(217, 183, 102, 0.1);
+  --learn-teal-soft: rgba(143, 197, 186, 0.09);
+  --learn-slate-soft: rgba(166, 188, 219, 0.09);
+  --learn-clay-soft: rgba(226, 162, 140, 0.1);
+  --learn-plum-soft: rgba(201, 171, 214, 0.1);
+}
+.tutor-block-stack {
+  --accent-2: var(--learn-ochre);
+  --teal: var(--learn-teal);
+  --teal-soft: var(--learn-teal-soft);
+}
+
+/* Emphasis inside lesson prose */
+.tutor-block-stack .markdown-content strong,
+.tutor-block-stack .rich-html strong { color: var(--learn-ochre); }
+.tutor-block-stack .markdown-content em,
+.tutor-block-stack .rich-html em { color: var(--learn-slate); }
+
+/* Opening hook: a warm rule under the question */
+.hook-block { border-bottom: 2px solid color-mix(in srgb, var(--learn-ochre) 45%, transparent); }
+.hook-block strong { color: var(--learn-ochre); }
+
+/* Source quotes read as paper excerpts */
+.source-quote-block {
+  border-left: 3px solid var(--learn-ochre);
+  background: var(--learn-ochre-soft);
+}
+.source-quote-block small { color: var(--learn-ochre); }
+
+/* Guided reading */
+.guided-reading-block > span { color: var(--learn-teal); }
+.guided-reading-block strong, .paragraph-block strong { color: var(--learn-ochre); }
+
+/* Section titles get a small ochre mark and slate ink */
+.rich-explanation-block > h3,
+.tutor-block:is(.flow-block, .bullet-block, .compare-table-block) > h4 {
+  position: relative;
+  padding-left: .75em;
+  color: var(--learn-slate);
+}
+.rich-explanation-block > h3::before,
+.tutor-block:is(.flow-block, .bullet-block, .compare-table-block) > h4::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: .2em;
+  bottom: .2em;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--learn-ochre);
+}
+.learning-html :is(h3, h4) { color: var(--learn-teal); }
+.learning-html .learn-lead { color: var(--learn-slate); }
+
+/* Callouts */
+.learning-html .learn-concept { background: var(--learn-teal-soft); border-left: 3px solid var(--learn-teal); border-radius: 4px 12px 12px 4px; }
+.learning-html .learn-aside { background: var(--learn-slate-soft); border-left: 3px solid var(--learn-slate); border-radius: 4px 12px 12px 4px; color: var(--ink); }
+.learning-html .learn-equation { background: var(--learn-ochre-soft); }
+.learning-html .learn-takeaway {
+  padding: .9em 1.1em;
+  border-top: 0;
+  border-left: 3px solid var(--learn-ochre);
+  border-radius: 4px 12px 12px 4px;
+  background: var(--learn-ochre-soft);
+}
+.learning-html .learn-compare > :nth-child(2) { border-top-color: var(--learn-ochre); }
+.learning-html ul > li::marker, .learning-html ol > li::marker { color: var(--learn-teal); }
+
+/* Lists and steps */
+.bullet-block li::marker { color: var(--learn-teal); }
+.flow-block > .lesson-flow > li { background: var(--learn-teal-soft); }
+
+/* Tables */
+.compare-table-block thead th { background: var(--learn-teal-soft); color: var(--learn-teal); }
+.compare-table-block tbody th[scope="row"] { background: var(--learn-slate-soft); color: var(--learn-slate); }
+.rich-html th { background: var(--learn-teal-soft); color: var(--learn-teal); }
+
+/* Pitfalls, bridges, reflection */
+.misconception-block {
+  border: 0;
+  border-left: 3px solid var(--learn-clay);
+  border-radius: 4px 12px 12px 4px;
+  background: var(--learn-clay-soft);
+}
+.misconception-block > h4 { color: var(--learn-clay); }
+.misconception-repair { color: var(--learn-teal); }
+.misconception-repair .markdown-content strong { color: var(--learn-teal); }
+.bridge-block { color: var(--learn-slate); }
+.reflection-block {
+  border-left: 3px solid var(--learn-plum);
+  padding: 14px 18px 14px 22px;
+  background: var(--learn-plum-soft);
+  border-radius: 4px 12px 12px 4px;
+}
+.reflection-block > span { color: var(--learn-plum); }
+.reflection-block strong { color: var(--learn-plum); }
+
+/* Dark-mode surface rules in app.css are more specific; keep the palette there too. */
+:root[data-theme="dark"] .source-quote-block { background: var(--learn-ochre-soft); border-color: var(--learn-ochre); box-shadow: none; }
+:root[data-theme="dark"] .misconception-block { background: var(--learn-clay-soft); border-color: var(--learn-clay); box-shadow: none; }
+:root[data-theme="dark"] .compare-table-block thead th { background: var(--learn-teal-soft); color: var(--learn-teal); }
+:root[data-theme="dark"] .compare-table-block tbody th[scope="row"] { background: var(--learn-slate-soft); color: var(--learn-slate); }
+:root[data-theme="dark"] .flow-block > ol > li::before { color: var(--learn-teal); border-color: var(--learn-teal); background: transparent; }
