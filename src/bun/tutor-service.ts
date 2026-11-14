@@ -1,6 +1,7 @@
 import { learningBlockPresentation, parseLearningTable } from "../shared/learning-structure";
 import { recallConversation, CONVERSATION_RECALL_RULE } from "./conversation-recall";
 import { LEARNING_HTML_RULE, normalizeLearningHtml } from "../shared/learning-html";
+import { DIAGRAM_BLOCK_SCHEMA, normalizeDiagramBlock } from "../shared/diagram-spec";
 import { reviewDeepReadingTurn } from "./deep-reading-review";
 import { currentDeepReading, DEEP_READING_TUTOR_RULE, passagePlanFor, readingContextChunks, validateExplanationGrounding, validatePassageEvidence } from "./deep-reading-service";
 import { createHash } from "node:crypto";
@@ -447,6 +448,7 @@ function blocksToPlainText(blocks: TutorContentBlock[]) {
     .map((block) => {
       if (block.type === "bullets") return `${block.title || ""}\n${block.items.map((item) => `- ${item}`).join("\n")}`;
       if (block.type === "flow") return `${block.title || ""}\n${block.steps.map((step, index) => `${index + 1}. ${step}`).join("\n")}`;
+      if (block.type === "diagram") return `${block.title || ""}\n${block.body}`;
       if (block.type === "compare_table") return `${block.title || ""}\n${block.columns.join(" | ")}\n${block.rows.map((row) => block.columns.map((column) => row[column] || "").join(" | ")).join("\n")}`;
       if (block.type === "source_quote") return `"${block.quote}"`;
       if (block.type === "misconception") return `${block.title || "헷갈릴 수 있는 지점"}\n${block.body}\n${block.repair}`;
@@ -3711,13 +3713,13 @@ FORMAT CONTRACT: every explanatory block MUST use the form that best explains it
 1. Plain sentences: use paragraph or guided_reading for a compact explanation in normal prose.
 2. Bullet points: use bullets for a flat set of peer points, examples, takeaways, or corrections where order does not matter.
 3. When the passage compares alternatives on shared dimensions, show the actual comparison as a compare_table. Give the columns meaningful labels in the tutor language and use only supported distinctions.
-4. When order explains the passage, use a flow diagram. For a single path emit flow with short, self-contained steps. For branching, feedback or convergence, use a rich_html SVG with labeled nodes and directional arrows that preserve those relationships.
-5. Rich explanation: use rich_html for a semantic HTML composition, SVG relationship diagram, worked equation, or an optional details/summary expansion. Follow the rich HTML contract below.
+4. When order explains the passage, use a flow block for a single simple path of short, self-contained steps. When the structure matters — branching, feedback, convergence, a mechanism with side conditions, or a caveat attached to a process — emit a diagram block with labeled nodes and directed edges; Learnie lays it out.
+5. Rich explanation: use rich_html for a semantic HTML composition, worked equation, or an optional details/summary expansion. Never hand-draw diagrams as SVG; use the diagram block. Follow the rich HTML contract below.
 Structural formats MUST be their own JSON blocks. Never put bullets, numbered steps, pipe-separated structures, or table-like text inside paragraph.body or guided_reading.body. A paragraph/guided_reading body is prose only.
 Never copy a figure or table caption into guided_reading. If the source chunk begins with a caption and then continues with body prose, teach only the body prose.
 If you need bullets, return {"type":"bullets","items":[...]}. If you need ordered steps, return {"type":"flow","steps":[...]}. If you need a grid, return {"type":"compare_table","columns":[...],"rows":[...]}.
-Before writing a structured explanation, decide explicitly which visual form fits. If it is not a true row/column comparison, do NOT use compare_table. If order or causality matters, draw the path with flow or the labeled SVG for a non-linear relationship. If the points are parallel and unordered, bullets are appropriate.
-Do not emit Mermaid syntax unless a Mermaid renderer is explicitly available; this app currently expects structured blocks, not mermaid code fences.
+Before writing a structured explanation, decide explicitly which visual form fits. If it is not a true row/column comparison, do NOT use compare_table. If order or causality matters, draw the path with flow, or with a diagram block for a non-linear relationship. If the points are parallel and unordered, bullets are appropriate.
+Never write Mermaid code, SVG or coordinates yourself; a diagram block's JSON nodes/edges are compiled and laid out by Learnie.
 Return 2-4 content blocks. Do not return paragraph-only output unless the learner asked a narrow factual question.
 Never simulate a flow, bullet list, or table inside paragraph or guided_reading text. If you are tempted to write "A | B | C", "1. A 2. B", or "- A - B", stop and emit either a flow, bullets, or compare_table block.
 Reflection blocks should not trap the learner before progress can continue. Whenever you emit a reflection block, include aiView: your own concise answer or interpretive stance, grounded in the current source, so the learner can reveal it without typing a reply.
@@ -3748,6 +3750,7 @@ Every substantive block includes grounding: {"status":"source|interpretation|ana
 - paragraph: {"type":"paragraph","body":"short explanation; may use your own knowledge when the source is silent"}
 - bullets: {"type":"bullets","title":"optional","items":["2-5 short peer points where order does not matter"]}
 - flow: {"type":"flow","title":"optional","steps":["2-8 short ordered steps"]}
+${DIAGRAM_BLOCK_SCHEMA}
 - compare_table: {"type":"compare_table","title":"optional","columns":["2-4 columns"],"rows":[{"Column":"cell"}]}
 - reflection: {"type":"reflection","body":"one open reflective prompt","aiView":"1-2 sentence answer you would offer if the learner asks for your view; not another question"}
 - bridge: {"type":"bridge","body":"short transition"}
@@ -4148,6 +4151,7 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${stripLeading
     const raw = block as Record<string, unknown>;
     const type = String(raw.type);
     if (type === "rich_html") return normalizeLearningHtml(raw);
+    if (type === "diagram") return normalizeDiagramBlock(raw);
     if (type === "hook") return { type, body: stripTldrLead(String(raw.body || "").slice(0, 280)) };
     if (type === "guided_reading") {
       const sourceRef = typeof raw.sourceRef === "string" && allowedRefs.has(raw.sourceRef) ? raw.sourceRef : undefined;
@@ -4229,6 +4233,7 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${stripLeading
   private scrubBlock(block: TutorContentBlock): TutorContentBlock {
     const clean = (text: string) => this.scrubExamLanguage(stripMarkdownImageTokens(text));
     if (block.type === "visual_ref") return block;
+    if (block.type === "diagram") return { ...(normalizeDiagramBlock(block) || { type: "paragraph" as const, body: clean(block.body) }), grounding: block.grounding };
     if (block.type === "rich_html") return { ...(normalizeLearningHtml(block) || { type: "paragraph" as const, body: clean(block.body) }), grounding: block.grounding };
     if (block.type === "bullets") return { ...block, items: block.items.map(clean).filter(Boolean) };
     if (block.type === "flow") return { ...block, steps: block.steps.map(clean).filter(Boolean) };

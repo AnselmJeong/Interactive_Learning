@@ -1,6 +1,8 @@
-import { useId } from "react";
+import { useId, useMemo } from "react";
 import type { SideChatPlotExpression, SideChatVisualSpec } from "../../../shared/artifact-types";
 import { evaluateSideChatPlotExpression, normalizeSideChatVisualSpec } from "../../../shared/side-chat-visual";
+import { sanitizeDiagramSpec } from "../../../shared/diagram-spec";
+import { DiagramView } from "./DiagramView";
 
 const PLOT_WIDTH = 680;
 const PLOT_HEIGHT = 390;
@@ -157,110 +159,10 @@ function PlotVisual({ visual }: { visual: Extract<SideChatVisualSpec, { type: "f
   );
 }
 
-function diagramLayout(visual: Extract<SideChatVisualSpec, { type: "diagram" }>) {
-  const nodeWidth = 164;
-  const nodeHeight = 72;
-  const depth = new Map(visual.nodes.map((node) => [node.id, 0]));
-  for (let pass = 0; pass < visual.nodes.length; pass += 1) {
-    let changed = false;
-    for (const edge of visual.edges) {
-      const next = Math.min(visual.nodes.length - 1, (depth.get(edge.from) || 0) + 1);
-      if (next > (depth.get(edge.to) || 0)) {
-        depth.set(edge.to, next);
-        changed = true;
-      }
-    }
-    if (!changed) break;
-  }
-  const usedDepths = [...new Set(depth.values())].sort((a, b) => a - b);
-  const compactDepth = new Map(usedDepths.map((value, index) => [value, index]));
-  const layers = new Map<number, typeof visual.nodes>();
-  for (const node of visual.nodes) {
-    const layer = compactDepth.get(depth.get(node.id) || 0) || 0;
-    layers.set(layer, [...(layers.get(layer) || []), node]);
-  }
-  const layerCount = Math.max(1, layers.size);
-  const maxInLayer = Math.max(...[...layers.values()].map((nodes) => nodes.length));
-  const width = visual.direction === "horizontal" ? Math.max(680, layerCount * 210 + 80) : Math.max(680, maxInLayer * 190 + 80);
-  const height = visual.direction === "horizontal" ? Math.max(300, maxInLayer * 104 + 80) : Math.max(300, layerCount * 108 + 80);
-  const usableWidth = width - nodeWidth - 80;
-  const usableHeight = height - nodeHeight - 80;
-  const positions = new Map<string, { x: number; y: number }>();
-  for (const [layer, nodes] of layers) {
-    nodes.forEach((node, index) => {
-      const x = visual.direction === "horizontal"
-        ? 40 + (layer * usableWidth) / Math.max(1, layerCount - 1)
-        : 40 + (index * usableWidth) / Math.max(1, nodes.length - 1);
-      const y = visual.direction === "horizontal"
-        ? 40 + (index * usableHeight) / Math.max(1, nodes.length - 1)
-        : 40 + (layer * usableHeight) / Math.max(1, layerCount - 1);
-      positions.set(node.id, { x, y });
-    });
-  }
-  return { width, height, positions };
-}
-
-function wrappedLabel(value: string, max = 18) {
-  const characters = Array.from(value);
-  if (characters.length <= max) return [value];
-  const split = value.lastIndexOf(" ", max);
-  const point = split > max * 0.55 ? split : max;
-  return [characters.slice(0, point).join("").trim(), characters.slice(point).join("").trim()].filter(Boolean).slice(0, 2);
-}
-
 function DiagramVisual({ visual }: { visual: Extract<SideChatVisualSpec, { type: "diagram" }> }) {
-  const markerId = `side-chat-arrow-${useId().replace(/:/gu, "")}`;
-  const { width, height, positions } = diagramLayout(visual);
-  const nodeWidth = 164;
-  const nodeHeight = 72;
-
-  return (
-    <svg className="side-chat-diagram" viewBox={`0 0 ${width} ${height}`} role="img" aria-label={visual.title}>
-      <title>{visual.title}</title>
-      <desc>{visual.nodes.map((node) => node.label).join(", ")} 사이의 관계도</desc>
-      <defs>
-        <marker id={markerId} viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
-          <path d="M 0 0 L 10 5 L 0 10 z" />
-        </marker>
-      </defs>
-      <g className="diagram-edges">
-        {visual.edges.map((edge, index) => {
-          const from = positions.get(edge.from);
-          const to = positions.get(edge.to);
-          if (!from || !to) return null;
-          const horizontal = visual.direction === "horizontal";
-          const x1 = from.x + (horizontal ? nodeWidth : nodeWidth / 2);
-          const y1 = from.y + (horizontal ? nodeHeight / 2 : nodeHeight);
-          const x2 = to.x + (horizontal ? 0 : nodeWidth / 2);
-          const y2 = to.y + (horizontal ? nodeHeight / 2 : 0);
-          const path = horizontal
-            ? `M ${x1} ${y1} C ${(x1 + x2) / 2} ${y1}, ${(x1 + x2) / 2} ${y2}, ${x2} ${y2}`
-            : `M ${x1} ${y1} C ${x1} ${(y1 + y2) / 2}, ${x2} ${(y1 + y2) / 2}, ${x2} ${y2}`;
-          return (
-            <g key={`${edge.from}-${edge.to}-${index}`}>
-              <path d={path} markerEnd={`url(#${markerId})`} vectorEffect="non-scaling-stroke" />
-              {edge.label ? <text x={(x1 + x2) / 2} y={(y1 + y2) / 2 - 6} textAnchor="middle">{edge.label}</text> : null}
-            </g>
-          );
-        })}
-      </g>
-      <g className="diagram-nodes">
-        {visual.nodes.map((node) => {
-          const position = positions.get(node.id)!;
-          const lines = wrappedLabel(node.label);
-          return (
-            <g key={node.id} className={`diagram-node ${node.tone || "default"}`} transform={`translate(${position.x} ${position.y})`}>
-              <rect width={nodeWidth} height={nodeHeight} rx={10} />
-              <text className="diagram-node-label" x={nodeWidth / 2} y={lines.length > 1 ? 24 : 31} textAnchor="middle">
-                {lines.map((line, index) => <tspan key={line} x={nodeWidth / 2} dy={index === 0 ? 0 : 17}>{line}</tspan>)}
-              </text>
-              {node.detail ? <text className="diagram-node-detail" x={nodeWidth / 2} y={60} textAnchor="middle">{wrappedLabel(node.detail, 24)[0]}</text> : null}
-            </g>
-          );
-        })}
-      </g>
-    </svg>
-  );
+  // Same Pele layout engine as lesson diagrams; detail lines become a second label line.
+  const spec = useMemo(() => sanitizeDiagramSpec(visual), [visual]);
+  return spec ? <DiagramView spec={spec} label={visual.title} /> : null;
 }
 
 export function SideChatVisualRenderer({ visual: rawVisual }: { visual: SideChatVisualSpec }) {

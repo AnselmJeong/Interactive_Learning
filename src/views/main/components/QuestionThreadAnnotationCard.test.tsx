@@ -129,6 +129,6 @@ describe("QuestionThreadAnnotationCard", () => {
     expect(html).toContain("논증 구조");
     expect(html).toContain("전제");
     expect(html).toContain("결론");
-    expect(html).toContain("side-chat-diagram");
+    expect(html).toContain("pele-flowchart");
   });
 });

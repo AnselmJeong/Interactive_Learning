@@ -9,6 +9,7 @@ import { learningBlockPresentation, parseLearningTable } from "../../../shared/l
 import { AnnotationInlineScope } from "./AnnotationInlineScope";
 import { MarkdownContent } from "./MarkdownContent";
 import { HtmlContent } from "./HtmlContent";
+import { DiagramView } from "./DiagramView";
 import { SourceFigureCard } from "./SourceFigureCard";
 import { shouldAutoRenderSourceFigure } from "../source-figure-filter";
 import { sourceFiguresReferencedByText } from "../source-figure-reference";
@@ -447,6 +448,18 @@ function TutorBlock({ block: stored, preserveAnnotatedList = false }: { block: T
             </li>
           ))}
         </ol>
+      </section>
+    );
+  }
+
+  if (block.type === "diagram") {
+    return (
+      <section className="tutor-block diagram-block">
+        <BlockTitle title={block.title} />
+        <figure className="learn-diagram">
+          <DiagramView spec={block} label={block.title} />
+          {block.caption ? <figcaption><MarkdownContent content={block.caption} compact /></figcaption> : null}
+        </figure>
       </section>
     );
   }

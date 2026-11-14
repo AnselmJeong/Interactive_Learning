@@ -1,0 +1,36 @@
+/* Structured diagrams laid out by Pele (Mermaid flowchart engine), themed with the reading palette. */
+.learn-diagram { margin: 0; display: grid; gap: 10px; min-width: 0; }
+.learn-diagram-canvas { min-width: 0; max-width: 100%; overflow-x: auto; }
+.learn-diagram-host {
+  --pele-bg: var(--surface-raised);
+  --pele-fg: var(--ink);
+  --pele-muted: var(--muted);
+  --pele-line: var(--ink-soft);
+  --pele-surface: var(--surface-raised);
+  --pele-surface-alt: var(--surface-soft);
+  --pele-border: var(--line-strong);
+  --pele-accent: var(--teal);
+  --pele-font: var(--sans);
+  --pele-radius: 10px;
+  font-family: var(--sans);
+  font-size: calc(var(--tutor-body-font-size, 18px) * 0.82);
+  line-height: 1.45;
+  color: var(--ink);
+  word-break: keep-all;
+}
+.learn-diagram-host[hidden] { display: none; }
+.learn-diagram-host svg.pele { display: block; margin: 0 auto; max-width: 100%; height: auto; overflow: visible; }
+.learn-diagram-host .pele-node > rect,
+.learn-diagram-host .pele-node > path,
+.learn-diagram-host .pele-node > polygon { stroke-width: 1.4px; }
+.learn-diagram-host .pele-node.learn-accent > :is(rect, path, polygon) { fill: var(--teal-soft); stroke: var(--teal); stroke-width: 1.8px; }
+.learn-diagram-host .pele-node.learn-accent .pele-label { font-weight: 700; }
+.learn-diagram-host .pele-node.learn-muted > :is(rect, path, polygon) { fill: var(--surface-soft); stroke: var(--line); }
+.learn-diagram-host .pele-node.learn-muted .pele-label { fill: var(--ink-soft); }
+.learn-diagram-host .pele-node.learn-note > :is(rect, path, polygon) { fill: transparent; stroke-dasharray: 5 4; }
+.learn-diagram-host .pele-node.learn-note .pele-label { fill: var(--ink-soft); }
+.learn-diagram-host .pele-cluster.learn-dashed > rect { fill: transparent; stroke-dasharray: 6 5; stroke: var(--line-strong); }
+.learn-diagram-host .pele-math .katex { font-size: 1em; color: var(--ink); }
+.learn-diagram > figcaption { color: var(--ink-soft); font-size: .86em; line-height: 1.6; }
+.learn-diagram > figcaption .markdown-content p { margin: 0; }
+.side-chat-visual.diagram .learn-diagram-host { font-size: var(--ln-font-size-sm, 14px); }
