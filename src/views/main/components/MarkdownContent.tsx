@@ -4,6 +4,7 @@ import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import type { PluggableList } from "unified";
+import { delimitBareLatex } from "../math-text";
 
 const remarkPlugins: PluggableList = [[remarkGfm, { singleTilde: false }], remarkMath];
 
@@ -51,6 +52,8 @@ export function normalizeLegacySelectedMath(content: string) {
   const suffix = koreanSuffixIndex > 0 && /[\u0370-\u03ff=−\u200b-\u200d]/u.test(renderedSuffix)
     ? rawSuffix.slice(koreanSuffixIndex)
     : rawSuffix;
+  // Without a rendered duplicate this is ordinary undelimited LaTeX; delimitBareLatex handles it precisely.
+  if (prefix === rawPrefix && suffix === rawSuffix) return content;
   return `${prefix}$${latex}$${suffix}`;
 }
 
@@ -70,7 +73,17 @@ export function normalizeMarkdownContent(content: string): string {
         .replace(/\\(\*{2,3})(?=\S)/gu, "$1")
         .replace(/(?<=\S)\\(\*{2,3})/gu, "$1")
         .replace(/(?<=[\p{P}\p{S}])(\*{2,3})(?=[\u3131-\u318e\uac00-\ud7a3])/gu, "$1&ZeroWidthSpace;");
-      return wrapBareSubscriptIdentifiers(normalized);
+      // Undelimited LaTeX (`2\text{ Hz}`, `\frac{1}{T}`) becomes inline math;
+      // subscript shorthand is only guessed in what remains plain text.
+      return normalized
+        .split(PROTECTED_MARKDOWN_SEGMENT)
+        .map((part) => (part.startsWith("$") || part.startsWith("`")
+          ? part
+          : delimitBareLatex(part)
+            .split(PROTECTED_MARKDOWN_SEGMENT)
+            .map((plain) => (plain.startsWith("$") ? plain : wrapBareSubscriptIdentifiers(plain)))
+            .join("")))
+        .join("");
     })
     .join("");
 }
