@@ -3,12 +3,13 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { ExplanationEvidence } from "./ExplanationEvidence";
 
-test("renders interpretation, original location and escaped excerpts without claiming verification", () => {
+test("hides the interpretation label but keeps original location and escaped excerpts without claiming verification", () => {
   const html = renderToStaticMarkup(createElement(ExplanationEvidence, {
     grounding: { status: "interpretation", evidence: [{ chunkId: "c", quote: "<script>alert(1)</script>", startOffset: 0, endOffset: 25 }] },
     sourceRefById: new Map([["c", { chunkId: "c", title: "Source", locator: "p. 20", text: "" }]]),
   }));
-  expect(html).toContain("해석적 재구성");
+  expect(html).not.toContain("해석적 재구성");
+  expect(html).not.toContain("explanation-status");
   expect(html).toContain("<details>");
   expect(html).toContain("p. 20");
   expect(html).not.toContain("<script>");
