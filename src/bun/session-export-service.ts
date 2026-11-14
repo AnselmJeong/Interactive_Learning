@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { diagramToMermaid } from "../shared/diagram-spec";
 import { getDb } from "./project-db";
 import { SettingsService } from "./settings-service";
 import { CourseArtifactService } from "./course-artifact-service";
@@ -73,6 +74,7 @@ function blocksToMarkdown(blocks: TutorContentBlock[], fallback: string) {
     if (block.type === "paragraph") return block.body;
     if (block.type === "bullets") return `${block.title ? `**${block.title}**\n\n` : ""}${block.items.map((item) => `- ${item}`).join("\n")}`;
     if (block.type === "flow") return `${block.title ? `**${block.title}**\n\n` : ""}${block.steps.map((step, index) => `${index + 1}. ${step}`).join("\n")}`;
+    if (block.type === "diagram") return [block.title ? `**${block.title}**` : "", `\`\`\`mermaid\n${diagramToMermaid(block)}\n\`\`\``, block.caption ? `_${block.caption}_` : ""].filter(Boolean).join("\n\n");
     if (block.type === "compare_table") {
       const header = `| ${block.columns.join(" | ")} |`;
       const divider = `| ${block.columns.map(() => "---").join(" | ")} |`;

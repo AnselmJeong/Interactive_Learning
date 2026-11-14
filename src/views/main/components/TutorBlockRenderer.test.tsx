@@ -5,6 +5,7 @@ import type { SourceFigure } from "../../../shared/artifact-types";
 import type { SourceRef } from "../../../shared/tutor-types";
 import type { TutorContentBlock } from "../../../shared/tutor-types";
 import { TutorBlockRenderer } from "./TutorBlockRenderer";
+import { normalizeDiagramBlock } from "../../../shared/diagram-spec";
 
 describe("TutorBlockRenderer regressions", () => {
   test("renders an HTML lesson's repeated outer and opening title only once", () => {
@@ -13,6 +14,23 @@ describe("TutorBlockRenderer regressions", () => {
     expect(html.match(/2\.1 Introduction/gi)).toHaveLength(1);
     expect(html).toContain("An explanation.");
     expect(html).toContain("2.2 Next section");
+  });
+
+  test("lays out a structured diagram block with KaTeX labels", () => {
+    const block = normalizeDiagramBlock({
+      type: "diagram",
+      title: "EEG가 잡히는 원리",
+      caption: "화살표는 $n$개 세포 신호의 전달 순서다.",
+      direction: "TD",
+      nodes: [{ id: "a", label: "동기화된 활성화" }, { id: "b", label: "전기장 합산 $\\sum_i E_i$", tone: "accent" }],
+      edges: [{ from: "a", to: "b" }],
+    })!;
+    const html = renderToStaticMarkup(createElement(TutorBlockRenderer, { blocks: [block] }));
+    expect(html).toContain("<h4>EEG가 잡히는 원리</h4>");
+    expect(html).toContain("pele-flowchart");
+    expect(html).toContain("learn-accent");
+    expect(html).toContain('class="pele-math"');
+    expect(html.match(/class="katex"/g)?.length).toBeGreaterThanOrEqual(2);
   });
 
   test("cleans duplicate title paths in saved structured lessons without removing separate sections", () => {

@@ -36,6 +36,7 @@ export type TutorContentBlock = (
   | { type: "rich_html"; title?: string; html: string; body: string }
   | { type: "bullets"; title?: string; items: string[] }
   | { type: "flow"; title?: string; steps: string[] }
+  | import("./diagram-spec").DiagramBlock
   | { type: "compare_table"; title?: string; columns: string[]; rows: Array<Record<string, string>> }
   | { type: "source_quote"; quote: string; sourceRef: string; attribution?: string; showToLearner?: boolean }
   | { type: "reflection"; body: string; aiView?: string }

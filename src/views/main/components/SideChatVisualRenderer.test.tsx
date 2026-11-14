@@ -54,7 +54,7 @@ describe("SideChatVisualRenderer", () => {
     expect(html).toContain("입력 전류");
     expect(html).toContain("막전위 충전");
     expect(html).toContain("임계값과 스파이크");
-    expect(html).toContain("marker-end");
+    expect(html).toContain("pele-marker");
     expect(html).not.toContain("missing");
   });
 });
