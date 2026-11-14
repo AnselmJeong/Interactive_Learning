@@ -72,6 +72,38 @@ describe("deep reading evidence and planning", () => {
     expect(plan.analyzedCharacters).toBe(33);
   });
 
+  test("retries a truncated plan once with a shorter-plan request", async () => {
+    const { ir } = await fixture();
+    const calls: Array<{ maxTokens?: number; last: string }> = [];
+    let failedOnce = false;
+    const plan = await compileDeepReading({ chunks: [chunks[0]!], ir, runtime: { model: "fixture", client: {
+      listModels: async () => [], chatText: async () => "",
+      chatJson: async (params) => {
+        calls.push({ maxTokens: params.maxTokens, last: params.messages.at(-1)!.content });
+        if (!failedOnce) {
+          failedOnce = true;
+          throw new Error("Ollama Cloud fixture stopped before finishing because it hit the output token limit (finish_reason=length)");
+        }
+        return candidate;
+      },
+    } } });
+    expect(plan.passages[0]!.status).toBe("analyzed");
+    expect(calls).toHaveLength(2);
+    expect(calls[0]!.maxTokens).toBeGreaterThan(2600);
+    expect(calls[1]!.last).toContain("shorter plan");
+  });
+
+  test("falls back without retrying on errors other than the output limit", async () => {
+    const { ir } = await fixture();
+    let calls = 0;
+    const plan = await compileDeepReading({ chunks: [chunks[0]!], ir, runtime: { model: "fixture", client: {
+      listModels: async () => [], chatText: async () => "",
+      chatJson: async () => { calls += 1; throw new Error("network down"); },
+    } } });
+    expect(plan.passages[0]!.status).toBe("fallback");
+    expect(calls).toBe(1);
+  });
+
   test("records unavailable models per passage and completes progress", async () => {
     const { ir } = await fixture();
     const progress: number[] = [];
