@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { Electroview } from "electrobun/view";
 import type { AppRPC } from "../../shared/rpc-types";
 import { App } from "./App";
+import { AstryxRoot } from "./AstryxRoot";
 
 const rpc = Electroview.defineRPC<AppRPC>({
   maxRequestTime: Infinity,
@@ -25,6 +26,8 @@ const electroview = new Electroview({ rpc });
 
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <App request={(method, params) => electroview.rpc!.request(method as never, params as never)} />
+    <AstryxRoot>
+      <App request={(method, params) => electroview.rpc!.request(method as never, params as never)} />
+    </AstryxRoot>
   </React.StrictMode>
 );
