@@ -1,6 +1,6 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Check, FileText, Loader2, X } from "lucide-react";
-import type { PreparedSourceImport, PreparedSourceImportItem, SourceSummary } from "../../../shared/rpc-types";
+import type { IngestionProgress, PreparedSourceImport, PreparedSourceImportItem, SourceSummary } from "../../../shared/rpc-types";
 import { MarkdownContent } from "./MarkdownContent";
 
 type RpcRequest = (method: string, params: unknown) => Promise<unknown>;
@@ -25,6 +25,18 @@ export function SourceImportModal({
   const selectedCount = selectedIds.size;
   const isArticle = prepared.documentType === "article";
 
+  const pdfFolderOnly = prepared.pdfFolderFileCount > 0 && prepared.pdfFolderFileCount === prepared.itemCount;
+  const [progress, setProgress] = useState("");
+  useEffect(() => {
+    if (!busy || !prepared.pdfFolderFileCount) return;
+    const update = (event: Event) => {
+      const { projectId, stage, message } = (event as CustomEvent<IngestionProgress>).detail;
+      if (projectId === prepared.projectId && stage === "extracting") setProgress(message);
+    };
+    window.addEventListener("ingestion-progress", update);
+    return () => window.removeEventListener("ingestion-progress", update);
+  }, [busy, prepared.pdfFolderFileCount, prepared.projectId]);
+
   function toggleItem(item: PreparedSourceImportItem) {
     setSelectedIds((current) => {
       const next = new Set(current);
@@ -39,6 +51,7 @@ export function SourceImportModal({
       setNotice("가져올 source를 하나 이상 선택하세요.");
       return;
     }
+    setProgress("");
     setBusy(true);
     setNotice("");
     try {
@@ -62,7 +75,9 @@ export function SourceImportModal({
           <div>
             <p className="eyebrow">책·논문 가져오기</p>
             <h2>{prepared.sourceName}</h2>
-            <p>{isArticle ? `${prepared.itemCount}개 대목을 하나의 Source로 준비했습니다.` : `${prepared.itemCount}개 Source 후보를 준비했습니다.`}</p>
+            <p>{pdfFolderOnly
+              ? `PDF ${prepared.itemCount}개 중 ${isArticle ? "논문으로" : "책의 챕터로"} 가져올 파일을 선택하세요.`
+              : `가져올 항목 ${prepared.itemCount}개를 준비했습니다.`}</p>
           </div>
           <button className="icon-button" onClick={() => void onCancel()} disabled={busy} title="닫기">
             <X size={18} />
@@ -70,7 +85,7 @@ export function SourceImportModal({
         </header>
 
         <section className="source-import-body">
-          <aside className="source-import-list" aria-label={isArticle ? "Prepared articles" : "Prepared markdown files"}>
+          <aside className="source-import-list" aria-label={"가져올 항목"}>
             <div className="source-import-tools">
               <button type="button" onClick={() => setSelectedIds(new Set(prepared.items.map((item) => item.id)))} disabled={busy}>
                 모두 선택
@@ -108,7 +123,7 @@ export function SourceImportModal({
                     />
                     <FileText size={16} />
                     <span>{item.title}</span>
-                    <small>{item.charCount.toLocaleString()} chars</small>
+                    <small>{item.charCount === null ? "PDF" : `${item.charCount.toLocaleString()} chars`}</small>
                   </div>
                 );
               })}
@@ -122,13 +137,15 @@ export function SourceImportModal({
                   <div>
                     <h3>{activeItem.title}</h3>
                     <p>
-                      {activeItem.fileName}
-                      {activeItem.kind ? ` · ${activeItem.kind}` : ""} · {activeItem.charCount.toLocaleString()} chars
+                      {activeItem.kind === "pdf" ? activeItem.relativePath : activeItem.fileName}
+                      {activeItem.charCount !== null ? ` · ${activeItem.charCount.toLocaleString()} chars` : ""}
                     </p>
                   </div>
                 </header>
                 <div className="source-import-preview-scroll">
-                  <MarkdownContent content={activeItem.preview || "_No preview available._"} />
+                  {activeItem.kind === "pdf"
+                    ? <p>{isArticle ? "이 PDF 한 편을 독립된 논문으로 가져옵니다." : "이 PDF 전체를 책의 챕터 소스 하나로 가져옵니다."}</p>
+                    : <MarkdownContent content={activeItem.preview || "_No preview available._"} />}
                 </div>
               </>
             ) : (
@@ -141,7 +158,7 @@ export function SourceImportModal({
 
         <footer className="modal-actions">
           <span>
-            {selectedCount} of {prepared.itemCount} selected
+            {busy && progress ? progress : `${prepared.itemCount}개 중 ${selectedCount}개 선택`}
           </span>
           <button className="wide-button" onClick={() => void onCancel()} disabled={busy}>
             취소

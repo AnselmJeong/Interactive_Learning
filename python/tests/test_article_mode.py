@@ -150,6 +150,20 @@ def test_article_mode_keeps_one_unit_removes_references_and_indexes_tables(
     assert retained.diagnostics.conversion.options["references_removed"] is False
 
 
+def test_presplit_book_pdf_keeps_all_sections_and_references(monkeypatch, tmp_path: Path) -> None:
+    pdf = tmp_path / "02 Sampling.pdf"
+    pdf.write_bytes(b"fixture")
+    monkeypatch.setattr(pdf_docling, "_run_docling", lambda *args, **kwargs: _Result())
+    document = pdf_docling.convert(pdf, single_chapter=True, extract_figures=False)
+    assert document.source.document_type == "book"
+    assert len(document.chapters) == 1
+    chapter = document.chapters[0]
+    assert chapter.meta.title == "02 Sampling"
+    assert chapter.meta.kind == "chapter"
+    assert "Body evidence that must remain" in chapter.markdown
+    assert "Doe, J. A token-heavy reference." in chapter.markdown
+
+
 def test_reference_heading_must_be_late_and_structural() -> None:
     items = [
         pdf_docling._FlatItem(object(), 1, 0, "text", 1, None, "References", "a"),

@@ -9,7 +9,7 @@ import { SessionExportService } from "./session-export-service";
 import { SettingsService } from "./settings-service";
 import { AiProviderSettingsService } from "./ai-provider-settings";
 import { createAiProviderClient } from "./ai-provider-client";
-import { SourceService } from "./source-service";
+import { describeImportSelection, SourceService } from "./source-service";
 import { CourseArtifactService } from "./course-artifact-service";
 import { AnnotationService } from "./annotation-service";
 import { listProjectAnnotations } from "./annotation-store";
@@ -358,6 +358,7 @@ const rpc = BrowserView.defineRPC<AppRPC>({
       "projects.cancelTransferImport": ({ importId }) => projectTransfers.cancelImport(importId),
       "projects.openFolder": ({ projectId }) => openPath(projects.folder(projectId)),
       "app.openExternal": ({ url }) => openExternalUrl(url),
+      "sources.chooseImportSelection": async () => describeImportSelection(await chooseSourcePaths()),
       "sources.openDialog": () => chooseSourcePaths(),
       "sources.chooseAndImport": async ({ projectId }) => {
         const paths = await chooseSourcePaths();
@@ -376,7 +377,12 @@ const rpc = BrowserView.defineRPC<AppRPC>({
       },
       "sources.commitPreparedImport": async ({ projectId, importId, selectedItemIds }) => {
         sendToView("sources.ingestionProgress", { projectId, stage: "copying", message: "Importing selected sources", progress: 60 });
-        const result = await sources.commitPreparedImport(projectId, importId, selectedItemIds);
+        const result = await sources.commitPreparedImport(projectId, importId, selectedItemIds, (current, total, name) => {
+          sendToView("sources.ingestionProgress", {
+            projectId, stage: "extracting", progress: Math.round(100 * (current - 1) / total),
+            message: `PDF 가져오는 중 ${current}/${total} · ${name}`,
+          });
+        });
         await refreshImportedBookMetadata(projectId, result);
         sendToView("sources.ingestionProgress", { projectId, stage: "complete", message: "Sources imported", progress: 100 });
         return result;

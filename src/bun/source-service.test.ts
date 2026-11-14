@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { closeDbForTests, getDb } from "./project-db";
 import { ProjectService } from "./project-service";
 import { DocumentService } from "./document-service";
 import type { SourceFigure } from "../shared/artifact-types";
-import { normalizeMarkdownChunks, normalizeSourceFigureChunkIds, sanitizeHeadingPath, SourceService } from "./source-service";
+import { describeImportSelection, normalizeMarkdownChunks, normalizeSourceFigureChunkIds, sanitizeHeadingPath, SourceService } from "./source-service";
 
 describe("markdown chunk heading paths", () => {
   test("does not create sparse heading paths when a document starts at h2", () => {
@@ -173,6 +173,64 @@ describe("article source packs", () => {
     delete process.env.LEARNIE_APP_DATA_ROOT;
     if (tempRoot) await rm(tempRoot, { recursive: true, force: true });
     tempRoot = "";
+  });
+
+  test("imports selected chapter PDFs as one ordered book or as independent articles", async () => {
+    const folder = join(tempRoot, "Signal Analysis 2.0");
+    const nested = join(folder, "Part A");
+    await mkdir(nested, { recursive: true });
+    await mkdir(join(folder, ".cache"));
+    for (const file of ["10 Spectrum.PDF", "2 Sampling.pdf", "3 Skip.pdf", "notes.md"]) {
+      await writeFile(join(nested, file), file);
+    }
+    await writeFile(join(folder, ".cache", "ignored.pdf"), "hidden");
+    const standalone = join(nested, "2 Sampling.pdf");
+    const selection = await describeImportSelection([folder, standalone]);
+    expect(selection).toMatchObject({ supportsArticles: true, pdfFolderCount: 1 });
+    expect((await describeImportSelection([join(nested, "notes.md")])).supportsArticles).toBe(false);
+
+    const project = await new ProjectService().create({ title: "Folder import" });
+    const calls: string[] = [];
+    let failOn = "10 Spectrum.PDF";
+    const service = new SourceService(async (file, type, singleChapter) => {
+      calls.push([basename(file), type, singleChapter].join("|"));
+      if (basename(file) === failOn) throw new Error("conversion failed");
+      const outputPath = await mkdtemp(join(tempRoot, "pack-"));
+      await mkdir(join(outputPath, "chapters"));
+      const path = "chapters/001-section.md";
+      await writeFile(join(outputPath, path), `# Introduction\n\n${basename(file)} content.\n\n## Results\n\nFinal paragraph.`);
+      await writeFile(join(outputPath, "manifest.json"), JSON.stringify({
+        source: { document_type: type }, chapters: [{ index: 1, title: "Section", path }],
+      }));
+      return { outputPath, cleanup: () => rm(outputPath, { recursive: true, force: true }) };
+    });
+    const prepared = await service.prepareImport(project.id, selection.paths, "book");
+    expect(prepared.sourceName).toBe(basename(folder));
+    expect(prepared.items.map((item) => item.fileName)).toEqual(["2 Sampling.pdf", "3 Skip.pdf", "10 Spectrum.PDF"]);
+    expect(prepared.items.every((item) => item.selected)).toBe(true);
+    expect(calls).toHaveLength(0);
+    const selected = [prepared.items[2]!.id, prepared.items[0]!.id];
+    await expect(service.commitPreparedImport(project.id, prepared.id, selected)).rejects.toThrow("10 Spectrum.PDF");
+    const documents = new DocumentService();
+    expect(documents.list(project.id)).toHaveLength(0);
+    expect(service.list(project.id)).toHaveLength(0);
+    expect(await readdir(join(project.rootPath, project.id, "source_folders"))).toEqual([]);
+
+    failOn = "";
+    calls.length = 0;
+    const chapters = await service.commitPreparedImport(project.id, prepared.id, selected);
+    expect(calls).toEqual(["2 Sampling.pdf|book|true", "10 Spectrum.PDF|book|true"]);
+    expect(documents.list(project.id)).toMatchObject([{ title: basename(folder), documentType: "book", hasPdfChapters: true, sourceCount: 2 }]);
+    expect(documents.listSources(project.id, chapters[0]!.documentId!).map((item) => item.id)).toEqual(chapters.map((item) => item.id));
+    expect(chapters.map((item) => item.originalFileName)).toEqual(["2 Sampling.pdf", "10 Spectrum.PDF"]);
+    expect(service.getRow(chapters[0]!.id).original_file_path).toBe(standalone);
+    expect((await service.loadChunks(chapters[0]!.id)).at(-1)?.text).toContain("Final paragraph");
+
+    calls.length = 0;
+    const articles = await service.importPaths(project.id, [folder], "article");
+    expect(new Set(articles.map((source) => source.documentId)).size).toBe(3);
+    expect(documents.list(project.id).filter((doc) => doc.documentType === "article").map((doc) => doc.sourceCount)).toEqual([1, 1, 1]);
+    expect(calls.every((call) => call.endsWith("|article|false"))).toBe(true);
   });
 
   test("imports native HTML and restores legacy formatting without changing stored source chunks", async () => {

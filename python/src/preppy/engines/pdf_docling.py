@@ -185,6 +185,7 @@ def convert(
     plan: SplitPlan | None = None,
     *,
     document_type: DocumentType = "book",
+    single_chapter: bool = False,
     ocr: bool = False,
     table_structure: bool = True,
     extract_figures: bool = True,
@@ -239,13 +240,14 @@ def convert(
         references_start_index = (
             None if include_backmatter else _find_references_start(flat_items)
         )
+    if article_metadata is not None or single_chapter:
         candidates = [
             SplitCandidate(
                 id=1,
                 order=1,
-                title=article_metadata.title,
-                kind="article",
-                reason="article-single-document",
+                title=article_metadata.title if article_metadata else pdf_path.stem,
+                kind="article" if article_metadata else "chapter",
+                reason="article-single-document" if article_metadata else "single-chapter-pdf",
                 confidence=1.0,
                 selected=True,
                 source_locator=SourceLocator(page_start=1, page_end=_num_pages(doc)),
@@ -610,6 +612,9 @@ def convert(
             else "docling-headers"
         )
     )
+
+    if single_chapter:
+        method = "single-chapter-pdf"
 
     document_model = DocumentModel(
         source_type="pdf",

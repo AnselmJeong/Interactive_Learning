@@ -1,20 +1,24 @@
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { BookOpen, Check, FileText, Loader2, X } from "lucide-react";
 import type { DocumentType } from "../../../shared/artifact-types";
 
+import type { SourceImportSelection } from "../../../shared/rpc-types";
+
 export function SourceDocumentTypeModal({
-  paths,
+  selection,
+  notice,
   busy,
   onCancel,
   onContinue,
 }: {
-  paths: string[];
+  selection: SourceImportSelection;
+  notice: string;
   busy: boolean;
   onCancel: () => void;
   onContinue: (documentType: DocumentType) => Promise<void>;
 }) {
   const [documentType, setDocumentType] = useState<DocumentType>("book");
-  const allPdf = useMemo(() => paths.length > 0 && paths.every((path) => path.toLowerCase().endsWith(".pdf")), [paths]);
+  const { paths, pdfFolderCount, supportsArticles } = selection;
   const visibleNames = paths.slice(0, 3).map((path) => path.split(/[\\/]/).at(-1) || path);
 
   return (
@@ -49,7 +53,7 @@ export function SourceDocumentTypeModal({
             <BookOpen size={22} aria-hidden="true" />
             <span>
               <strong>Book</strong>
-              <small>chapter를 나누어 선택하고 가져옵니다.</small>
+              <small>{pdfFolderCount ? "폴더 하나를 책 한 권으로, 안의 PDF 하나를 챕터 소스 하나로 가져옵니다." : "책을 챕터로 나누어 가져옵니다."}</small>
             </span>
             {documentType === "book" ? <Check size={17} aria-hidden="true" /> : null}
           </button>
@@ -58,20 +62,22 @@ export function SourceDocumentTypeModal({
             className={`source-type-option ${documentType === "article" ? "active" : ""}`}
             role="radio"
             aria-checked={documentType === "article"}
-            aria-disabled={!allPdf || busy}
-            onClick={() => allPdf && setDocumentType("article")}
-            disabled={!allPdf || busy}
+            aria-disabled={!supportsArticles || busy}
+            onClick={() => supportsArticles && setDocumentType("article")}
+            disabled={!supportsArticles || busy}
           >
             <FileText size={22} aria-hidden="true" />
             <span>
               <strong>Article</strong>
-              <small>PDF 한 편을 source 하나로 가져오고 references를 제외합니다.</small>
+              <small>PDF마다 논문 한 편과 소스 하나를 만들고 참고문헌을 제외합니다.</small>
             </span>
             {documentType === "article" ? <Check size={17} aria-hidden="true" /> : null}
           </button>
         </div>
 
-        {!allPdf ? <p className="source-type-note">Article mode는 현재 PDF 파일만 지원합니다.</p> : null}
+        {!supportsArticles ? <p className="source-type-note">Article은 PDF 파일이나 PDF가 들어 있는 폴더에서 선택할 수 있습니다.</p> : null}
+
+        {notice ? <p className="source-notice" role="alert">{notice}</p> : null}
 
         <footer className="modal-actions">
           <button type="button" className="wide-button" onClick={onCancel} disabled={busy}>취소</button>

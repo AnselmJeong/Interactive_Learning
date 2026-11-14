@@ -8,7 +8,7 @@ function bibliographicLabel(document: DocumentSummary) {
 }
 
 function displayDocumentTitle(document: DocumentSummary) {
-  return document.documentType === "article" || document.metadataStatus === "found" || document.metadataStatus === "manual"
+  return document.hasPdfChapters || document.documentType === "article" || document.metadataStatus === "found" || document.metadataStatus === "manual"
     ? document.title
     : "서지 정보 없는 책";
 }

@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
 import { copyFile, cp, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -9,7 +10,7 @@ import { SettingsService } from "./settings-service";
 import { attachHtmlToExistingChunks, normalizeHtmlChunks, readSourceHtml } from "./source-html";
 import { writeProjectDocumentIndex } from "./project-bundle-sync";
 import type { DocumentType, SourceChunk, SourceFigure, SourceManifest, SourceType } from "../shared/artifact-types";
-import type { DocumentRemovalImpact, PreparedSourceImport, PreparedSourceImportItem, SourceRemovalImpact, SourceSummary } from "../shared/rpc-types";
+import type { DocumentRemovalImpact, PreparedSourceImport, PreparedSourceImportItem, SourceImportSelection, SourceRemovalImpact, SourceSummary } from "../shared/rpc-types";
 
 type SourceRow = {
   id: string;
@@ -90,12 +91,21 @@ type PreppyFigure = {
   height?: number | null;
 };
 
+type ImportInput =
+  | { kind: "file" | "folder"; path: string }
+  | { kind: "pdf-folder"; path: string; pdfs: string[] };
+
+type PdfFolder = { path: string; files: { id: string; path: string }[] };
+type PdfProgress = (current: number, total: number, name: string) => void;
+
 type PreparedImportEntry = {
   id: string;
   projectId: string;
   sourceName: string;
   sourcePath: string;
   documentType: DocumentType;
+  committing: boolean;
+  pdfFolders: PdfFolder[];
   folders: Array<{ path: string; originalSourcePath: string; cleanup?: () => Promise<void> }>;
   files: Array<{ path: string }>;
   items: PreparedSourceImportItem[];
@@ -343,19 +353,55 @@ async function hashFile(path: string) {
   return { digest, bytes };
 }
 
-async function walkFiles(root: string): Promise<string[]> {
+async function walkFiles(root: string, visibleOnly = false): Promise<string[]> {
   const entries = await readdir(root, { withFileTypes: true });
   const files: string[] = [];
   for (const entry of entries) {
-    if (entry.name === ".DS_Store") continue;
+    if (entry.name === ".DS_Store" || (visibleOnly && entry.name.startsWith("."))) continue;
     const path = join(root, entry.name);
     if (entry.isDirectory()) {
-      files.push(...(await walkFiles(path)));
+      files.push(...(await walkFiles(path, visibleOnly)));
     } else if (entry.isFile()) {
       files.push(path);
     }
   }
   return files.sort((a, b) => naturalPathSorter.compare(relative(root, a), relative(root, b)));
+}
+
+async function resolveImportInputs(paths: string[]): Promise<ImportInput[]> {
+  const inputs: ImportInput[] = [];
+  for (const path of new Set(paths.map((path) => resolve(path)))) {
+    const info = await stat(path);
+    if (info.isFile()) {
+      inputs.push({ kind: "file", path });
+    } else if (info.isDirectory()) {
+      // An exported source pack can itself contain PDF assets.
+      const manifest = await readPackManifest(path);
+      const pdfs = Array.isArray(manifest?.chapters) ? []
+        : (await walkFiles(path, true)).filter((file) => extname(file).toLowerCase() === ".pdf");
+      inputs.push(pdfs.length ? { kind: "pdf-folder", path, pdfs } : { kind: "folder", path });
+    }
+  }
+  // A file picked alongside its parent folder must only be imported once.
+  const covered = new Set(inputs.flatMap((input) => input.kind === "pdf-folder" ? input.pdfs : []));
+  const seen = new Set<string>();
+  return inputs.flatMap((input): ImportInput[] => {
+    if (input.kind === "file" && covered.has(input.path)) return [];
+    if (input.kind !== "pdf-folder") return [input];
+    const pdfs = input.pdfs.filter((pdf) => !seen.has(pdf));
+    for (const pdf of pdfs) seen.add(pdf);
+    return pdfs.length ? [{ ...input, pdfs }] : [];
+  });
+}
+
+export async function describeImportSelection(paths: string[]): Promise<SourceImportSelection> {
+  const inputs = await resolveImportInputs(paths);
+  return {
+    paths,
+    pdfFolderCount: inputs.filter((input) => input.kind === "pdf-folder").length,
+    supportsArticles: inputs.length > 0 && inputs.every((input) =>
+      input.kind === "pdf-folder" || (input.kind === "file" && extname(input.path).toLowerCase() === ".pdf")),
+  };
 }
 
 async function existingDir(path: string) {
@@ -375,6 +421,14 @@ async function hashDirectory(path: string) {
   }
   if (!files.length) hasher.update(path);
   return hasher.digest("hex");
+}
+
+async function readPackManifest(root: string): Promise<PreppyManifest | null> {
+  try {
+    return JSON.parse(await readFile(join(root, "manifest.json"), "utf8")) as PreppyManifest;
+  } catch {
+    return null;
+  }
 }
 
 async function readPreppyManifest(importedRoot: string) {
@@ -575,6 +629,7 @@ function toPrepared(entry: PreparedImportEntry): PreparedSourceImport {
     sourcePath: entry.sourcePath,
     documentType: entry.documentType,
     itemCount: entry.items.length,
+    pdfFolderFileCount: entry.pdfFolders.reduce((sum, folder) => sum + folder.files.length, 0),
     items: entry.items,
   };
 }
@@ -582,43 +637,35 @@ function toPrepared(entry: PreparedImportEntry): PreparedSourceImport {
 export class SourceService {
   private readonly settings = new SettingsService();
 
+  constructor(private readonly convertPdf = buildPreppySourcePack) {}
+
   private projectRoot(projectId: string) {
     const row = getDb().query<{ root_path: string | null }, [string]>("SELECT root_path FROM projects WHERE id = ?").get(projectId);
     return row?.root_path || dataPath("projects");
   }
 
   async importPaths(projectId: string, paths: string[], documentType: DocumentType = "book") {
-    const imported: SourceSummary[] = [];
-    for (const path of paths) {
-      const info = await stat(path);
-      if (documentType === "article" && info.isFile() && extname(path).toLowerCase() !== ".pdf") {
-        throw new Error("Article import currently supports PDF files only.");
-      }
-      if (info.isDirectory()) {
-        imported.push(...(await this.importFolder(projectId, path, path, undefined, documentType)));
-      } else if (info.isFile() && isPreppyInputFile(path)) {
-        const sourcePack = await buildPreppySourcePack(path, documentType);
-        try {
-          imported.push(...(await this.importFolder(projectId, sourcePack.outputPath, path, undefined, documentType)));
-        } finally {
-          await sourcePack.cleanup();
-        }
-      } else if (info.isFile() && isImportableFile(path)) {
-        imported.push(await this.importFile(projectId, path, documentType));
-      }
+    const prepared = await this.prepareImport(projectId, paths, documentType);
+    try {
+      return await this.commitPreparedImport(projectId, prepared.id, prepared.items.map((item) => item.id));
+    } finally {
+      await this.cancelPreparedImport(projectId, prepared.id);
     }
-    return imported;
   }
 
   async prepareImport(projectId: string, paths: string[], documentType: DocumentType = "book") {
     const id = crypto.randomUUID();
     const settings = await this.settings.get();
+    const inputs = await resolveImportInputs(paths);
+    const singleInput = inputs.length === 1 ? inputs[0] : undefined;
     const entry: PreparedImportEntry = {
       id,
       projectId,
-      sourceName: paths.length === 1 ? titleForPath(paths[0]!) : `${paths.length} selected sources`,
+      sourceName: singleInput ? (singleInput.kind === "file" ? titleForPath(singleInput.path) : basename(singleInput.path)) : `선택한 항목 ${inputs.length}개`,
       sourcePath: paths.join(", "),
       documentType,
+      committing: false,
+      pdfFolders: [],
       folders: [],
       files: [],
       items: [],
@@ -626,17 +673,29 @@ export class SourceService {
     };
 
     try {
-      for (const path of paths) {
-        const info = await stat(path);
-        if (documentType === "article" && info.isFile() && extname(path).toLowerCase() !== ".pdf") {
-          throw new Error("Article import currently supports PDF files only.");
+      for (const input of inputs) {
+        const { path } = input;
+        if (input.kind === "pdf-folder") {
+          const files = input.pdfs.map((pdf) => ({ id: crypto.randomUUID(), path: pdf }));
+          entry.pdfFolders.push({ path, files });
+          for (const file of files) {
+            entry.items.push({
+              id: file.id, title: titleForPath(file.path), fileName: basename(file.path),
+              relativePath: relativePortable(path, file.path), kind: "pdf", charCount: null,
+              selected: true, preview: "",
+            });
+          }
+          continue;
         }
-        if (info.isDirectory()) {
+        if (documentType === "article" && input.kind === "file" && extname(path).toLowerCase() !== ".pdf") {
+          throw new Error("논문으로 가져올 수 있는 파일은 PDF입니다.");
+        }
+        if (input.kind === "folder") {
           await this.addPreparedFolder(entry, path, path, settings.sourceImportMinChars);
-        } else if (info.isFile() && isPreppyInputFile(path)) {
+        } else if (isPreppyInputFile(path)) {
           const sourcePack = await buildPreppySourcePack(path, documentType);
           await this.addPreparedFolder(entry, sourcePack.outputPath, path, settings.sourceImportMinChars, sourcePack.cleanup);
-        } else if (info.isFile() && isImportableFile(path)) {
+        } else if (isImportableFile(path)) {
           await this.addPreparedFile(entry, path, settings.sourceImportMinChars);
         }
       }
@@ -648,9 +707,11 @@ export class SourceService {
     }
   }
 
-  async commitPreparedImport(projectId: string, importId: string, selectedItemIds: string[]) {
+  async commitPreparedImport(projectId: string, importId: string, selectedItemIds: string[], onPdfProgress?: PdfProgress) {
     const entry = preparedImports.get(importId);
     if (!entry || entry.projectId !== projectId) throw new Error("Prepared import not found");
+    if (entry.committing) throw new Error("이미 가져오는 중입니다.");
+    entry.committing = true;
     const selected = new Set(selectedItemIds);
     const imported: SourceSummary[] = [];
     try {
@@ -669,16 +730,30 @@ export class SourceService {
         const folder = entry.folders[index]!;
         imported.push(...(await this.importFolder(projectId, folder.path, folder.originalSourcePath, selectedRelativePaths, entry.documentType)));
       }
-      return imported;
-    } finally {
-      preparedImports.delete(importId);
+      const folders = entry.pdfFolders.map((folder) => ({
+        path: folder.path,
+        files: folder.files.filter((file) => selected.has(file.id)),
+      })).filter((folder) => folder.files.length);
+      imported.push(...await this.importPdfFolders(projectId, folders, entry.documentType, onPdfProgress));
       await this.cleanupPrepared(entry);
+      preparedImports.delete(importId);
+      return imported;
+    } catch (error) {
+      // Completed legacy items cannot be re-submitted on a retry.
+      if (imported.length) {
+        preparedImports.delete(importId);
+        await this.cleanupPrepared(entry);
+      }
+      throw error;
+    } finally {
+      entry.committing = false;
     }
   }
 
   async cancelPreparedImport(projectId: string, importId: string) {
     const entry = preparedImports.get(importId);
     if (!entry || entry.projectId !== projectId) return true;
+    if (entry.committing) throw new Error("이미 가져오는 중입니다.");
     preparedImports.delete(importId);
     await this.cleanupPrepared(entry);
     return true;
@@ -733,11 +808,12 @@ export class SourceService {
 
   private async preppyChapterRows(root: string) {
     try {
-      const manifest = JSON.parse(await readFile(join(root, "manifest.json"), "utf8")) as PreppyManifest;
-      return (manifest.chapters || [])
+      const manifest = await readPackManifest(root);
+      return (manifest?.chapters || [])
         .filter((chapter) => chapter.path)
         .map((chapter) => ({
           path: chapter.path!.replaceAll("\\", "/"),
+          index: chapter.index,
           title: chapter.title || "",
           kind: chapter.kind || null,
           charCount: chapter.char_count || 0,
@@ -789,6 +865,75 @@ export class SourceService {
       getDb().query("DELETE FROM project_documents WHERE id = ?").run(documentId);
       await rm(dir, { recursive: true, force: true });
       await writeProjectDocumentIndex(projectId, this.projectRoot(projectId)).catch(() => undefined);
+      throw error;
+    }
+  }
+
+  private async importPdfFolders(projectId: string, folders: PdfFolder[], documentType: DocumentType, onProgress?: PdfProgress) {
+    const total = folders.reduce((sum, folder) => sum + folder.files.length, 0);
+    if (!total) return [];
+    const root = this.projectRoot(projectId);
+    const sources: SourceSummary[] = [];
+    const newDocuments: string[] = [];
+    const newDirectories: string[] = [];
+    let current = 0;
+    try {
+      for (const folder of folders) {
+        let bookId: string | undefined;
+        const bookHash = createHash("sha256");
+        for (const [index, file] of folder.files.entries()) {
+          onProgress?.(++current, total, basename(file.path));
+          try {
+            const pack = await this.convertPdf(file.path, documentType, documentType === "book");
+            try {
+              const chapters = await this.preppyChapterRows(pack.outputPath);
+              if (chapters.length !== 1) throw new Error("PDF에서 하나의 학습 소스를 만들 수 없습니다.");
+              const chapter = chapters[0]!;
+              const packDir = join(root, projectId, "source_folders", crypto.randomUUID());
+              newDirectories.push(packDir);
+              const importedRoot = join(packDir, "original");
+              await cp(pack.outputPath, importedRoot, { recursive: true });
+              const hasher = createHash("sha256");
+              for await (const bytes of createReadStream(file.path)) hasher.update(bytes);
+              const digest = hasher.digest("hex");
+              let documentId: string;
+              if (documentType === "book") {
+                bookHash.update(relativePortable(folder.path, file.path)).update("\0").update(digest);
+                if (!bookId) {
+                  bookId = this.createDocument(projectId, "book", basename(folder.path), folder.path, basename(folder.path), "");
+                  newDocuments.push(bookId);
+                }
+                documentId = bookId;
+              } else {
+                documentId = this.createDocument(projectId, "article", titleForPath(file.path), file.path, basename(file.path), digest);
+                newDocuments.push(documentId);
+              }
+              const sourceId = crypto.randomUUID();
+              newDirectories.push(sourceDirAt(root, projectId, sourceId));
+              const { source } = await this.importTextFileFromCopiedFolder(projectId, file.path,
+                join(importedRoot, chapter.path), titleForPath(file.path), {
+                  importedRoot, manifestPath: chapter.path, chapterIndex: chapter.index, figures: await readPreppyFigures(importedRoot),
+                  documentType, documentId, sourceOrdinal: documentType === "book" ? index : 0,
+                }, { id: sourceId, originalFileName: basename(file.path) });
+              sources.push(source);
+            } finally {
+              await pack.cleanup();
+            }
+          } catch (error) {
+            throw new Error(`${relativePortable(folder.path, file.path)} 가져오기 실패 · ${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
+        if (bookId) getDb().query("UPDATE project_documents SET content_hash = ? WHERE id = ?").run(bookHash.digest("hex"), bookId);
+      }
+      await writeProjectDocumentIndex(projectId, root);
+      return sources;
+    } catch (error) {
+      const db = getDb();
+      db.transaction(() => {
+        for (const id of newDocuments) db.query("DELETE FROM project_documents WHERE id = ?").run(id);
+      })();
+      await Promise.all(newDirectories.map((dir) => rm(dir, { recursive: true, force: true })));
+      await writeProjectDocumentIndex(projectId, root);
       throw error;
     }
   }
@@ -992,10 +1137,11 @@ export class SourceService {
       documentType: DocumentType;
       documentId: string;
       sourceOrdinal: number;
-    }
+    },
+    original?: { id: string; originalFileName: string },
   ) {
     const { digest, bytes } = await hashFile(importedPath);
-    const id = crypto.randomUUID();
+    const id = original?.id ?? crypto.randomUUID();
     const type = sourceTypeForPath(importedPath);
     const html = await readSourceHtml(importedPath);
     const htmlChunks = html ? normalizeHtmlChunks(id, html) : [];
@@ -1019,7 +1165,7 @@ export class SourceService {
       documentId: preppy?.documentId,
       sourceOrdinal: preppy?.sourceOrdinal,
       originalPath,
-      originalFileName: basename(importedPath),
+      originalFileName: original?.originalFileName ?? basename(importedPath),
       importedPath,
       digest,
       chunks,
@@ -1509,7 +1655,8 @@ export class SourceService {
         if (!originalPath) {
           throw new Error("PDF·EPUB 원본 파일을 찾을 수 없습니다. 원본 파일을 다시 가져오면 원래 서식으로 읽을 수 있습니다. 기존 메모와 진도는 유지됩니다.");
         }
-        const pack = await buildPreppySourcePack(originalPath, row.document_type);
+        const singleChapter = row.document_type === "book" && row.original_file_path === originalPath && originalPath !== document?.original_file_path;
+        const pack = await buildPreppySourcePack(originalPath, row.document_type, singleChapter);
         cleanup = pack.cleanup;
         const manifest = JSON.parse(await readFile(join(pack.outputPath, "manifest.json"), "utf8")) as PreppyManifest;
         const chapters = await Promise.all((manifest.chapters || []).map((chapter) => chapter.path ? readSourceHtml(join(pack.outputPath, chapter.path)) : null));
@@ -1566,9 +1713,10 @@ export class SourceService {
     const relativePath = sourcePackRelativePath(row);
     if (!relativePath) return [];
     const sourceFoldersDir = join(this.projectRoot(row.project_id), row.project_id, "source_folders");
+    const ownFolder = sourceFolderDirFor(this.projectRoot(row.project_id), row.project_id, row.imported_file_path);
     let folders: string[] = [];
     try {
-      folders = (await readdir(sourceFoldersDir, { withFileTypes: true }))
+      folders = ownFolder ? [join(ownFolder, "original")] : (await readdir(sourceFoldersDir, { withFileTypes: true }))
         .filter((entry) => entry.isDirectory())
         .map((entry) => join(sourceFoldersDir, entry.name, "original"));
     } catch {

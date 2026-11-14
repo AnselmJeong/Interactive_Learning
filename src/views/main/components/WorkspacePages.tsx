@@ -106,7 +106,7 @@ export function LibraryPage({ project, documents, sources, selectedDocumentId, p
               {filteredDocuments.map((document, index) => {
                 const progressValue = documentProgress(document, sources, progress);
                 const hasBibliography = document.documentType !== "book" || document.metadataStatus === "found" || document.metadataStatus === "manual";
-                const title = hasBibliography ? document.title : "서지 정보 없음";
+                const title = (hasBibliography || document.hasPdfChapters) ? document.title : "서지 정보 없음";
                 const bibliographicLine = document.documentType === "book"
                   ? [document.authors.join(", "), document.publisher, document.publishedDate?.slice(0, 4)].filter(Boolean).join(" · ")
                   : [document.authors.join(", "), document.journal, document.publishedDate?.slice(0, 4)].filter(Boolean).join(" · ");

@@ -83,6 +83,7 @@ export type DocumentSummary = {
   language: string | null;
   coverUrl: string | null;
   metadataStatus: "pending" | "found" | "not_found" | "manual" | "failed";
+  hasPdfChapters?: boolean;
   sourceCount: number;
   learning: LearningProgressSummary;
   preparation: PreparationProgressSummary;
@@ -161,13 +162,19 @@ export type ProjectProgressSnapshot = {
   orphanCoveredChunkCount: number;
 };
 
+export type SourceImportSelection = {
+  paths: string[];
+  pdfFolderCount: number;
+  supportsArticles: boolean;
+};
+
 export type PreparedSourceImportItem = {
   id: string;
   title: string;
   fileName: string;
   relativePath: string;
   kind: string | null;
-  charCount: number;
+  charCount: number | null;
   preview: string;
   selected: boolean;
 };
@@ -216,6 +223,7 @@ export type PreparedSourceImport = {
   sourcePath: string;
   documentType: DocumentType;
   itemCount: number;
+  pdfFolderFileCount: number;
   items: PreparedSourceImportItem[];
 };
 
@@ -305,6 +313,7 @@ export type AppRPC = {
       "sources.prepareImport": { params: { projectId: string; paths: string[]; documentType?: DocumentType }; response: PreparedSourceImport };
       "sources.commitPreparedImport": { params: { projectId: string; importId: string; selectedItemIds: string[] }; response: SourceSummary[] };
       "sources.cancelPreparedImport": { params: { projectId: string; importId: string }; response: boolean };
+      "sources.chooseImportSelection": { params: { projectId: string }; response: SourceImportSelection };
       "sources.openDialog": { params: { projectId: string }; response: string[] };
       "sources.chooseAndImport": { params: { projectId: string }; response: SourceSummary[] };
       "sources.list": { params: { projectId: string }; response: SourceSummary[] };

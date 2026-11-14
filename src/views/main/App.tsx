@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import { BarChart3, BookOpen, Check, Download, Highlighter, Info, LibraryBig, Loader2, LocateFixed, MessageSquare, Moon, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Pencil, Play, Send, Settings, Sparkles, Sun, Trash2, Upload, X } from "lucide-react";
-import type { AnnotationReadableExport, DocumentMetadataCandidate, DocumentMetadataSearchInput, DocumentRemovalImpact, DocumentSummary, GenerationProgress, MaterialProgressSnapshot, MaterialSummary, PreparedSourceImport, ProjectProgressSnapshot, ProjectSummary, SourceRemovalImpact, SourceSummary } from "../../shared/rpc-types";
+import type { AnnotationReadableExport, DocumentMetadataCandidate, DocumentMetadataSearchInput, DocumentRemovalImpact, DocumentSummary, GenerationProgress, MaterialProgressSnapshot, MaterialSummary, SourceImportSelection, PreparedSourceImport, ProjectProgressSnapshot, ProjectSummary, SourceRemovalImpact, SourceSummary } from "../../shared/rpc-types";
 import type { ProjectTransferExport, ProjectTransferPreview, SessionReadableExport } from "../../shared/project-transfer-types";
 import type { DocumentTransferExport, DocumentTransferImportPreview, DocumentTransferImportResult } from "../../shared/document-transfer-types";
 import type { AppSettings, AiProviderStatus, ChatSubmitShortcut, ProviderModel } from "../../shared/settings-types";
@@ -810,7 +810,7 @@ export function App({ request }: { request: RpcRequest }) {
   const [sessionExportBusyId, setSessionExportBusyId] = useState<string | null>(null);
   const [sourceNotice, setSourceNotice] = useState("");
   const [preparedImport, setPreparedImport] = useState<PreparedSourceImport | null>(null);
-  const [pendingSourcePaths, setPendingSourcePaths] = useState<string[]>([]);
+  const [sourceSelection, setSourceSelection] = useState<SourceImportSelection | null>(null);
   const [expandedSourceMessages, setExpandedSourceMessages] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   const [batchActionBusy, setBatchActionBusy] = useState(false);
@@ -1428,7 +1428,8 @@ export function App({ request }: { request: RpcRequest }) {
   async function chooseAndImportSources() {
     if (!activeProject) return;
     try {
-      const paths = (await request("sources.openDialog", { projectId: activeProject.id })) as string[];
+      const selection = (await request("sources.chooseImportSelection", { projectId: activeProject.id })) as SourceImportSelection;
+      const { paths } = selection;
       if (!paths.length) {
         setSourceNotice("No files selected");
         return;
@@ -1442,7 +1443,7 @@ export function App({ request }: { request: RpcRequest }) {
         await importDocumentTransfer(activeProject, transferPaths[0]);
         return;
       }
-      setPendingSourcePaths(paths);
+      setSourceSelection(selection);
       setSourceNotice("");
     } catch (error) {
       setSourceNotice(`Import failed: ${(error as Error).message}`);
@@ -1452,17 +1453,17 @@ export function App({ request }: { request: RpcRequest }) {
   }
 
   async function prepareSelectedSources(documentType: DocumentType) {
-    if (!activeProject || !pendingSourcePaths.length) return;
+    if (!activeProject || !sourceSelection) return;
     setBusy(true);
     setSourceNotice("");
     try {
       const prepared = (await request("sources.prepareImport", {
         projectId: activeProject.id,
-        paths: pendingSourcePaths,
+        paths: sourceSelection.paths,
         documentType,
       })) as PreparedSourceImport;
       setPreparedImport(prepared);
-      setPendingSourcePaths([]);
+      setSourceSelection(null);
     } catch (error) {
       setSourceNotice(`Import failed: ${(error as Error).message}`);
     } finally {
@@ -3015,7 +3016,7 @@ export function App({ request }: { request: RpcRequest }) {
           <div>
             <p className="project-title">
               <span className="project-title-project">{activeProject?.title || "Learning Workspace"}</span>
-              {activeDocument && (activeDocument.documentType !== "book" || activeDocument.metadataStatus === "found" || activeDocument.metadataStatus === "manual")
+              {activeDocument && comparableHeadingTitle(activeDocument.title) !== comparableHeadingTitle(activeProject?.title || "") && (activeDocument.hasPdfChapters || activeDocument.documentType !== "book" || activeDocument.metadataStatus === "found" || activeDocument.metadataStatus === "manual")
                 ? <span className="project-title-document">{activeDocument?.title}</span>
                 : null}
               {activeDocument?.documentType === "article" ? null : activeSource
@@ -3518,11 +3519,12 @@ export function App({ request }: { request: RpcRequest }) {
       {preparedImport ? (
         <SourceImportModal request={request} prepared={preparedImport} onCancel={cancelPreparedImport} onImported={finishPreparedImport} />
       ) : null}
-      {pendingSourcePaths.length ? (
+      {sourceSelection ? (
         <SourceDocumentTypeModal
-          paths={pendingSourcePaths}
+          selection={sourceSelection}
+          notice={sourceNotice}
           busy={busy}
-          onCancel={() => setPendingSourcePaths([])}
+          onCancel={() => setSourceSelection(null)}
           onContinue={prepareSelectedSources}
         />
       ) : null}

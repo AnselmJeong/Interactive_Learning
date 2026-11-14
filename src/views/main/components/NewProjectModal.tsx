@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Check, FileText, Loader2, Plus, X } from "lucide-react";
-import type { PreparedSourceImport, ProjectSummary, SourceSummary } from "../../../shared/rpc-types";
+import type { SourceImportSelection, PreparedSourceImport, ProjectSummary, SourceSummary } from "../../../shared/rpc-types";
 import type { DocumentType } from "../../../shared/artifact-types";
 import { LEARNING_LEVEL_OPTIONS, type LearningLevel } from "../../../shared/learning-levels";
 import { SourceImportModal } from "./SourceImportModal";
@@ -26,7 +26,7 @@ export function NewProjectModal({
   const [project, setProject] = useState<ProjectSummary | null>(null);
   const [sources, setSources] = useState<SourceSummary[]>([]);
   const [preparedImport, setPreparedImport] = useState<PreparedSourceImport | null>(null);
-  const [pendingSourcePaths, setPendingSourcePaths] = useState<string[]>([]);
+  const [sourceSelection, setSourceSelection] = useState<SourceImportSelection | null>(null);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("");
 
@@ -51,12 +51,13 @@ export function NewProjectModal({
     if (!project) return;
     setNotice("");
     try {
-      const paths = (await request("sources.openDialog", { projectId: project.id })) as string[];
+      const selection = (await request("sources.chooseImportSelection", { projectId: project.id })) as SourceImportSelection;
+      const { paths } = selection;
       if (!paths.length) {
         setNotice("선택된 파일이 없습니다");
         return;
       }
-      setPendingSourcePaths(paths);
+      setSourceSelection(selection);
     } catch (error) {
       setNotice((error as Error).message);
     } finally {
@@ -65,17 +66,17 @@ export function NewProjectModal({
   }
 
   async function prepareSources(documentType: DocumentType) {
-    if (!project || !pendingSourcePaths.length) return;
+    if (!project || !sourceSelection) return;
     setBusy(true);
     setNotice("");
     try {
       const prepared = (await request("sources.prepareImport", {
         projectId: project.id,
-        paths: pendingSourcePaths,
+        paths: sourceSelection.paths,
         documentType,
       })) as PreparedSourceImport;
       setPreparedImport(prepared);
-      setPendingSourcePaths([]);
+      setSourceSelection(null);
     } catch (error) {
       setNotice((error as Error).message);
     } finally {
@@ -212,11 +213,12 @@ export function NewProjectModal({
       {preparedImport ? (
         <SourceImportModal request={request} prepared={preparedImport} onCancel={cancelPreparedImport} onImported={finishPreparedImport} />
       ) : null}
-      {pendingSourcePaths.length ? (
+      {sourceSelection ? (
         <SourceDocumentTypeModal
-          paths={pendingSourcePaths}
+          selection={sourceSelection}
+          notice={notice}
           busy={busy}
-          onCancel={() => setPendingSourcePaths([])}
+          onCancel={() => setSourceSelection(null)}
           onContinue={prepareSources}
         />
       ) : null}

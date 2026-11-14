@@ -57,6 +57,7 @@ type SourceRow = {
 
 type AggregateRow = {
   document_id?: string;
+  has_pdf_chapters?: number;
   source_count: number;
   annotation_count: number;
   active_session_id: string | null;
@@ -69,6 +70,8 @@ function aggregatesForProject(projectId: string) {
   const rows = getDb().query<AggregateRow, [string]>(`
     SELECT d.id AS document_id,
       (SELECT COUNT(*) FROM project_sources s WHERE s.document_id = d.id) AS source_count,
+      EXISTS(SELECT 1 FROM project_sources s WHERE s.document_id = d.id AND s.source_kind = 'chapter'
+             AND lower(s.original_file_name) LIKE '%.pdf') AS has_pdf_chapters,
       (SELECT COUNT(*) FROM material_annotations a
        WHERE a.source_id IN (SELECT id FROM project_sources WHERE document_id = d.id)) AS annotation_count,
       (SELECT s.id FROM learning_sessions s
@@ -160,6 +163,7 @@ function toSummary(row: DocumentRow, aggregate: AggregateRow, coverUrl: string |
     language: row.language,
     coverUrl,
     metadataStatus: row.metadata_status,
+    hasPdfChapters: Boolean(aggregate.has_pdf_chapters),
     sourceCount: aggregate.source_count || 0,
     learning: emptyLearning(aggregate.active_session_id),
     preparation,
@@ -175,6 +179,8 @@ function aggregateFor(documentId: string): AggregateRow {
   return getDb().query<AggregateRow, [string]>(`
     SELECT
       (SELECT COUNT(*) FROM project_sources s WHERE s.document_id = d.id) AS source_count,
+      EXISTS(SELECT 1 FROM project_sources s WHERE s.document_id = d.id AND s.source_kind = 'chapter'
+             AND lower(s.original_file_name) LIKE '%.pdf') AS has_pdf_chapters,
       (SELECT COUNT(*) FROM material_annotations a
        WHERE a.source_id IN (SELECT id FROM project_sources WHERE document_id = d.id)) AS annotation_count,
       (SELECT s.id FROM learning_sessions s

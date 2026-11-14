@@ -78,6 +78,9 @@ def build(
         "--document-type",
         help="Document semantics: split a book into chapters, or keep an article as one unit and remove references.",
     ),
+    single_chapter: bool = typer.Option(
+        False, "--single-chapter", help="Keep a pre-split book chapter PDF as one complete chapter."
+    ),
     plan: Path | None = typer.Option(
         None,
         "--plan",
@@ -141,6 +144,8 @@ def build(
         raise typer.BadParameter(
             "--document-type article currently requires a PDF input."
         )
+    if single_chapter and (document_type != "book" or input_type != "pdf" or plan is not None):
+        raise typer.BadParameter("--single-chapter requires a book PDF without a split plan.")
     if document_type == "article" and plan is not None:
         raise typer.BadParameter(
             "--plan is only valid for --document-type book; articles are not chapter-split."
@@ -162,6 +167,7 @@ def build(
             input_type,
             document_type=document_type,
             plan_path=plan,
+            single_chapter=single_chapter,
             include_frontmatter=include_frontmatter,
             include_backmatter=include_backmatter,
             ocr=ocr,
@@ -196,6 +202,7 @@ def _run_build(
     *,
     document_type: DocumentType,
     plan_path: Path | None,
+    single_chapter: bool,
     include_frontmatter: bool,
     include_backmatter: bool,
     ocr: bool,
@@ -224,6 +231,7 @@ def _run_build(
     return pdf_docling.convert(
         input_path,
         pdf_plan,
+        single_chapter=single_chapter,
         document_type=document_type,
         ocr=ocr,
         table_structure=table_structure,

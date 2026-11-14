@@ -93,10 +93,11 @@ function preppyFailureMessage(result: PreppyBuildResult, fallback = "Preppy conv
   return ["Preppy conversion failed.", ...visible, ...extra].join("\n");
 }
 
-function spawnPreppy(inputPath: string, outputPath: string, documentType: DocumentType) {
+function spawnPreppy(inputPath: string, outputPath: string, documentType: DocumentType, singleChapter: boolean) {
   const pythonRoot = resolvePythonRoot();
   const { command, args } = pythonCommand(pythonRoot);
   const childArgs = [...args, inputPath, "-o", outputPath, "--document-type", documentType, "--overwrite", "--json"];
+  if (singleChapter) childArgs.push("--single-chapter");
   const pathParts = [
     ...pythonRuntimeBinDirs(pythonRoot),
     process.env.PATH || "",
@@ -148,13 +149,13 @@ function spawnPreppy(inputPath: string, outputPath: string, documentType: Docume
   });
 }
 
-export async function buildPreppySourcePack(inputPath: string, documentType: DocumentType = "book") {
+export async function buildPreppySourcePack(inputPath: string, documentType: DocumentType = "book", singleChapter = false) {
   const tempRoot = await mkdtemp(join(tmpdir(), "learnie-preppy-"));
   const safeName = basename(inputPath).replace(/\.[^.]+$/, "") || "source";
   const outputPath = join(tempRoot, `${safeName}.preppy`);
   await mkdir(outputPath, { recursive: true });
   try {
-    await spawnPreppy(inputPath, outputPath, documentType);
+    await spawnPreppy(inputPath, outputPath, documentType, singleChapter);
     return {
       outputPath,
       cleanup: async () => {
