@@ -37,6 +37,7 @@ import { QuestionThreadAnnotationCard } from "./components/QuestionThreadAnnotat
 import { AdditionalExploration } from "./components/AdditionalExploration";
 import { AnnotationExternalHtmlAttachment, EXTERNAL_HTML_ACTION_EVENT, publishExternalHtmlCapability, type ExternalHtmlActionEventDetail } from "./components/AnnotationExternalHtmlAttachment";
 import { GenerationStatus } from "./components/GenerationStatus";
+import { applyMaterialGenerationProgress, finishMaterialGenerationJob, materialGenerationJobKey, primaryMaterialGenerationJob, startMaterialGenerationJob, type MaterialGenerationJobs } from "./material-generation-jobs";
 import { figureIdForExplanationAnnotation } from "./figure-annotations";
 import { stripFigureMarkdown } from "./figure-text";
 import { placeAnnotationsForMessages, shouldRenderInlineAnnotation } from "./annotation-placement";
@@ -821,7 +822,13 @@ export function App({ request }: { request: RpcRequest }) {
   const [prefetchStatus, setPrefetchStatus] = useState<TutorPrefetchStatus | null>(null);
   const [messageSetsByMaterial, setMessageSetsByMaterial] = useState<Record<string, LearningMessageSetSummary[]>>({});
   const [status, setStatus] = useState(READY_STATUS);
-  const [generationProgress, setGenerationProgress] = useState<GenerationProgress | null>(null);
+  const [materialJobs, setMaterialJobs] = useState<MaterialGenerationJobs>({});
+  const materialJobPromisesRef = useRef(new Map<string, Promise<MaterialSummary>>());
+  // Bumped whenever the learner navigates or continues learning, so a background generation that
+  // finishes later only auto-opens its material if the learner is still waiting for it.
+  const learningIntentRef = useRef(0);
+  const activeProjectIdRef = useRef<string | null>(null);
+  const activeMaterialIdRef = useRef<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [settings, setSettings] = useState<AppSettings | null>(null);
@@ -866,6 +873,14 @@ export function App({ request }: { request: RpcRequest }) {
   useEffect(() => {
     if (!activeMaterial) setMaterialProgress(null);
   }, [activeMaterial]);
+
+  useEffect(() => {
+    activeProjectIdRef.current = activeProject?.id || null;
+  }, [activeProject?.id]);
+
+  useEffect(() => {
+    activeMaterialIdRef.current = activeMaterial?.id || null;
+  }, [activeMaterial?.id]);
   const lastFocusedReadyActionKeyRef = useRef<string | null>(null);
   const userPointerDownRef = useRef(false);
   const answerReadyNotificationPendingRef = useRef(false);
@@ -979,6 +994,7 @@ export function App({ request }: { request: RpcRequest }) {
 
   async function openProject(project: ProjectSummary) {
     sessionStartTokenRef.current += 1;
+    learningIntentRef.current += 1;
     setSessionStartBusy(false);
     const opened = (await request("projects.open", { projectId: project.id })) as ProjectSummary;
     const [sources, materials, nextDocuments, annotations, progressSnapshot] = await Promise.all([
@@ -1375,8 +1391,7 @@ export function App({ request }: { request: RpcRequest }) {
   useEffect(() => {
     const onGeneration = (event: Event) => {
       const detail = (event as CustomEvent<GenerationProgress>).detail;
-      setStatus(detail.message);
-      setGenerationProgress(detail.stage === "complete" || detail.stage === "failed" ? null : detail);
+      setMaterialJobs((current) => applyMaterialGenerationProgress(current, detail));
     };
     const onIngestion = (event: Event) => setStatus((event as CustomEvent<{ message: string }>).detail.message);
     const onTutor = () => setStatus(TUTOR_THINKING_STATUS);
@@ -1496,22 +1511,56 @@ export function App({ request }: { request: RpcRequest }) {
   // starts the prepared material from the topbar.
   async function learnFromSource(sourceId: string) {
     if (!activeProject) return;
+    const projectId = activeProject.id;
     const sourceDocumentId = state.sources.find((source) => source.id === sourceId)?.documentId || null;
     if (sourceDocumentId) setSelectedDocumentId(sourceDocumentId);
     setWorkspaceRoute("learning");
-    setBusy(true);
-    setStatus("학습 자료 준비 중");
+    const intent = ++learningIntentRef.current;
+    const label = materialJobLabel([sourceId]);
     try {
-      const material = (await request("materials.generate", { projectId: activeProject.id, sourceIds: [sourceId] })) as MaterialSummary;
-      const materials = (await request("materials.list", { projectId: activeProject.id })) as MaterialSummary[];
-      setState((current) => ({ ...current, materials }));
+      // Generation runs in the background: controls stay enabled so the learner can keep
+      // studying the current material while the new one is prepared.
+      const material = await generateMaterialInBackground(projectId, [sourceId]);
+      if (intent !== learningIntentRef.current || activeProjectIdRef.current !== projectId) {
+        setStatus(`${label} 학습 자료 준비 완료 · 소스를 선택하면 바로 열립니다`);
+        return;
+      }
       await selectMaterial(material);
       setStatus(READY_STATUS);
     } catch (error) {
-      setStatus((error as Error).message);
-    } finally {
-      setBusy(false);
+      setStatus(`${label} 학습 자료 준비 실패: ${(error as Error).message}`);
     }
+  }
+
+  function materialJobLabel(sourceIds: string[]) {
+    const first = state.sources.find((source) => source.id === sourceIds[0]);
+    const name = first ? displayableSourceName(first) : "학습 자료";
+    return sourceIds.length > 1 ? `“${name}” 외 ${sourceIds.length - 1}개` : `“${name}”`;
+  }
+
+  // Starts (or joins) a background materials.generate request. Long LLM work such as topic
+  // extraction and passage/explanation linking no longer takes the global busy lock; progress is
+  // tracked per source set and shown in the status pill.
+  function generateMaterialInBackground(projectId: string, sourceIds: string[], forceNewVersion = false) {
+    const key = materialGenerationJobKey(projectId, sourceIds, forceNewVersion);
+    const running = materialJobPromisesRef.current.get(key);
+    if (running) return running;
+    setMaterialJobs((current) => startMaterialGenerationJob(current, projectId, sourceIds, forceNewVersion));
+    const job = (async () => {
+      try {
+        const material = (await request("materials.generate", { projectId, sourceIds, forceNewVersion })) as MaterialSummary;
+        if (activeProjectIdRef.current === projectId) {
+          const materials = (await request("materials.list", { projectId })) as MaterialSummary[];
+          if (activeProjectIdRef.current === projectId) setState((current) => ({ ...current, materials }));
+        }
+        return material;
+      } finally {
+        materialJobPromisesRef.current.delete(key);
+        setMaterialJobs((current) => finishMaterialGenerationJob(current, key));
+      }
+    })();
+    materialJobPromisesRef.current.set(key, job);
+    return job;
   }
 
   function learnFromDocument(documentId: string) {
@@ -1522,21 +1571,24 @@ export function App({ request }: { request: RpcRequest }) {
   }
 
   async function prepareDeepReadingVersion() {
-    if (!activeProject || !activeMaterial || busy) return;
-    setBusy(true);
-    setStatus("대목별 설명과 원문 연결을 새로 준비하는 중");
+    if (!activeProject || !activeMaterial) return;
+    const projectId = activeProject.id;
+    const sourceIds = activeMaterial.sourceIds;
+    if (materialJobs[materialGenerationJobKey(projectId, sourceIds, true)]) return;
+    const intent = ++learningIntentRef.current;
+    const baseMaterialId = activeMaterial.id;
     try {
-      const material = await request("materials.generate", {
-        projectId: activeProject.id, sourceIds: activeMaterial.sourceIds, forceNewVersion: true,
-      }) as MaterialSummary;
-      const materials = await request("materials.list", { projectId: activeProject.id }) as MaterialSummary[];
-      setState((current) => ({ ...current, materials }));
+      const material = await generateMaterialInBackground(projectId, sourceIds, true);
+      // Only swap the view if the learner is still on the material that was being upgraded and
+      // has not moved on in the meantime; otherwise just report that the new version is ready.
+      if (intent !== learningIntentRef.current || activeProjectIdRef.current !== projectId || activeMaterialIdRef.current !== baseMaterialId) {
+        setStatus("깊이 읽기 버전 준비 완료 · 소스를 다시 선택하면 새 버전이 열립니다");
+        return;
+      }
       await selectMaterial(material);
       setStatus(READY_STATUS);
     } catch (error) {
       setStatus(`깊이 읽기 준비 실패: ${(error as Error).message}`);
-    } finally {
-      setBusy(false);
     }
   }
 
@@ -1557,9 +1609,7 @@ export function App({ request }: { request: RpcRequest }) {
     try {
       let material = state.materials.find((item) => item.sourceIds.length === 1 && item.sourceIds[0] === source.id) || null;
       if (!material) {
-        material = (await request("materials.generate", { projectId: activeProject.id, sourceIds: [source.id] })) as MaterialSummary;
-        const materials = (await request("materials.list", { projectId: activeProject.id })) as MaterialSummary[];
-        setState((current) => ({ ...current, materials }));
+        material = await generateMaterialInBackground(activeProject.id, [source.id]);
       }
       const currentSet = (messageSetsByMaterial[material.id] || [])
         .find((item) => item.status !== "cancelled" && item.status !== "superseded") || null;
@@ -1849,6 +1899,7 @@ export function App({ request }: { request: RpcRequest }) {
   }
 
   async function startSession(mode: "new" | "continue") {
+    learningIntentRef.current += 1;
     if (!activeMaterial || sessionStartBusy) return;
     setSessionStartBusy(true);
     await beginSession(activeMaterial.id, mode);
@@ -1856,6 +1907,7 @@ export function App({ request }: { request: RpcRequest }) {
 
   async function startOrContinueSession() {
     if (!activeMaterial || sessionStartBusy) return;
+    learningIntentRef.current += 1;
     const existing = state.sessions.find((item) => item.status === "active");
     setSessionStartBusy(true);
     await beginSession(activeMaterial.id, existing ? "continue" : "new", existing?.id);
@@ -1908,6 +1960,7 @@ export function App({ request }: { request: RpcRequest }) {
   }
 
   async function loadSession(sessionId: string) {
+    learningIntentRef.current += 1;
     setBusy(true);
     try {
       const result = (await request("sessions.load", { sessionId })) as { session: SessionSnapshot; context: TutorContext };
@@ -1996,6 +2049,7 @@ export function App({ request }: { request: RpcRequest }) {
   }
 
   async function sendAnswer(text: string) {
+    learningIntentRef.current += 1;
     if (!session || !text.trim()) return false;
     queueAnswerReadySound();
     const typedProgressionCommand = isProgressionChoice(text);
@@ -2040,6 +2094,7 @@ export function App({ request }: { request: RpcRequest }) {
   }
 
   async function advanceLearning(mode: "paragraph" | "chunk" | "module") {
+    learningIntentRef.current += 1;
     if (!session || sessionReadOnly) return;
     queueAnswerReadySound();
     let thinkingDelay: number | null = null;
@@ -2671,6 +2726,10 @@ export function App({ request }: { request: RpcRequest }) {
     return { total, reached, coveredCount, percent: total ? Math.round((reached / total) * 100) : 0, statusFor, firstCurrentIndex };
   }, [artifacts, session?.coveredChunkIds, session?.currentChunkId]);
   const defaultLookupChunkId = latestAssistant?.sourceRefs[0] || currentChunkId || artifacts?.sourceChunks[0]?.id || null;
+  const primaryMaterialJob = primaryMaterialGenerationJob(materialJobs);
+  const activeMaterialRegenerating = Boolean(
+    activeProject && activeMaterial && materialJobs[materialGenerationJobKey(activeProject.id, activeMaterial.sourceIds, true)],
+  );
   const batchGenerating = activeMessageSet?.status === "generating" || activeMessageSet?.status === "queued" || activeMessageSet?.status === "interrupted";
   const learningModelReady = Boolean(providerStatus?.hasApiKey && providerStatus.selectedModel);
   const batchButtonLabel = batchGenerating
@@ -3028,7 +3087,9 @@ export function App({ request }: { request: RpcRequest }) {
             <GenerationStatus
               status={status}
               busy={busy || tutorThinking || sessionStartBusy}
-              progress={generationProgress}
+              progress={primaryMaterialJob.job?.progress || null}
+              jobLabel={primaryMaterialJob.job ? materialJobLabel(primaryMaterialJob.job.sourceIds) : undefined}
+              jobCount={primaryMaterialJob.total}
             />
           </div>
         </header>
@@ -3082,10 +3143,13 @@ export function App({ request }: { request: RpcRequest }) {
             </div>
             <div className="course-strip-actions">
               {artifacts && !artifacts.lecturePlan?.deepReading?.passages.some((passage) => passage.status === "analyzed") ? (
-                <button type="button" className="wide-button topbar-button" disabled={busy || batchGenerating || sessionStartBusy}
-                  title="기존 대화와 진도를 보존하고, 같은 원문에 설명 계획과 근거 연결을 담은 새 학습 자료를 만듭니다."
+                <button type="button" className="wide-button topbar-button" disabled={busy || batchGenerating || sessionStartBusy || activeMaterialRegenerating}
+                  title={activeMaterialRegenerating
+                    ? "깊이 읽기 버전을 백그라운드에서 준비하고 있습니다. 그동안 계속 학습할 수 있습니다."
+                    : "기존 대화와 진도를 보존하고, 같은 원문에 설명 계획과 근거 연결을 담은 새 학습 자료를 만듭니다."}
                   onClick={() => void prepareDeepReadingVersion()}>
-                  깊이 읽기로 새로 준비
+                  {activeMaterialRegenerating ? <Loader2 size={14} className="spin" aria-hidden="true" /> : null}
+                  {activeMaterialRegenerating ? "깊이 읽기 준비 중" : "깊이 읽기로 새로 준비"}
                 </button>
               ) : null}
               <div className="segmented-control" aria-label="View mode">

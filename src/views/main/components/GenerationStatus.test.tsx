@@ -33,3 +33,19 @@ describe("GenerationStatus", () => {
     expect(html).not.toContain("status-percent");
   });
 });
+
+describe("GenerationStatus background jobs", () => {
+  test("labels the background job and counts the others", () => {
+    const html = renderToStaticMarkup(
+      <GenerationStatus
+        status="Ready"
+        busy={false}
+        jobLabel="“2장”"
+        jobCount={2}
+        progress={{ projectId: "p", stage: "graph", message: "대목별 설명과 원문 연결을 설계하는 중 · 3/12", progress: 70 }}
+      />,
+    );
+    expect(html).toContain("“2장” · 대목별 설명과 원문 연결을 설계하는 중 · 3/12 외 1건");
+    expect(html).toContain('aria-valuenow="70"');
+  });
+});
