@@ -32,6 +32,39 @@ describe("TinyFish web search service", () => {
     });
   });
 
+  test("passes language, location, purpose and research-paper options and keeps paper citations", async () => {
+    let requestUrl = "";
+    const sources = await searchTinyFishWeb("free will review", "key", {
+      language: "en",
+      location: "us",
+      domainType: "research_paper",
+      purpose: "Find scholarly literature",
+      fetchImpl: (async (url: string | URL | Request) => {
+        requestUrl = String(url);
+        return new Response(JSON.stringify({
+          results: [{
+            title: "Free will and the brain",
+            url: "https://doi.org/10.1/x",
+            authors: ["A. Author", "B. Author", "C. Author", "D. Author"],
+            venue: "Neuron",
+            year: 2021,
+            snippet: "A review.",
+          }],
+        }), { status: 200 });
+      }) as typeof fetch,
+    });
+
+    const params = new URL(requestUrl).searchParams;
+    expect(params.get("language")).toBe("en");
+    expect(params.get("location")).toBe("US");
+    expect(params.get("domain_type")).toBe("research_paper");
+    expect(params.get("purpose")).toBe("Find scholarly literature");
+    expect(sources[0]).toMatchObject({
+      provider: "TinyFish research papers",
+      snippet: "A. Author, B. Author, C. Author et al. · Neuron · 2021 — A review.",
+    });
+  });
+
   test("requires a saved TinyFish API key", async () => {
     await expect(searchTinyFishWeb("query", "")).rejects.toThrow("TinyFish API key");
   });
