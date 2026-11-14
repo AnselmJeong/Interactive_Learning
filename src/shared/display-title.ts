@@ -89,7 +89,13 @@ export function titleCasedSourceTitle(title: string, fallbackFileName = "") {
 export function comparableHeadingTitle(title: string) {
   return displayableCourseTitle(title)
     .normalize("NFKC")
-    .replace(/\.[A-Za-z0-9]+$/u, "")
+    .replace(DISPLAY_FILE_EXTENSION, "")
+    .replace(/[‘’]/gu, "'")
+    .replace(/[“”]/gu, '"')
+    // Treat an ordinal's trailing punctuation as decoration, retaining the
+    // number itself so e.g. sections 1.1 and 1.2 remain distinct.
+    .replace(/^(\d+(?:\.\d+)*)(?:[.)])?(?=\s)/u, "$1")
+    .replace(/^([IVXLCDM]+)[.)](?=\s)/iu, "$1")
     .replace(/[-‐‑‒–—]+/gu, " ")
     .replace(/\s+/g, " ")
     .trim()
@@ -97,12 +103,13 @@ export function comparableHeadingTitle(title: string) {
 }
 
 export function cleanHeadingParts(parts: string[], leadingTitles: string[] = []) {
-  const normalized = parts.map((part) => displayableCourseTitle(part.trim())).filter(Boolean);
-  if (
+  const normalized = parts.map((part) => displayableCourseTitle(part.trim())).filter(Boolean)
+    .filter((part, index, all) => index === 0 || comparableHeadingTitle(part) !== comparableHeadingTitle(all[index - 1]!));
+  while (
     normalized.length > 0
     && leadingTitles.some((title) => comparableHeadingTitle(title) === comparableHeadingTitle(normalized[0] || ""))
   ) {
-    return normalized.slice(1);
+    normalized.shift();
   }
   if (normalized.length > 1 && /^chapter\s+\d+\b/i.test(normalized[0] || "")) return normalized.slice(1);
   return normalized;
@@ -112,19 +119,39 @@ export function displayableHeadingPath(parts: string[], separator = " › ", lea
   return cleanHeadingParts(parts, leadingTitles).join(separator);
 }
 
+/** Hide only leading Markdown headings already supplied by the reader header. */
+export function stripRepeatedSourceHeading(content: string, heading: string) {
+  const parts = cleanHeadingParts(heading.split(" › "));
+  const titles = new Set(parts.map(comparableHeadingTitle));
+  const partTitle = /^part\s+(?:[IVXLCDM]+|\d+)\s+(.+)$/iu.exec(parts.at(-1) || "");
+  if (partTitle && comparableHeadingTitle(content) === comparableHeadingTitle(partTitle[1]!)) return "";
+  // Some PDF title pages arrive as a one-column table: PART I / title.
+  // Match the complete numbered title, never arbitrary cells or real data tables.
+  const titleTable = /^\s*\|\s*(?:PART|CHAPTER)\s+([IVXLCDM\d ]+)\s*\|\s*\n\|[-: ]+\|\s*\n\|\s*([^|\n]+?)\s*\|[ \t]*(?:\n\s*\n|$)/iu.exec(content);
+  if (titleTable && titles.has(comparableHeadingTitle(`${titleTable[1]!.replace(/\s+/g, "")}. ${titleTable[2]}`))) {
+    content = content.slice(titleTable[0].length).trim();
+  }
+  const lines = content.replace(/\r\n/g, "\n").split("\n");
+  let removed = false;
+  while (true) {
+    const index = lines.findIndex((line) => line.trim());
+    if (index < 0) break;
+    const match = /^#{1,6}\s+(.+)$/.exec(lines[index]!.trim());
+    if (!match) break;
+    const title = comparableHeadingTitle(match[1]!);
+    if (!titles.has(title) && !/^chapter\s+\d+$/iu.test(title)) break;
+    lines.splice(index, 1);
+    removed = true;
+  }
+  return removed ? lines.join("\n").trim() : content;
+}
+
 export function displayableOutlineTitle(title: string, leadingTitles: string[] = []) {
   const normalized = displayableCourseTitle(title)
     .replace(/^chapter\s+\d+\s*(?:>|›|:|-)\s*/i, "")
     .replace(/\s*(?:>|›)\s*/g, " › ")
     .trim();
-  const parts = normalized.split(" › ").map((part) => part.trim()).filter(Boolean);
-  if (
-    parts.length > 0
-    && leadingTitles.some((leadingTitle) => comparableHeadingTitle(leadingTitle) === comparableHeadingTitle(parts[0] || ""))
-  ) {
-    return parts.slice(1).join(" › ");
-  }
-  return normalized;
+  return cleanHeadingParts(normalized.split(" › "), leadingTitles).join(" › ");
 }
 
 export function displayableModuleTitle(title: string, leadingTitles: string[] = []) {

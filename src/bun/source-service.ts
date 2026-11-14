@@ -6,6 +6,7 @@ import { getDb } from "./project-db";
 import { dataPath, sourceDirAt } from "./paths";
 import { buildPreppySourcePack } from "./preppy-service";
 import { SettingsService } from "./settings-service";
+import { attachHtmlToExistingChunks, normalizeHtmlChunks, readSourceHtml } from "./source-html";
 import { writeProjectDocumentIndex } from "./project-bundle-sync";
 import type { DocumentType, SourceChunk, SourceFigure, SourceManifest, SourceType } from "../shared/artifact-types";
 import type { DocumentRemovalImpact, PreparedSourceImport, PreparedSourceImportItem, SourceRemovalImpact, SourceSummary } from "../shared/rpc-types";
@@ -918,7 +919,9 @@ export class SourceService {
     const mergedText = parts.filter((part) => part.trim()).join("\n\n");
     const importedPath = join(input.importedRoot, ".learnie-article-source.md");
     await writeFile(importedPath, `${mergedText.trim()}\n`, "utf8");
-    const chunks = normalizeMarkdownChunks(id, mergedText);
+    const htmlParts = await Promise.all(input.textFiles.map(readSourceHtml));
+    const htmlChunks = htmlParts.every(Boolean) ? normalizeHtmlChunks(id, htmlParts.join("\n")) : [];
+    const chunks = htmlChunks.length ? htmlChunks : normalizeMarkdownChunks(id, mergedText);
     const figures = input.textFiles.flatMap((file) => {
       const manifestPath = relativePortable(input.importedRoot, file);
       return toSourceFigures({
@@ -994,7 +997,9 @@ export class SourceService {
     const { digest, bytes } = await hashFile(importedPath);
     const id = crypto.randomUUID();
     const type = sourceTypeForPath(importedPath);
-    const chunks = normalizeMarkdownChunks(id, rewriteLocalMarkdownImageLinks(importedPath, bytes.toString("utf8")));
+    const html = await readSourceHtml(importedPath);
+    const htmlChunks = html ? normalizeHtmlChunks(id, html) : [];
+    const chunks = htmlChunks.length ? htmlChunks : normalizeMarkdownChunks(id, rewriteLocalMarkdownImageLinks(importedPath, bytes.toString("utf8")));
     const figures = preppy
       ? toSourceFigures({
           sourceId: id,
@@ -1473,6 +1478,55 @@ export class SourceService {
     const impact = this.previewRemoval(projectId, row.document_id, sourceId);
     await this.removeSource(projectId, row.document_id, sourceId, impact.impactToken);
     return true;
+  }
+
+  async enrichReaderHtml(sourceId: string, chunks: SourceChunk[]): Promise<SourceChunk[]> {
+    const row = this.getRow(sourceId);
+    if (!row.chunks_path) return chunks;
+    const cache = await readFile(join(dirname(row.chunks_path), "reader_html.json"), "utf8")
+      .then((raw) => JSON.parse(raw) as Record<string, { text: string; html: string }>).catch(() => null);
+    if (!cache) return chunks;
+    return chunks.map((chunk) => {
+      const saved = cache[chunk.id];
+      return !chunk.html && saved?.text === chunk.text && typeof saved.html === "string" ? { ...chunk, html: saved.html } : chunk;
+    });
+  }
+
+  async refreshReaderHtml(sourceId: string, chunks: SourceChunk[]) {
+    const row = this.getRow(sourceId);
+    const ownChunks = chunks.filter((chunk) => chunk.id.startsWith(`${sourceId}-chunk-`));
+    if (!row.chunks_path || !ownChunks.length) return { formatted: 0, total: ownChunks.length };
+    let html = await readSourceHtml(row.imported_file_path);
+    let cleanup: (() => Promise<void>) | undefined;
+    try {
+      if (!html) {
+        const document = row.document_id ? getDb().query<{ original_file_path: string | null }, [string]>("SELECT original_file_path FROM project_documents WHERE id = ?").get(row.document_id) : null;
+        const candidates = [document?.original_file_path, row.original_file_path].filter((path): path is string => Boolean(path)).map((path) => path.split("#")[0]!);
+        let originalPath: string | undefined;
+        for (const path of candidates) {
+          if (isPreppyInputFile(path) && (await stat(path).catch(() => null))?.isFile()) { originalPath = path; break; }
+        }
+        if (!originalPath) {
+          throw new Error("PDF·EPUB 원본 파일을 찾을 수 없습니다. 원본 파일을 다시 가져오면 원래 서식으로 읽을 수 있습니다. 기존 메모와 진도는 유지됩니다.");
+        }
+        const pack = await buildPreppySourcePack(originalPath, row.document_type);
+        cleanup = pack.cleanup;
+        const manifest = JSON.parse(await readFile(join(pack.outputPath, "manifest.json"), "utf8")) as PreppyManifest;
+        const chapters = await Promise.all((manifest.chapters || []).map((chapter) => chapter.path ? readSourceHtml(join(pack.outputPath, chapter.path)) : null));
+        html = chapters.filter(Boolean).join("\n");
+      }
+      if (!html) throw new Error("원본에서 읽기용 HTML을 만들지 못했습니다. 현재 원문은 그대로 유지됩니다.");
+      const enriched = attachHtmlToExistingChunks(ownChunks, html);
+      const cachePath = join(dirname(row.chunks_path), "reader_html.json");
+      const previous = await readFile(cachePath, "utf8").then((raw) => JSON.parse(raw) as Record<string, { text: string; html: string }>).catch(() => ({}));
+      const entries = Object.fromEntries(enriched.filter((chunk) => chunk.html).map((chunk) => [chunk.id, { text: chunk.text, html: chunk.html! }]));
+      const temporary = `${cachePath}.${crypto.randomUUID()}.tmp`;
+      await writeFile(temporary, JSON.stringify({ ...previous, ...entries }), "utf8");
+      await rename(temporary, cachePath);
+      return { formatted: Object.keys(entries).length, total: ownChunks.length };
+    } finally {
+      await cleanup?.();
+    }
   }
 
   async loadChunks(sourceId: string) {

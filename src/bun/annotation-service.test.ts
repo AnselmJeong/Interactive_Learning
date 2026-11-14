@@ -349,7 +349,7 @@ describe("annotation side-chat service", () => {
     expect(saved.result).toEqual({ kind: "note", note: "" });
   });
 
-  test("grounds an opted-in side-chat turn with Ollama web sources and preserves them on the answer", async () => {
+  test("grounds an opted-in side-chat turn with web sources and preserves them on the answer", async () => {
     const searchQueries: string[] = [];
     const webCalls: ChatParams[] = [];
     const client = {

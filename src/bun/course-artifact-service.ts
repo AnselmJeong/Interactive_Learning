@@ -29,11 +29,13 @@ import {
   type SourceBrief,
 } from "../shared/learning-ir-types";
 import type { MaterialSummary } from "../shared/rpc-types";
+import type { GenerationProgress } from "../shared/rpc-types";
 import { displayableCourseTitle, displayableHeadingPath, displayableModuleTitle, displayableOutlineTitle, plainDisplayText } from "../shared/display-title";
 import type { AiChatClient } from "./openai-compatible-client";
 import { compileLearningIr } from "./learning-ir-compiler";
 import { sha256 } from "./learning-ir-validator";
 import { compileSourceBrief, sourceBriefAsLegacyOverview } from "./source-brief-compiler";
+import { compileDeepReading } from "./deep-reading-service";
 import { buildGroundedVisuals } from "./visual-grammar";
 
 type MaterialRow = {
@@ -141,8 +143,8 @@ function toMaterial(row: MaterialRow, sourceIds: string[]): MaterialSummary {
   };
 }
 
-export function canReuseMaterialForGeneration(status: MaterialRow["status"]) {
-  return status === "ready";
+export function canReuseMaterialForGeneration(status: MaterialRow["status"], forceNewVersion = false) {
+  return status === "ready" && !forceNewVersion;
 }
 
 export function materialGenerationKey(projectId: string, sourceIds: string[]) {
@@ -233,6 +235,18 @@ export type MaterialOverviewRuntime = {
 };
 
 type MaterialOverviewRuntimeProvider = () => Promise<MaterialOverviewRuntime>;
+type MaterialGenerationProgressReporter = (progress: GenerationProgress) => void;
+
+function reportGenerationProgress(
+  reporter: MaterialGenerationProgressReporter | undefined,
+  progress: GenerationProgress,
+) {
+  try {
+    reporter?.(progress);
+  } catch (error) {
+    console.warn("Failed to report material generation progress", (error as Error).message);
+  }
+}
 
 function fullSourceContext(chunks: SourceChunk[]) {
   return chunks
@@ -570,13 +584,13 @@ export class CourseArtifactService {
     return sourceIds.find((sourceId) => chunk.id.startsWith(`${sourceId}-`));
   }
 
-  async generate(projectId: string, sourceIds: string[]) {
+  async generate(projectId: string, sourceIds: string[], reportProgress?: MaterialGenerationProgressReporter, forceNewVersion = false) {
     const normalizedSourceIds = uniqueSourceIds(sourceIds);
     if (!normalizedSourceIds.length) throw new Error("At least one source is required");
-    const key = materialGenerationKey(projectId, normalizedSourceIds);
+    const key = `${forceNewVersion ? "new:" : "reuse:"}${materialGenerationKey(projectId, normalizedSourceIds)}`;
     const active = this.generationPromises.get(key);
     if (active) return active;
-    const generation = this.generateUncached(projectId, normalizedSourceIds);
+    const generation = this.generateUncached(projectId, normalizedSourceIds, reportProgress, forceNewVersion);
     this.generationPromises.set(key, generation);
     try {
       return await generation;
@@ -585,8 +599,13 @@ export class CourseArtifactService {
     }
   }
 
-  private async generateUncached(projectId: string, sourceIds: string[]) {
-    const existing = this.findBySourceSet(projectId, sourceIds).find((material) => canReuseMaterialForGeneration(material.status));
+  private async generateUncached(
+    projectId: string,
+    sourceIds: string[],
+    reportProgress?: MaterialGenerationProgressReporter,
+    forceNewVersion = false,
+  ) {
+    const existing = this.findBySourceSet(projectId, sourceIds).find((material) => canReuseMaterialForGeneration(material.status, forceNewVersion));
     if (existing) return existing;
 
     const id = crypto.randomUUID();
@@ -615,16 +634,37 @@ export class CourseArtifactService {
     });
 
     try {
+      reportGenerationProgress(reportProgress, {
+        projectId,
+        materialId: id,
+        stage: "normalize",
+        message: "원문 대목을 정리하는 중",
+        progress: 5,
+      });
       const loadedSourceChunks = (await Promise.all(sourceIds.map((sourceId) => this.sources.loadChunks(sourceId)))).flat();
       const { chunks: sourceChunks } = normalizeFigureCaptionChunks(loadedSourceChunks);
       const figures = (await Promise.all(sourceIds.map((sourceId) => this.sources.loadFigures(sourceId)))).flat();
       if (!sourceChunks.length) throw new Error("No chunks were extracted for selected sources");
+      reportGenerationProgress(reportProgress, {
+        projectId,
+        materialId: id,
+        stage: "extract",
+        message: `원문 ${sourceChunks.length}개 대목을 확인했습니다`,
+        progress: 10,
+      });
       const legacyConceptMap = buildConcepts(sourceChunks);
       const coursePlan = buildCoursePlan(title, sourceChunks, legacyConceptMap, sourceTitleForChunk);
       const runtime = this.materialOverviewRuntime ? await this.materialOverviewRuntime().catch((error) => {
         console.warn("Learning artifact generation is using the deterministic fallback", (error as Error).message);
         return undefined;
       }) : undefined;
+      reportGenerationProgress(reportProgress, {
+        projectId,
+        materialId: id,
+        stage: "brief",
+        message: "자료의 전체 주제를 요약하는 중",
+        progress: 12,
+      });
       const overview = runtime
         ? await generateMaterialOverview(title, sourceChunks, runtime, documentType).catch((error) => {
             console.warn("Material overview generation degraded", (error as Error).message);
@@ -640,11 +680,42 @@ export class CourseArtifactService {
         legacyConcepts: legacyConceptMap,
         runtime,
         generatedAt: new Date(now).toISOString(),
+        onProgress: (progress) => {
+          const completedRatio = progress.totalModules
+            ? progress.completedModules / progress.totalModules
+            : 1;
+          const percent = 20 + Math.round(completedRatio * 40);
+          const message = progress.phase === "module"
+            ? `학습 구조 분석 중 · ${progress.moduleIndex}/${progress.totalModules}`
+            : `학습 구조 ${progress.totalModules}개 분석 완료`;
+          reportGenerationProgress(reportProgress, {
+            projectId,
+            materialId: id,
+            stage: "graph",
+            message,
+            progress: percent,
+          });
+        },
       });
       const sourceBrief = compileSourceBrief({ ir: learningIr, title, sourceCount: sourceIds.length, chunks: sourceChunks, overview });
       const conceptMap = conceptsFromLearningIr(learningIr);
-      const visuals = buildGroundedVisuals(learningIr, figures);
+      reportGenerationProgress(reportProgress, {
+        projectId,
+        materialId: id,
+        stage: "visuals",
+        message: "개념 관계와 시각 자료를 정리하는 중",
+        progress: 62,
+      });
       const lecturePlan = buildLecturePlan(id, sourceChunks, sourceTitleForChunk);
+      lecturePlan.deepReading = await compileDeepReading({
+        chunks: sourceChunks, ir: learningIr, runtime,
+        onProgress: (completed, total) => reportGenerationProgress(reportProgress, {
+          projectId, materialId: id, stage: "graph",
+          message: `대목별 설명과 원문 연결을 설계하는 중 · ${completed}/${total}`,
+          progress: 62 + Math.round((completed / Math.max(1, total)) * 30),
+        }),
+      });
+      const visuals = buildGroundedVisuals(learningIr, figures);
       const presentationPlan = buildPresentationPlan(id, sourceChunks, sourceTitleForChunk);
       const criticReport: CriticReportV2 = {
         schemaVersion: 2,
@@ -682,7 +753,7 @@ export class CourseArtifactService {
       const files = Object.fromEntries(Object.entries(payloads).map(([name, value]) => [name, {
         path: name,
         sha256: sha256(serializedArtifact(value)),
-        required: name === "learning_ir.json" || name === "source_brief.json" || name === "course_plan.json" || name === "source_chunks.json",
+        required: name === "lecture_plan.json" || name === "learning_ir.json" || name === "source_brief.json" || name === "course_plan.json" || name === "source_chunks.json",
       }]));
       const manifest: MaterialManifest = {
         id,
@@ -717,6 +788,13 @@ export class CourseArtifactService {
         figures: join(dir, "figures.json"),
         figureIndex: join(dir, "figure_index.json"),
       };
+      reportGenerationProgress(reportProgress, {
+        projectId,
+        materialId: id,
+        stage: "persist",
+        message: "학습 산출물을 안전하게 저장하는 중",
+        progress: 96,
+      });
       await publishArtifactsAtomically(dir, payloads, manifest);
 
       getDb()
@@ -872,7 +950,7 @@ export class CourseArtifactService {
     const files = Object.fromEntries(Object.entries(payloads).map(([name, value]) => [name, {
       path: name,
       sha256: sha256(serializedArtifact(value)),
-      required: name === "learning_ir.json" || name === "source_brief.json" || name === "course_plan.json" || name === "source_chunks.json",
+      required: name === "lecture_plan.json" || name === "learning_ir.json" || name === "source_brief.json" || name === "course_plan.json" || name === "source_chunks.json",
     }]));
     const manifest: MaterialManifest = {
       ...artifacts.manifest,
@@ -920,7 +998,9 @@ export class CourseArtifactService {
       readFile(row.source_index_path, "utf8").then((raw) => JSON.parse(raw) as Record<string, { sourceId: string; title: string; locator: string }>),
     ]);
     const loadedSourceChunks = await this.loadMaterialSourceChunks(row);
-    const { chunks: sourceChunks, removedChunkIds } = normalizeFigureCaptionChunks(loadedSourceChunks);
+    const { chunks: normalizedSourceChunks, removedChunkIds } = normalizeFigureCaptionChunks(loadedSourceChunks);
+    let sourceChunks = normalizedSourceChunks;
+    for (const sourceId of this.sourceIds(row.id)) sourceChunks = await this.sources.enrichReaderHtml(sourceId, sourceChunks);
     const conceptMap = sanitizeLegacyConceptMap(loadedConceptMap, sourceChunks);
     const sanitizedPlan = sanitizeCoursePlan(coursePlan);
     const normalizedCoursePlan = removedChunkIds.size
@@ -1059,6 +1139,22 @@ export class CourseArtifactService {
   private async createMaterialOverview(title: string, sourceChunks: SourceChunk[], documentType: DocumentType = "book") {
     if (!this.materialOverviewRuntime) throw new Error("AI provider is required to summarize the full source");
     return generateMaterialOverview(title, sourceChunks, await this.materialOverviewRuntime(), documentType);
+  }
+
+  async refreshSourceHtml(materialId: string) {
+    const artifacts = await this.getArtifacts(materialId);
+    let formatted = 0;
+    let total = 0;
+    const errors: string[] = [];
+    for (const sourceId of this.sourceIds(materialId)) {
+      try {
+        const result = await this.sources.refreshReaderHtml(sourceId, artifacts.sourceChunks);
+        formatted += result.formatted;
+        total += result.total;
+      } catch (error) { errors.push((error as Error).message); }
+    }
+    this.artifactCache.delete(materialId);
+    return { artifacts: await this.getArtifacts(materialId), formatted, total, errors };
   }
 
   private async loadMaterialSourceChunks(row: MaterialRow) {

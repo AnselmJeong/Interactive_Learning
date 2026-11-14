@@ -29,6 +29,8 @@ export type SourceChunk = {
   locator: string;
   kind: "body" | "quote" | "caption" | "table" | "note";
   text: string;
+  /** Passive, structured source markup. Text remains the grounding/search representation. */
+  html?: string;
   confidence: number;
 };
 
@@ -294,6 +296,7 @@ export type Concept = {
 };
 
 export type VisualSpec =
+  | { id: string; type: "relations"; title: string; nodes: Array<{ id: string; label: string }>; edges: Array<{ from: string; to: string; label: string; sourceChunkIds: string[] }> }
   | { id: string; type: "flow"; title: string; items: string[] }
   | { id: string; type: "formula"; title: string; formula: string }
   | { id: string; type: "contrast"; title: string; left: { label: string; body: string }; right: { label: string; body: string } }
@@ -358,6 +361,7 @@ export type LecturePlan = {
   materialId: string;
   generatedAt: string;
   modules: LectureModulePlan[];
+  deepReading?: import("./deep-reading-types").DeepReadingPlan;
 };
 
 export type PresentationBlockType =
@@ -382,6 +386,7 @@ export type PresentationModulePlan = {
 export type PresentationPlan = {
   materialId: string;
   modules: PresentationModulePlan[];
+  example?: { sourceChunkId: string; title: string; html: string };
 };
 
 export type CriticReport = {

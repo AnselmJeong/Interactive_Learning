@@ -188,7 +188,22 @@ export type CompileLearningIrInput = {
   legacyConcepts: Concept[];
   runtime?: LearningIrRuntime;
   generatedAt?: string;
+  onProgress?: (progress: LearningIrCompileProgress) => void;
 };
+
+export type LearningIrCompileProgress =
+  | {
+      phase: "module";
+      completedModules: number;
+      totalModules: number;
+      moduleIndex: number;
+      moduleTitle: string;
+    }
+  | {
+      phase: "complete";
+      completedModules: number;
+      totalModules: number;
+    };
 
 export async function compileLearningIr(input: CompileLearningIrInput): Promise<SourceSemanticIr> {
   const chunksById = new Map(input.chunks.map((chunk) => [chunk.id, chunk]));
@@ -196,10 +211,18 @@ export async function compileLearningIr(input: CompileLearningIrInput): Promise<
   const concepts: LearningConcept[] = [];
   const claims: LearningClaim[] = [];
   const relations: LearningRelation[] = [];
+  const modules = input.coursePlan.modules
+    .map((module) => ({ module, chunks: moduleChunks(module, chunksById) }))
+    .filter((entry) => entry.chunks.length > 0);
 
-  for (const module of input.coursePlan.modules) {
-    const chunks = moduleChunks(module, chunksById);
-    if (!chunks.length) continue;
+  for (const [index, { module, chunks }] of modules.entries()) {
+    input.onProgress?.({
+      phase: "module",
+      completedModules: index,
+      totalModules: modules.length,
+      moduleIndex: index + 1,
+      moduleTitle: module.title,
+    });
     const fallback = fallbackFragment(module, chunks, input.legacyConcepts);
     const extracted = input.runtime ? await extractFragment(input.runtime, module, chunks) : null;
     const fragment = normalizeFragment(extracted || fallback, module, chunks, fallback);
@@ -240,6 +263,7 @@ export async function compileLearningIr(input: CompileLearningIrInput): Promise<
       visualCandidateKinds: visualCandidatesForSection(kind),
     });
   }
+  input.onProgress?.({ phase: "complete", completedModules: modules.length, totalModules: modules.length });
 
   const sourceFingerprint = learningSourceFingerprint(input.chunks, input.documentType);
   const generatedAt = input.generatedAt || new Date().toISOString();

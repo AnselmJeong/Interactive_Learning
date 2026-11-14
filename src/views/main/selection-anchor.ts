@@ -15,6 +15,8 @@ export const ANNOTATION_SELECTION_IGNORE_SELECTOR = [
   "kbd",
   "samp",
   ".katex",
+  "svg",
+  "math",
   ".selection-toolbar",
   ".lookup-popover",
   ".modal",

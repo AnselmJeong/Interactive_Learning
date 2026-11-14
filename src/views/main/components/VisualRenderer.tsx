@@ -8,6 +8,25 @@ function visualText(value: string) {
 export function VisualRenderer({ visual }: { visual: VisualSpec }) {
   const displayVisual = toLearnerFacingVisual(visual);
 
+  if (displayVisual.type === "relations") {
+    const labels = new Map(displayVisual.nodes.map((node) => [node.id, node.label]));
+    return (
+      <figure className="visual-block reading-relations">
+        <strong>{visualText(displayVisual.title)}</strong>
+        <figcaption>원문 분석을 바탕으로 재구성한 관계</figcaption>
+        <ul>
+          {displayVisual.edges.map((edge, index) => (
+            <li key={`${edge.from}-${edge.to}-${index}`}>
+              <span>{visualText(labels.get(edge.from) || "")}</span>
+              <b className="reading-relation-label">{edge.label}<span aria-hidden="true"> →</span></b>
+              <span>{visualText(labels.get(edge.to) || "")}</span>
+            </li>
+          ))}
+        </ul>
+      </figure>
+    );
+  }
+
   if (displayVisual.type === "flow" || displayVisual.type === "layers") {
     return (
       <div className="visual-block">

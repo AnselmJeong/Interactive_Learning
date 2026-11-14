@@ -1,7 +1,20 @@
 import { describe, expect, test } from "bun:test";
-import { displayableCourseTitle, displayableHeadingPath, displayableModuleTitle, displayableOutlineTitle, displayableSourceTitle, plainDisplayText, titleCasedSourceTitle } from "./display-title";
+import { displayableCourseTitle, displayableHeadingPath, displayableModuleTitle, displayableOutlineTitle, displayableSourceTitle, plainDisplayText, stripRepeatedSourceHeading, titleCasedSourceTitle } from "./display-title";
 
 describe("display title text", () => {
+  test("omits a title-only part fragment but preserves any actual explanation", () => {
+    expect(stripRepeatedSourceHeading("Introductory", "1 Dimensions and contexts of selfhood › Part I Introductory")).toBe("");
+    expect(stripRepeatedSourceHeading("British modernity", "Part II British modernity")).toBe("");
+    const body = "British modernity\n\nThe author's argument begins here.";
+    expect(stripRepeatedSourceHeading(body, "Part II British modernity")).toBe(body);
+  });
+  test("omits an extracted part-title table already displayed as a reader heading", () => {
+    expect(stripRepeatedSourceHeading("| PART I |\n|--------|\n| Kant's Critique of Idealism |", "Introduction › I. Kant’s Critique of Idealism")).toBe("");
+    expect(stripRepeatedSourceHeading("| PART I I |\n|--------|\n| Fichte's Critique of Subjectivism |", "II. Fichte’s Critique of Subjectivism")).toBe("");
+    const realTable = "| PART I |\n|--------|\n| Kant's Critique of Idealism |\n| Another entry |";
+    expect(stripRepeatedSourceHeading(realTable, "I. Kant’s Critique of Idealism")).toBe(realTable);
+    expect(stripRepeatedSourceHeading("| PART II |\n|--------|\n| Kant's Critique of Idealism |", "I. Kant’s Critique of Idealism")).toContain("PART II");
+  });
   test("strips markdown bold wrappers from Korean module titles", () => {
     expect(plainDisplayText("**하나의 세계, 두 제국**")).toBe("하나의 세계, 두 제국");
     expect(plainDisplayText("**누가 야만인인가? 유목민과 농경민**")).toBe("누가 야만인인가? 유목민과 농경민");
@@ -19,6 +32,20 @@ describe("display title text", () => {
 
   test("preserves numbered source titles with periods", () => {
     expect(displayableSourceTitle("1. Turning Aristotle into Arithmetic", "chapter-1.md")).toBe("1. Turning Aristotle into Arithmetic");
+  });
+
+  test("collapses repeated path titles despite ordinal punctuation and case differences", () => {
+    expect(displayableHeadingPath(['1. Seeking Understanding', '1 SEEKING UNDERSTANDING'])).toBe('1. Seeking Understanding');
+    expect(displayableOutlineTitle('1. Seeking Understanding › 1 Seeking Understanding')).toBe('1. Seeking Understanding');
+    expect(displayableHeadingPath(['2.1. Introduction', '2.1 Introduction', '2.1.1 Background'])).toBe('2.1. Introduction › 2.1.1 Background');
+    expect(displayableHeadingPath(['1. Introduction', '2. Introduction'])).toBe('1. Introduction › 2. Introduction');
+    expect(displayableHeadingPath(['1. Introduction', '1 Introduction', 'Context'], ' › ', ['1 Introduction'])).toBe('Context');
+  });
+
+  test("removes repeated leading body headings while retaining the next distinct subsection", () => {
+    expect(stripRepeatedSourceHeading('# 1 INTRODUCTION\n\n## 1. Introduction\n\n### 1.1 Scope\n\nBody.', '1. Introduction')).toBe('### 1.1 Scope\n\nBody.');
+    expect(stripRepeatedSourceHeading('# 2 Introduction\n\nBody.', '1. Introduction')).toBe('# 2 Introduction\n\nBody.');
+    expect(stripRepeatedSourceHeading('# Chapter 2: A different topic\n\nBody.', '1. Introduction')).toBe('# Chapter 2: A different topic\n\nBody.');
   });
 
   test("removes redundant serial numbers only from module titles", () => {

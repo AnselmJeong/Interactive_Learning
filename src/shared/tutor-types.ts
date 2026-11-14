@@ -29,10 +29,11 @@ export type SourceRef = {
   figures?: SourceFigure[];
 };
 
-export type TutorContentBlock =
+export type TutorContentBlock = (
   | { type: "hook"; body: string }
   | { type: "guided_reading"; body: string; sourceRef?: string }
   | { type: "paragraph"; body: string }
+  | { type: "rich_html"; title?: string; html: string; body: string }
   | { type: "bullets"; title?: string; items: string[] }
   | { type: "flow"; title?: string; steps: string[] }
   | { type: "compare_table"; title?: string; columns: string[]; rows: Array<Record<string, string>> }
@@ -40,7 +41,8 @@ export type TutorContentBlock =
   | { type: "reflection"; body: string; aiView?: string }
   | { type: "misconception"; title?: string; body: string; repair: string }
   | { type: "bridge"; body: string }
-  | { type: "visual_ref"; visualId: string; placement: "before_explanation" | "after_explanation" | "review" };
+  | { type: "visual_ref"; visualId: string; placement: "before_explanation" | "after_explanation" | "review" }
+) & { grounding?: import("./deep-reading-types").ExplanationGrounding };
 
 export type TutorStateUpdate = {
   nextPhase: TutorPhase;

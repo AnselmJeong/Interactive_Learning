@@ -233,6 +233,7 @@ class ChapterContent:
 
     meta: Chapter
     markdown: str
+    html: str | None = None
 
 
 @dataclass(slots=True)
@@ -260,3 +261,4 @@ class PreppyDocument:
         default_factory=lambda: DocumentModel(source_type="pdf")
     )
     diagnostics: Diagnostics | None = None
+    docling_document: dict[str, Any] | None = None

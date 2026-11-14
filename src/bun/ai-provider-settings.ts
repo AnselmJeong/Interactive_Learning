@@ -7,6 +7,7 @@ type AiProviderSecretSettings = {
   openaiApiKey?: string;
   anthropicApiKey?: string;
   geminiApiKey?: string;
+  tinyfishApiKey?: string;
   braveSearchApiKey?: string;
   googleBooksApiKey?: string;
 };
@@ -25,7 +26,7 @@ const PROVIDER_ENV_KEYS: Record<AiProviderId, string[]> = {
 };
 const AI_PROVIDERS: AiProviderId[] = ["ollama", "openai", "anthropic", "gemini"];
 const ALL_KEY_FIELDS: Array<keyof AiProviderSecretSettings> = [
-  "ollamaApiKey", "openaiApiKey", "anthropicApiKey", "geminiApiKey", "braveSearchApiKey", "googleBooksApiKey",
+  "ollamaApiKey", "openaiApiKey", "anthropicApiKey", "geminiApiKey", "tinyfishApiKey", "braveSearchApiKey", "googleBooksApiKey",
 ];
 
 function secretPath() {
@@ -33,6 +34,20 @@ function secretPath() {
 }
 
 export class AiProviderSettingsService {
+  async getTinyFishApiKey() {
+    const fromEnv = firstEnvValue(["TINYFISH_API_KEY"]);
+    if (fromEnv) return { value: fromEnv, source: "env" as const };
+    const saved = await readJsonFile<AiProviderSecretSettings>(secretPath(), {});
+    return saved.tinyfishApiKey
+      ? { value: saved.tinyfishApiKey, source: "settings" as const }
+      : { value: "", source: null };
+  }
+
+  async tinyfishSearchKeyState(): Promise<AiProviderKeyState> {
+    const key = await this.getTinyFishApiKey();
+    return { hasApiKey: Boolean(key.value), apiKeySource: key.source };
+  }
+
   async getBraveSearchApiKey() {
     const fromEnv = firstEnvValue(["BRAVE_SEARCH_API_KEY"]);
     if (fromEnv) return { value: fromEnv, source: "env" as const };
@@ -87,6 +102,7 @@ export class AiProviderSettingsService {
     provider?: AiProviderId;
     ollamaApiKey?: string;
     apiKeys?: Partial<Record<AiProviderId, string>>;
+    tinyfishApiKey?: string;
     braveSearchApiKey?: string;
     googleBooksApiKey?: string;
     clearAllApiKeys?: boolean;
@@ -104,6 +120,9 @@ export class AiProviderSettingsService {
       if (typeof value === "string" && value.trim()) {
         next[PROVIDER_KEY_FIELDS[provider]] = value.trim();
       }
+    }
+    if (typeof input.tinyfishApiKey === "string" && input.tinyfishApiKey.trim()) {
+      next.tinyfishApiKey = input.tinyfishApiKey.trim();
     }
     if (typeof input.braveSearchApiKey === "string" && input.braveSearchApiKey.trim()) {
       next.braveSearchApiKey = input.braveSearchApiKey.trim();

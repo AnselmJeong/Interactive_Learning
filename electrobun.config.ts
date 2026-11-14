@@ -22,6 +22,7 @@ export default {
     copy: {
       "src/views/main/index.html": "views/main/index.html",
       "src/views/main/styles/app.css": "views/main/app.css",
+      "src/views/main/styles/rich-content.css": "views/main/rich-content.css",
       "assets/app-icon.svg": "views/main/assets/app-icon.svg",
       "buddy/botan-kamiina-sharpened.webp": "views/main/assets/botan-kamiina-sharpened.webp",
       "buddy/milestones/milestone-30.gif": "views/main/assets/buddy-milestone-30.gif",

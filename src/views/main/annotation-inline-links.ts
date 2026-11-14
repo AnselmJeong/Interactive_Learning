@@ -130,7 +130,7 @@ function hasUnsupportedIgnoredTextNode(root: HTMLElement, resolved: ResolvedText
   return textNodesForOffsets(root, resolved.startOffset, resolved.endOffset).some((node) => {
     const element = elementFromNode(node);
     if (!element?.closest(ANNOTATION_SELECTION_IGNORE_SELECTOR)) return false;
-    return !allowKatex || !element.closest(".katex");
+    return !allowKatex || !element.closest(".katex, svg, math");
   });
 }
 
@@ -138,7 +138,7 @@ function rangesForTextOffsetsExcludingKatex(root: HTMLElement, startOffset: numb
   const textNodes = allTextNodes(root);
   const skippedNodeIndices = new Set<number>();
   textNodes.forEach((node, nodeIndex) => {
-    if (elementFromNode(node)?.closest(".katex")) skippedNodeIndices.add(nodeIndex);
+    if (elementFromNode(node)?.closest(".katex, svg, math")) skippedNodeIndices.add(nodeIndex);
   });
 
   return resolveTextNodeRangeSegments(

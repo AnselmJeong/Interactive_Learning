@@ -321,7 +321,7 @@ def convert(
                         context={"chapter_index": output_index},
                     )
                 )
-            chapters.append(ChapterContent(meta=chapter_meta, markdown=markdown))
+            chapters.append(ChapterContent(meta=chapter_meta, markdown=markdown, html=str(segment_soup)))
             output_index += 1
 
     if not chapters:

@@ -18,6 +18,18 @@ import {
 } from "./tutor-service";
 import { TutorService } from "./tutor-service";
 
+describe("plain-text tutor repair", () => {
+  test("keeps comparison cells and ordered steps through fallback generation", () => {
+    const service = new TutorService() as unknown as { textToTutorBlocks(text: string): import("../shared/tutor-types").TutorContentBlock[] };
+    const result = service.textToTutorBlocks("두 관점을 비교한다.\n\n| 관점 | 주장 |\n| --- | --- |\n| A | P |\n| B | Q |\n\n1. 조건 확인\n2. 결과 확인");
+    expect(result).toEqual([
+      { type: "paragraph", body: "두 관점을 비교한다." },
+      { type: "compare_table", columns: ["관점", "주장"], rows: [{ 관점: "A", 주장: "P" }, { 관점: "B", 주장: "Q" }] },
+      { type: "flow", steps: ["조건 확인", "결과 확인"] },
+    ]);
+  });
+});
+
 describe("prefetch consume wait policy", () => {
   test("does not wait the full consume window when provider timeout is nearly exhausted", () => {
     expect(prefetchConsumeWaitMs(0, 115_000, 100_000, 120_000)).toBe(6_000);

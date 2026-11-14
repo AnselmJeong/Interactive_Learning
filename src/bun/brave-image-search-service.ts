@@ -1,3 +1,4 @@
+import { APP_INFO } from "../shared/app-info";
 import type { ImageLookupItem } from "../shared/artifact-types";
 
 type BraveImageSearchResult = {
@@ -43,7 +44,7 @@ async function fetchThumbnailDataUrl(url: string, fetchImpl: typeof fetch) {
   const response = await fetchImpl(parsed.toString(), {
     headers: {
       accept: "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
-      "user-agent": "Learnie/0.10.0 desktop learning app",
+      "user-agent": `${APP_INFO.name}/${APP_INFO.version} desktop learning app`,
     },
     signal: AbortSignal.timeout(10_000),
   });
@@ -73,7 +74,7 @@ export async function searchBraveImages(query: string, apiKey: string, fetchImpl
     headers: {
       accept: "application/json",
       "x-subscription-token": apiKey.trim(),
-      "user-agent": "Learnie/0.10.0 desktop learning app",
+      "user-agent": `${APP_INFO.name}/${APP_INFO.version} desktop learning app`,
     },
     signal: AbortSignal.timeout(10_000),
   });

@@ -11,6 +11,8 @@ import { buildTextSelectionAnchor, isIgnoredSelectionElement } from "../selectio
 import { shouldSubmitTextArea } from "../submit-shortcut";
 import { AnnotationInlineScope } from "./AnnotationInlineScope";
 import { MarkdownContent } from "./MarkdownContent";
+import { HtmlContent } from "./HtmlContent";
+import { SourceChunkHeader } from "./SourceChunkHeader";
 import { SourceFigureCard } from "./SourceFigureCard";
 import { groupFiguresByCanonicalChunk } from "../../../shared/source-figure-placement";
 import { QuestionWebSources } from "./QuestionWebSources";
@@ -145,7 +147,7 @@ function annotationMarkKey(annotation: MaterialAnnotation) {
 }
 
 export function ImmersiveSourceView({
-  artifacts,
+  artifacts: suppliedArtifacts,
   sourceProgress,
   sessionReadOnly,
   displayHeadingPath,
@@ -156,6 +158,38 @@ export function ImmersiveSourceView({
   onAnnotationDeleted,
   focusRequest,
 }: ImmersiveSourceViewProps) {
+  const [readerOverride, setReaderOverride] = useState<MaterialArtifacts | null>(null);
+  const artifacts = readerOverride?.manifest.id === suppliedArtifacts.manifest.id
+    ? { ...suppliedArtifacts, sourceChunks: readerOverride.sourceChunks }
+    : suppliedArtifacts;
+  const [restoringHtml, setRestoringHtml] = useState(false);
+  const [restoreNotice, setRestoreNotice] = useState("");
+  const restoreSequence = useRef(0);
+  useEffect(() => {
+    restoreSequence.current += 1;
+    setReaderOverride(null);
+    setRestoreNotice("");
+    setRestoringHtml(false);
+  }, [suppliedArtifacts.manifest.id]);
+  async function restoreSourceHtml() {
+    const sequence = ++restoreSequence.current;
+    setRestoringHtml(true);
+    setRestoreNotice("");
+    try {
+      const result = await request("materials.refreshSourceHtml", { materialId: artifacts.manifest.id }) as {
+        artifacts: MaterialArtifacts; formatted: number; total: number; errors: string[];
+      };
+      if (sequence !== restoreSequence.current) return;
+      setReaderOverride(result.artifacts);
+      setRestoreNotice(result.errors.length ? result.errors.join(" ") : result.formatted === result.total
+        ? `${result.formatted}개 대목의 원문 서식을 복원했습니다.`
+        : `${result.total}개 중 ${result.formatted}개 대목의 서식을 복원했습니다. 원문이 정확히 일치하지 않는 대목은 기존 표시를 유지합니다.`);
+    } catch (error) {
+      if (sequence === restoreSequence.current) setRestoreNotice((error as Error).message);
+    } finally {
+      if (sequence === restoreSequence.current) setRestoringHtml(false);
+    }
+  }
   const [query, setQuery] = useState("");
   const [selection, setSelection] = useState<SelectionState | null>(null);
   const [lookupPanel, setLookupPanel] = useState<LookupPanelState | null>(null);
@@ -175,11 +209,9 @@ export function ImmersiveSourceView({
   const enrichedChunks = useMemo(() => {
     return artifacts.sourceChunks.map((chunk, index) => {
       const heading = displayHeadingPath(chunk.headingPath);
-      const prevHeading = index > 0 ? displayHeadingPath(artifacts.sourceChunks[index - 1]?.headingPath || []) : "";
-      const showHeading = Boolean(heading) && heading !== prevHeading;
       const text = cleanSourceText(chunk.text, heading || chunk.headingPath.at(-1) || "");
       const haystack = `${heading} ${text}`.toLowerCase();
-      return { chunk, index, heading, showHeading, text, matchesQuery: Boolean(q && haystack.includes(q)) };
+      return { chunk, index, heading, text, matchesQuery: Boolean(q && haystack.includes(q)) };
     });
   }, [artifacts.sourceChunks, cleanSourceText, displayHeadingPath, q]);
 
@@ -644,36 +676,12 @@ export function ImmersiveSourceView({
 
   return (
     <div className="source-view immersive-source-view">
-      <aside className="source-spine" aria-label="Source progress">
-        <div className="source-spine-rail">
-          <i style={{ height: `${sourceProgress?.percent || 0}%` }} />
-          {enrichedChunks.map(({ chunk, index, heading }) => {
-            const status = sourceProgress?.statusFor(chunk.id) || "upcoming";
-            return (
-              <button
-                key={chunk.id}
-                type="button"
-                className={`source-spine-node ${status}`}
-                style={{ top: `${enrichedChunks.length > 1 ? (index / (enrichedChunks.length - 1)) * 100 : 0}%` }}
-                onClick={() => scrollToChunk(chunk.id)}
-                title={heading || chunk.locator || `대목 ${index + 1}`}
-              >
-                <span />
-              </button>
-            );
-          })}
-        </div>
-      </aside>
-
-      <header className="source-reader-head">
-        <div>
-          <p className="eyebrow">원문 읽기</p>
-          <h3>{sourceProgress?.percent || 0}% 다룸</h3>
-          {sessionReadOnly && sourceProgress && sourceProgress.percent < 90 ? (
-            <p>아직 다루지 않은 원문이 남아 있습니다. 새 세션을 시작해 이어서 학습할 수 있습니다.</p>
-          ) : null}
-        </div>
+      <header className="source-reader-toolbar">
         <div className="source-reader-tools">
+          {artifacts.sourceChunks.some((chunk) => !chunk.html) ? <button className="source-html-restore" disabled={restoringHtml} onClick={() => void restoreSourceHtml()}>
+            {restoringHtml ? <Loader2 size={15} className="spin" /> : <Sparkles size={15} />}
+            {restoringHtml ? "원본에서 서식을 복원하는 중…" : "원문 서식 복원"}
+          </button> : null}
           <label className="source-search">
             <Search size={15} />
             <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="원문 검색" />
@@ -683,6 +691,10 @@ export function ImmersiveSourceView({
           <span><Sparkles size={14} /> {annotations.length}</span>
         </div>
       </header>
+      {sessionReadOnly && sourceProgress && sourceProgress.percent < 90 ? (
+        <p className="source-restore-notice">아직 다루지 않은 원문이 남아 있습니다. 새 세션을 시작해 이어서 학습할 수 있습니다.</p>
+      ) : null}
+      {restoreNotice ? <p className="source-restore-notice" role="status">{restoreNotice}</p> : null}
 
       <div className="source-reader-layout">
         <nav className="source-search-results" aria-label="Search results">
@@ -791,7 +803,7 @@ export function ImmersiveSourceView({
             />
           ) : null}
 
-          {enrichedChunks.map(({ chunk, index, heading, showHeading, text, matchesQuery }) => {
+          {enrichedChunks.map(({ chunk, index, text, matchesQuery }) => {
             const status = sourceProgress?.statusFor(chunk.id) || "upcoming";
             const chunkMarks = marksByChunk.get(chunk.id) || [];
             const chunkInlineAnnotations = inlineAnnotationsByChunk.get(chunk.id) || [];
@@ -809,20 +821,17 @@ export function ImmersiveSourceView({
                   else chunkRefs.current.delete(chunk.id);
                 }}
               >
-                <div className="source-chunk-kicker">
-                  <span>{chunk.locator || `대목 ${index + 1}`}</span>
-                  <span>{status === "current" ? "진행 중" : status === "covered" ? "다룸" : "예정"}</span>
-                </div>
-                {showHeading ? <h4 className="source-heading">{heading}</h4> : null}
+                <SourceChunkHeader headingPath={chunk.headingPath} previousHeadingPath={artifacts.sourceChunks[index - 1]?.headingPath} locator={chunk.locator} status={status} />
                 {text ? (
                   <div className="source-chunk-body" data-annotation-scope>
                     <AnnotationInlineScope
+                      key={chunk.html ? "html" : "markdown"}
                       annotations={chunkInlineAnnotations}
                       activeAnnotationId={activeAnnotationId}
                       onActivateAnnotation={scrollToAnnotationCard}
                       onActivateHighlight={openHighlightMenu}
                     >
-                      <MarkdownContent content={stripFigureMarkdown(text, chunkFigures)} />
+                      {chunk.html ? <HtmlContent html={chunk.html} source headingTitles={chunk.headingPath} /> : <MarkdownContent content={stripFigureMarkdown(text, chunkFigures)} />}
                     </AnnotationInlineScope>
                   </div>
                 ) : null}
@@ -840,7 +849,9 @@ export function ImmersiveSourceView({
                   </div>
                 ) : null}
                 {displayFigures.length ? (
-                  <div className="source-figure-list">
+                  <details className="source-figure-tools" open={!chunk.html || !/<img\b/.test(chunk.html)}>
+                    <summary>그림 확대·해설 · {displayFigures.length}</summary>
+                    <div className="source-figure-list">
                     {displayFigures.map((figure) => (
                       <SourceFigureCard
                         key={figure.id}
@@ -856,7 +867,8 @@ export function ImmersiveSourceView({
                         onAnnotationDeleted={(annotationId) => void removeAnnotation(annotationId)}
                       />
                     ))}
-                  </div>
+                    </div>
+                  </details>
                 ) : null}
                 {chunkMarks.length ? (
                   <div className="source-mark-list">
@@ -1029,7 +1041,7 @@ function LookupPopover({
                 rows={3}
               />
             </label>
-            <label className="question-search-option" title="Ollama Web Search로 외부 자료를 찾아 답변에 출처를 붙입니다">
+            <label className="question-search-option" title="TinyFish로 외부 자료를 찾아 답변에 출처를 붙입니다">
               <input
                 type="checkbox"
                 checked={webSearchEnabled}

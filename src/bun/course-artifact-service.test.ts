@@ -6,6 +6,7 @@ import type { AiChatClient, ChatParams } from "./openai-compatible-client";
 describe("material generation dedupe", () => {
   test("does not reuse interrupted generating material rows", () => {
     expect(canReuseMaterialForGeneration("ready")).toBe(true);
+    expect(canReuseMaterialForGeneration("ready", true)).toBe(false);
     expect(canReuseMaterialForGeneration("generating")).toBe(false);
     expect(canReuseMaterialForGeneration("failed")).toBe(false);
   });

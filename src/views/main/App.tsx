@@ -1,13 +1,13 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
 import { BarChart3, BookOpen, Check, Download, Highlighter, Info, LibraryBig, Loader2, LocateFixed, MessageSquare, Moon, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Pencil, Play, Send, Settings, Sparkles, Sun, Trash2, Upload, X } from "lucide-react";
-import type { AnnotationReadableExport, DocumentMetadataCandidate, DocumentMetadataSearchInput, DocumentRemovalImpact, DocumentSummary, MaterialProgressSnapshot, MaterialSummary, PreparedSourceImport, ProjectProgressSnapshot, ProjectSummary, SourceRemovalImpact, SourceSummary } from "../../shared/rpc-types";
+import type { AnnotationReadableExport, DocumentMetadataCandidate, DocumentMetadataSearchInput, DocumentRemovalImpact, DocumentSummary, GenerationProgress, MaterialProgressSnapshot, MaterialSummary, PreparedSourceImport, ProjectProgressSnapshot, ProjectSummary, SourceRemovalImpact, SourceSummary } from "../../shared/rpc-types";
 import type { ProjectTransferExport, ProjectTransferPreview, SessionReadableExport } from "../../shared/project-transfer-types";
 import type { DocumentTransferExport, DocumentTransferImportPreview, DocumentTransferImportResult } from "../../shared/document-transfer-types";
 import type { AppSettings, AiProviderStatus, ChatSubmitShortcut, ProviderModel } from "../../shared/settings-types";
 import type { DocumentType, MaterialAnnotation, MaterialArtifacts, NoteImageUpload, QuestionThreadResult, VisualSpec } from "../../shared/artifact-types";
 import type { LearningMessageSetSummary, SessionSnapshot, SessionSummary, SourceRef, TutorContext, TutorMessage, TutorPrefetchStatus } from "../../shared/tutor-types";
 import type { PreparedLearningIrResult } from "../../shared/learning-ir-types";
-import { displayableCourseTitle, displayableHeadingPath, displayableModuleTitle, displayableOutlineTitle, titleCasedSourceTitle } from "../../shared/display-title";
+import { comparableHeadingTitle, displayableCourseTitle, displayableHeadingPath, displayableModuleTitle, displayableOutlineTitle, stripRepeatedSourceHeading, titleCasedSourceTitle } from "../../shared/display-title";
 import { SettingsModal } from "./components/SettingsModal";
 import { VisualRenderer } from "./components/VisualRenderer";
 import { MarkdownContent } from "./components/MarkdownContent";
@@ -36,6 +36,7 @@ import { HighlightRemoveMenu, type HighlightMenuTarget } from "./components/High
 import { QuestionThreadAnnotationCard } from "./components/QuestionThreadAnnotationCard";
 import { AdditionalExploration } from "./components/AdditionalExploration";
 import { AnnotationExternalHtmlAttachment, EXTERNAL_HTML_ACTION_EVENT, publishExternalHtmlCapability, type ExternalHtmlActionEventDetail } from "./components/AnnotationExternalHtmlAttachment";
+import { GenerationStatus } from "./components/GenerationStatus";
 import { figureIdForExplanationAnnotation } from "./figure-annotations";
 import { stripFigureMarkdown } from "./figure-text";
 import { placeAnnotationsForMessages, shouldRenderInlineAnnotation } from "./annotation-placement";
@@ -182,24 +183,6 @@ function DestructiveConfirmationModal({
       </div>
     </div>
   );
-}
-
-function stripRepeatedSourceHeading(content: string, heading: string) {
-  const lines = content.replace(/\r\n/g, "\n").split("\n");
-  const firstContentIndex = lines.findIndex((line) => line.trim());
-  if (firstContentIndex < 0) return content;
-  const firstHeading = /^(#{1,6})\s+(.+)$/.exec(lines[firstContentIndex]!.trim());
-  if (!firstHeading) return content;
-
-  const firstTitle = displayableOutlineTitle(firstHeading[2] || "") || displayableCourseTitle(firstHeading[2] || "");
-  const currentTitle = displayableOutlineTitle(heading) || displayableCourseTitle(heading);
-  const isRepeated = Boolean(currentTitle) && firstTitle.toLowerCase() === currentTitle.toLowerCase();
-  const isBareChapter = /^chapter\s+\d+\b/i.test(firstTitle);
-  if (!isRepeated && !isBareChapter) return content;
-
-  const nextLines = lines.slice(0, firstContentIndex).concat(lines.slice(firstContentIndex + 1));
-  while (nextLines[0]?.trim() === "") nextLines.shift();
-  return nextLines.join("\n").trim();
 }
 
 function compactInlineText(value: string, limit: number) {
@@ -680,7 +663,7 @@ const ChatLog = memo(function ChatLog({
               <div className="answer-sources">
                 <button type="button" onClick={() => onToggleSource(message.id)}>
                   <BookOpen size={15} />
-                  {expandedSourceMessages.has(message.id) ? "근거 닫기" : "근거 보기"}
+                  {expandedSourceMessages.has(message.id) ? "관련 원문 닫기" : "관련 원문 보기"}
                 </button>
                 {expandedSourceMessages.has(message.id) ? (
                   <AnswerSourceRefs
@@ -838,6 +821,7 @@ export function App({ request }: { request: RpcRequest }) {
   const [prefetchStatus, setPrefetchStatus] = useState<TutorPrefetchStatus | null>(null);
   const [messageSetsByMaterial, setMessageSetsByMaterial] = useState<Record<string, LearningMessageSetSummary[]>>({});
   const [status, setStatus] = useState(READY_STATUS);
+  const [generationProgress, setGenerationProgress] = useState<GenerationProgress | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
   const [settings, setSettings] = useState<AppSettings | null>(null);
@@ -1389,7 +1373,11 @@ export function App({ request }: { request: RpcRequest }) {
   }, [request]);
 
   useEffect(() => {
-    const onGeneration = (event: Event) => setStatus((event as CustomEvent<{ message: string }>).detail.message);
+    const onGeneration = (event: Event) => {
+      const detail = (event as CustomEvent<GenerationProgress>).detail;
+      setStatus(detail.message);
+      setGenerationProgress(detail.stage === "complete" || detail.stage === "failed" ? null : detail);
+    };
     const onIngestion = (event: Event) => setStatus((event as CustomEvent<{ message: string }>).detail.message);
     const onTutor = () => setStatus(TUTOR_THINKING_STATUS);
     const onTutorDone = () => setStatus(READY_STATUS);
@@ -1530,6 +1518,25 @@ export function App({ request }: { request: RpcRequest }) {
     const candidates = state.sources.filter((source) => source.documentId === documentId);
     const source = candidates.find((item) => item.learningStatus === "in_progress") || candidates[0];
     if (source) void learnFromSource(source.id);
+  }
+
+  async function prepareDeepReadingVersion() {
+    if (!activeProject || !activeMaterial || busy) return;
+    setBusy(true);
+    setStatus("대목별 설명과 원문 연결을 새로 준비하는 중");
+    try {
+      const material = await request("materials.generate", {
+        projectId: activeProject.id, sourceIds: activeMaterial.sourceIds, forceNewVersion: true,
+      }) as MaterialSummary;
+      const materials = await request("materials.list", { projectId: activeProject.id }) as MaterialSummary[];
+      setState((current) => ({ ...current, materials }));
+      await selectMaterial(material);
+      setStatus(READY_STATUS);
+    } catch (error) {
+      setStatus(`깊이 읽기 준비 실패: ${(error as Error).message}`);
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function openAnnotationLocation(annotation: MaterialAnnotation) {
@@ -3017,10 +3024,11 @@ export function App({ request }: { request: RpcRequest }) {
             </p>
           </div>
           <div className="topbar-actions">
-            <div className="status-pill" title={status} aria-live="polite">
-              {busy || tutorThinking || sessionStartBusy ? <Loader2 size={16} className="spin" /> : <Check size={16} />}
-              <span className="status-text">{status}</span>
-            </div>
+            <GenerationStatus
+              status={status}
+              busy={busy || tutorThinking || sessionStartBusy}
+              progress={generationProgress}
+            />
           </div>
         </header>
 
@@ -3072,6 +3080,13 @@ export function App({ request }: { request: RpcRequest }) {
               </div>
             </div>
             <div className="course-strip-actions">
+              {artifacts && !artifacts.lecturePlan?.deepReading?.passages.some((passage) => passage.status === "analyzed") ? (
+                <button type="button" className="wide-button topbar-button" disabled={busy || batchGenerating || sessionStartBusy}
+                  title="기존 대화와 진도를 보존하고, 같은 원문에 설명 계획과 근거 연결을 담은 새 학습 자료를 만듭니다."
+                  onClick={() => void prepareDeepReadingVersion()}>
+                  깊이 읽기로 새로 준비
+                </button>
+              ) : null}
               <div className="segmented-control" aria-label="View mode">
                 <button type="button" className={viewMode === "source" ? "active" : ""} onClick={() => setViewMode("source")}>
                   원문보기
@@ -3153,7 +3168,6 @@ export function App({ request }: { request: RpcRequest }) {
               {selectedModuleWaiting ? (
                 <div className="module-standby">
                   <p className="eyebrow">{selectedModuleStatus === "in_progress" ? "Module selected" : "Ready to start"}</p>
-                  <h3>{selectedModuleTitle}</h3>
                   <p>이 module은 아직 대화가 시작되지 않았습니다. 시작하면 해당 module의 첫 대목부터 학습합니다.</p>
                   <button className="wide-button primary" onClick={openSelectedModule} disabled={busy}>
                     <MessageSquare size={16} /> 이 module 시작
@@ -3243,6 +3257,7 @@ export function App({ request }: { request: RpcRequest }) {
           ) : artifacts ? (
             <SourceLearningPreview
               artifacts={artifacts}
+              onOpenSource={openSourceAnchor}
               title={activeSource ? displayableSourceName(activeSource) : undefined}
               documentType={activeSource?.documentType || "book"}
             />
@@ -3379,8 +3394,10 @@ export function App({ request }: { request: RpcRequest }) {
                         <article key={item.id} className={`session-row ${session?.id === item.id ? "active" : ""}`}>
                           <button type="button" className="session-row-open" onClick={() => loadSession(item.id)} disabled={busy}>
                             <span className="session-row-main">
-                              <strong>{item.title}</strong>
-                              <small>{item.currentModuleTitle || "No current module"}</small>
+                              <strong>{displayableOutlineTitle(item.title)}</strong>
+                              {item.currentModuleTitle && comparableHeadingTitle(displayableOutlineTitle(item.currentModuleTitle)) !== comparableHeadingTitle(displayableOutlineTitle(item.title)) ? (
+                                <small>{displayableOutlineTitle(item.currentModuleTitle)}</small>
+                              ) : null}
                             </span>
                             <em className={`session-status ${item.status}`}>{item.status}</em>
                             <span className="session-row-meta">

@@ -39,6 +39,7 @@ export type PublicAiProviderUpdate = {
   provider?: AiProviderId;
   ollamaApiKey?: string;
   apiKeys?: Partial<Record<AiProviderId, string>>;
+  tinyfishApiKey?: string;
   braveSearchApiKey?: string;
   googleBooksApiKey?: string;
   clearAllApiKeys?: boolean;
@@ -50,6 +51,7 @@ export type AiProviderStatus = {
   hasApiKey: boolean;
   apiKeySource: "settings" | "env" | null;
   keyStates: Record<AiProviderId, AiProviderKeyState>;
+  tinyfishSearchKeyState: AiProviderKeyState;
   braveSearchKeyState: AiProviderKeyState;
   googleBooksKeyState: AiProviderKeyState;
   selectedModel: string;

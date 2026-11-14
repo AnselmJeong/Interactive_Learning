@@ -1,0 +1,139 @@
+/* Reading surfaces share the app's paper, ink, teal and ochre palette. */
+.rich-html { min-width: 0; max-width: 100%; color: var(--ink); overflow-wrap: anywhere; font-size: var(--tutor-body-font-size); line-height: 1.8; }
+.rich-html > :first-child { margin-top: 0; }
+.rich-html > :last-child { margin-bottom: 0; }
+.rich-html p { margin: 0 0 1em; }
+.rich-html h1, .rich-html h2, .rich-html h3, .rich-html h4, .rich-html h5, .rich-html h6 { margin: 1.6em 0 .55em; color: var(--ink); line-height: 1.35; text-wrap: balance; }
+.rich-html h3 { font-size: 1.2em; }
+.rich-html h4 { font-size: 1.05em; }
+.rich-html strong { font-weight: 750; }
+.rich-html a { color: var(--annotation-link-ink); text-underline-offset: .2em; }
+.rich-html a:focus-visible, .rich-html summary:focus-visible { outline: 2px solid var(--teal); outline-offset: 5px; }
+.rich-html ::selection { background: var(--annotation-highlight-yellow); color: var(--ink); }
+.rich-html figure { margin: 1.5em 0; }
+.rich-html img { display: block; max-width: 100%; height: auto; margin: 0 auto; object-fit: contain; }
+.rich-html figcaption, .rich-html caption, .rich-html .learn-caption { color: var(--ink-soft); font-size: .83em; line-height: 1.6; margin-top: .8em; text-align: start; }
+.rich-html svg { display: block; width: 100%; height: auto; max-height: 600px; overflow: visible; }
+.rich-html table { border-collapse: collapse; width: max-content; min-width: min(100%, 420px); max-width: 100%; margin: 1.3em 0; font-size: .9em; line-height: 1.55; }
+.rich-html:has(table) { overflow-x: auto; scrollbar-color: var(--line-strong) transparent; }
+.rich-html th, .rich-html td { padding: .8em 1em; border-bottom: 1px solid var(--line); text-align: start; vertical-align: top; min-width: 100px; }
+.rich-html th { background: var(--table-header-bg); color: var(--table-header-ink); font-weight: 750; }
+.rich-html tr:last-child td { border-bottom-color: var(--line-strong); }
+.rich-html blockquote { margin: 1.3em 0; padding: .4em 1.2em; border-inline-start: 1px solid var(--line-strong); color: var(--ink-soft); }
+.rich-html pre { overflow-x: auto; padding: 1em; border-radius: 12px; background: var(--panel-soft); font-size: .85em; }
+.rich-html :is(ul, ol) { padding-inline-start: 1.4em; }
+.rich-html li + li { margin-top: .5em; }
+.rich-html math { max-width: 100%; overflow-x: auto; }
+.rich-html math[display="block"] { margin: 1.25em 0; padding-block: .4em; }
+.rich-html details { margin-top: 1.3em; border-block: 1px solid var(--line-strong); padding: .85em 0; }
+.rich-html summary { cursor: pointer; color: var(--teal); font-weight: 700; padding: .25em 0; }
+.rich-html details[open] > summary { margin-bottom: .8em; }
+.rich-html details > :last-child { margin-bottom: .25em; }
+.source-html { font-size: 18px; line-height: 1.85; font-family: var(--learning-pane-font); }
+.source-html figure { padding-block: .5em; }
+.source-html sup, .source-html sub { font-size: .75em; }
+.source-html-restore { display: inline-flex; align-items: center; gap: 8px; padding: 8px 12px; border: 1px solid var(--line-strong); border-radius: 8px; background: var(--surface-raised); font-size: 12px; cursor: pointer; }
+.source-html-restore:disabled { opacity: .65; cursor: wait; }
+.source-restore-notice { margin: 0 0 16px; color: var(--ink-soft); font-size: 13px; line-height: 1.65; }
+.source-figure-tools > summary { cursor: pointer; color: var(--teal); font: 650 13px/1.5 ui-sans-serif, system-ui, sans-serif; padding-block: 12px; }
+.source-figure-tools[open] > summary { margin-bottom: 8px; }
+.rich-explanation-block { container-type: inline-size; padding-block: .75em; }
+.source-preview-example { padding-block: 1em; border-top: 1px solid var(--line); min-width: 0; }
+.source-example-origin { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: .5em 1em; color: var(--ink-soft); font-size: 13px; }
+.rich-explanation-block > h3 { margin: 0 0 1em; font-size: 1.35em; line-height: 1.35; text-wrap: balance; }
+.learning-html .learn-lead { font-size: 1.23em; line-height: 1.55; font-weight: 650; max-width: 50ch; }
+.learning-html .learn-compare { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.6em; margin: 1.5em 0; }
+.learning-html .learn-compare > * { min-width: 0; padding-top: 1em; border-top: 2px solid var(--teal); }
+.learning-html .learn-compare > :nth-child(2) { border-top-color: var(--accent); }
+.learning-html .learn-compare h3, .learning-html .learn-compare h4 { margin-top: 0; }
+.learning-html .learn-compare p:last-child { margin-bottom: 0; }
+.learning-html .learn-aside, .learning-html .learn-concept { margin: 1.3em 0; padding: 1em 1.2em; background: var(--panel-soft); border-radius: 12px; }
+.learning-html .learn-aside { font-size: .9em; color: var(--ink-soft); }
+.learning-html .learn-aside > :last-child, .learning-html .learn-concept > :last-child { margin-bottom: 0; }
+.learning-html dl { display: grid; grid-template-columns: minmax(90px, 1fr) minmax(0, 3fr); column-gap: 1.4em; row-gap: .7em; margin: 0; }
+.learning-html dt { font-weight: 750; color: var(--teal); }
+.learning-html dd { margin: 0; }
+.learning-html .learn-equation { background: var(--surface-soft); padding: 1.2em; margin: 1.5em 0; text-align: center; border-radius: 12px; overflow-x: auto; }
+.learning-html .learn-diagram { padding: 1.2em 0; color: var(--teal); }
+.learning-html figure:has(svg) { overflow-x: auto; scrollbar-color: var(--line-strong) transparent; }
+.learning-html svg { min-width: 480px; }
+.learning-html svg text { font-family: ui-sans-serif, system-ui, sans-serif; font-size: 16px; fill: currentColor; }
+.learning-html figure:has(svg):focus-visible { outline: 2px solid var(--teal); outline-offset: 5px; }
+.learning-html .learn-diagram figcaption { color: var(--ink-soft); }
+.learning-html .learn-takeaway { margin: 1.5em 0 .5em; padding-top: 1em; border-top: 1px solid var(--line-strong); font-weight: 650; }
+.learning-html :is(.learn-process, .learn-steps) { list-style: decimal; padding-inline-start: 1.7em; }
+.learning-html :is(.learn-process, .learn-steps) > li { padding: .4em 0 .85em .6em; border-bottom: 1px solid var(--line); }
+.learning-html :is(.learn-process, .learn-steps) > li::marker { color: var(--teal); font-weight: 750; }
+.learning-html .learn-contrast { color: var(--teal); font-weight: 750; }
+/* Existing lessons gain the same hierarchy without rewriting saved claims. */
+.tutor-block-stack { gap: 22px; }
+.hook-block { border-left: 0; padding: 0 0 18px; border-bottom: 1px solid var(--line-strong); }
+.hook-block p { font-size: calc(var(--tutor-body-font-size) + 5px); line-height: 1.5; text-wrap: pretty; }
+.reflection-block { border-left-width: 1px; }
+/* Keep the path and labels in one reading order when the centre pane narrows. */
+.flow-block { container-type: inline-size; }
+.flow-block > .lesson-flow { gap: 26px; }
+.flow-block > .lesson-flow > li {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: .8em;
+  padding: .75em 1em;
+  background: color-mix(in srgb, var(--teal) 5%, var(--surface-raised));
+}
+.flow-block > .lesson-flow > li::before {
+  flex: none;
+  width: auto;
+  height: auto;
+  padding-block: .1em;
+  color: var(--teal);
+  font-variant-numeric: tabular-nums;
+  border: 0;
+  background: transparent;
+}
+.flow-block > .lesson-flow > li > .markdown-content { font-size: calc(var(--tutor-body-font-size) - 2px); line-height: 1.65; }
+.flow-connector { position: absolute; top: 100%; left: 1.5em; height: 21px; border-left: 1.5px solid var(--teal); }
+.flow-connector::after {
+  content: ""; position: absolute; bottom: 0; left: -4.5px;
+  width: 7px; height: 7px; border: solid var(--teal); border-width: 0 1.5px 1.5px 0; transform: rotate(45deg);
+}
+@container (min-width: 640px) {
+  .flow-block > .compact-flow { grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); }
+  .flow-block > .compact-flow > li { flex-direction: column; gap: .4em; border-top: 2px solid var(--teal); }
+  .compact-flow .flow-connector { top: 50%; left: 100%; width: 21px; height: 0; border-left: 0; border-top: 1.5px solid var(--teal); }
+  .compact-flow .flow-connector::after { left: auto; right: 0; bottom: -3.5px; transform: rotate(-45deg); }
+}
+.compare-table-block { min-width: 0; }
+.compare-table-block .block-table-scroll { border-block: 1px solid var(--teal); }
+.compare-table-block table { font-size: calc(var(--tutor-body-font-size) - 2px); }
+.compare-table-block :is(th, td) { min-width: 7em; padding: .7em .85em; line-height: 1.55; overflow-wrap: anywhere; }
+.compare-table-block thead th { background: var(--teal-soft); color: var(--teal); font-weight: 750; }
+.compare-table-block tbody th[scope="row"] { background: var(--surface-soft); color: var(--ink); font-weight: 650; }
+.compare-table-block tbody th .markdown-content { font: inherit; }
+.compare-table-block tbody tr:last-child > * { border-bottom: 0; }
+.compare-table-block .block-table-scroll:focus-visible { outline: 2px solid var(--teal); outline-offset: -2px; }
+.tutor-block:is(.flow-block, .bullet-block, .compare-table-block) > h4 { font-size: 1.08em; color: var(--ink); margin-bottom: 16px; }
+.source-chunk-header { display: flex; align-items: baseline; justify-content: flex-end; gap: 18px; margin-bottom: 18px; }
+.source-chunk-header .source-heading { flex: 1; min-width: 0; margin: 0; }
+.source-chunk-status { flex: none; color: var(--teal); font: 650 12px/1.5 ui-sans-serif, system-ui, sans-serif; }
+.source-chunk-location { margin: -8px 0 18px; color: var(--muted); font: 13px/1.5 ui-sans-serif, system-ui, sans-serif; }
+.immersive-source-chunk { border-radius: 0; border: 0; border-inline-start: 1px solid var(--line); box-shadow: none; }
+.immersive-source-chunk.current, .immersive-source-chunk.covered { box-shadow: none; background: var(--surface-raised); }
+.immersive-source-chunk.upcoming { opacity: 1; }
+/* Side panes can leave a narrow reader even on a wide desktop window. */
+@container source-reader (max-width: 800px) {
+  .source-reader-layout { grid-template-columns: minmax(0, 1fr); gap: 20px; }
+  .source-search-results { position: static; }
+  .source-search-results .source-progress-meta { padding: 10px 14px; }
+  .source-reader-hint { display: none; }
+  .source-reader-tools { justify-content: flex-start; }
+}
+@container (max-width: 520px) {
+  .learning-html .learn-compare { grid-template-columns: 1fr; gap: 1.2em; }
+  .learning-html dl { grid-template-columns: 1fr; gap: .3em; }
+  .learning-html dd + dt { margin-top: .8em; }
+}
+@media (max-width: 760px) {
+  .source-html { font-size: 16px; }
+  .rich-html th, .rich-html td { padding: .65em; }
+}

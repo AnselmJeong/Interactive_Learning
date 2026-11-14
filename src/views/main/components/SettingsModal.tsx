@@ -66,6 +66,7 @@ export function SettingsModal({
   const draftRef = useRef(settings);
   const [activeSection, setActiveSection] = useState<SettingsSectionId>("models");
   const [apiKeys, setApiKeys] = useState<Record<AiProviderId, string>>(EMPTY_KEYS);
+  const [tinyfishApiKey, setTinyfishApiKey] = useState("");
   const [braveSearchApiKey, setBraveSearchApiKey] = useState("");
   const [googleBooksApiKey, setGoogleBooksApiKey] = useState("");
   const [statusText, setStatusText] = useState(providerStatus.error || "Ready");
@@ -119,8 +120,9 @@ export function SettingsModal({
       const saved = (await request("settings.updatePublic", draftRef.current)) as AppSettings;
       draftRef.current = saved;
       setDraft(saved);
-      await request("aiProvider.updateSettings", { provider: saved.aiProvider, apiKeys, braveSearchApiKey, googleBooksApiKey });
+      await request("aiProvider.updateSettings", { provider: saved.aiProvider, apiKeys, tinyfishApiKey, braveSearchApiKey, googleBooksApiKey });
       setApiKeys(EMPTY_KEYS);
+      setTinyfishApiKey("");
       setBraveSearchApiKey("");
       setGoogleBooksApiKey("");
       await onUpdated({ refreshBookMetadata: Boolean(googleBooksApiKey.trim()) });
@@ -252,9 +254,11 @@ export function SettingsModal({
     ? keySummary(draft.aiProvider)
     : `${keySummary(draft.aiProvider)} · ${keySummary(draft.visionProvider)}`;
   const braveKeySaved = providerStatus.braveSearchKeyState.hasApiKey;
+  const tinyfishKeySaved = providerStatus.tinyfishSearchKeyState.hasApiKey;
   const googleBooksKeySaved = providerStatus.googleBooksKeyState.hasApiKey;
   const hasSavedKey = [
     ...Object.values(providerStatus.keyStates),
+    providerStatus.tinyfishSearchKeyState,
     providerStatus.braveSearchKeyState,
     providerStatus.googleBooksKeyState,
   ].some((state) => state.apiKeySource === "settings");
@@ -353,6 +357,20 @@ export function SettingsModal({
               />
             </label>
           ))}
+          <label>
+            <span>
+              TinyFish Search API key
+              <small className={tinyfishKeySaved ? "" : "missing"}>
+                {tinyfishKeySaved ? `Saved via ${providerStatus.tinyfishSearchKeyState.apiKeySource}` : "Not saved · required for annotation web search"}
+              </small>
+            </span>
+            <input
+              type="password"
+              value={tinyfishApiKey}
+              onChange={(event) => setTinyfishApiKey(event.target.value)}
+              placeholder="Blank keeps existing key"
+            />
+          </label>
           <label>
             <span>
               Brave Search API key (optional)

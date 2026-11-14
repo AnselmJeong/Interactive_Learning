@@ -1,3 +1,4 @@
+import { APP_INFO } from "../shared/app-info";
 import { describe, expect, test } from "bun:test";
 import { CrossrefMetadataService } from "./crossref-metadata-service";
 import { titleQueryFromFilename } from "./document-metadata-text";
@@ -29,7 +30,7 @@ describe("Crossref article metadata", () => {
 
     expect(new URL(requestUrl).searchParams.get("query.title")).toBe("Interactive learning from feedback");
     expect(new URL(requestUrl).searchParams.get("rows")).toBe("5");
-    expect(userAgent).toContain("Learnie/0.10.0");
+    expect(userAgent).toContain(`${APP_INFO.name}/${APP_INFO.version}`);
     expect(results).toMatchObject([{
       title: "Interactive learning from feedback",
       authors: ["Ada Lovelace", "Research Group"],

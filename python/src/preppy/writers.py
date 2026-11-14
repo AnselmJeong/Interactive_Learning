@@ -56,6 +56,8 @@ def _write_into(document: PreppyDocument, root: Path) -> None:
 
     for chapter in document.chapters:
         (root / chapter.meta.path).write_text(chapter.markdown, encoding="utf-8")
+        if chapter.html:
+            (root / chapter.meta.path).with_suffix(".html").write_text(chapter.html, encoding="utf-8")
 
     for figure in document.figures:
         (root / figure.meta.asset_path).write_bytes(figure.image_bytes)
@@ -80,6 +82,8 @@ def _write_into(document: PreppyDocument, root: Path) -> None:
     _write_json(paths["diagnostics"], diagnostics_data)
 
     _write_json(paths["document"], document.document_model.model_dump(mode="json"))
+    if document.docling_document is not None:
+        _write_json(root / "docling.json", document.docling_document)
 
 
 def _write_json(path: Path, data: object) -> None:

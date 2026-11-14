@@ -25,7 +25,7 @@ import { openFilesystemPath } from "./platform-utils";
 import { configureAppDataBase, configureDatabaseBase, stableDatabaseBase } from "./paths";
 import { normalizeSelectedPaths } from "./file-dialog-selection";
 import { buildBuddyPromptMessages, cleanBuddyMessage } from "./buddy-message";
-import { searchOllamaWeb } from "./ollama-web-search-service";
+import { searchTinyFishWeb } from "./tinyfish-web-search-service";
 import { searchBraveImages } from "./brave-image-search-service";
 import { createFigureAssetServer } from "./figure-asset-server";
 import { createBookCoverAssetServer } from "./book-cover-asset-server";
@@ -57,8 +57,8 @@ const figureAssetServer = createFigureAssetServer(async (materialId, figureId) =
 });
 const annotationAssetServer = createAnnotationAssetServer(resolveNoteImageAsset);
 const annotations = new AnnotationService(materials, providerClient, async (query) => {
-  const ollamaKey = await secrets.getApiKey("ollama");
-  return searchOllamaWeb(query, ollamaKey.value);
+  const tinyfishKey = await secrets.getTinyFishApiKey();
+  return searchTinyFishWeb(query, tinyfishKey.value);
 }, async (query) => {
   const braveKey = await secrets.getBraveSearchApiKey();
   if (!braveKey.value) {
@@ -183,6 +183,7 @@ async function providerStatus(reachable = false, error?: string, input: AiProvid
   const overrideKey = input.apiKeys?.[provider]?.trim();
   const apiKey = overrideKey ? { value: overrideKey, source: "settings" as const } : await secrets.getApiKey(provider);
   const keyStates = await secrets.keyStates();
+  const tinyfishSearchKeyState = await secrets.tinyfishSearchKeyState();
   const braveSearchKeyState = await secrets.braveSearchKeyState();
   const googleBooksKeyState = await secrets.googleBooksKeyState();
   if (overrideKey) {
@@ -194,6 +195,7 @@ async function providerStatus(reachable = false, error?: string, input: AiProvid
     baseUrl: providerSettings.baseUrl,
     hasApiKey: Boolean(apiKey.value),
     apiKeySource: apiKey.source,
+    tinyfishSearchKeyState,
     braveSearchKeyState,
     googleBooksKeyState,
     keyStates,
@@ -412,17 +414,29 @@ const rpc = BrowserView.defineRPC<AppRPC>({
       "progress.getProjectSnapshot": ({ projectId }) => progress.getProjectSnapshot(projectId),
       "progress.getDocumentSnapshot": ({ projectId, documentId }) => progress.getDocumentSnapshot(projectId, documentId),
       "progress.getMaterialSnapshot": ({ materialId }) => progress.getMaterialSnapshot(materialId),
-      "materials.generate": async ({ projectId, sourceIds }) => {
-        sendToView("materials.generationProgress", { projectId, stage: "normalize", message: "원문 대목을 정리하고 학습 산출물을 준비합니다", progress: 20 });
-        const result = await materials.generate(projectId, sourceIds);
-        sendToView("materials.generationProgress", { projectId, materialId: result.id, stage: "complete", message: "Material ready", progress: 100 });
-        return result;
+      "materials.generate": async ({ projectId, sourceIds, forceNewVersion }) => {
+        try {
+          const result = await materials.generate(projectId, sourceIds, (progress) => {
+            sendToView("materials.generationProgress", progress);
+          }, forceNewVersion);
+          sendToView("materials.generationProgress", { projectId, materialId: result.id, stage: "complete", message: "학습 자료 준비 완료", progress: 100 });
+          return result;
+        } catch (error) {
+          sendToView("materials.generationProgress", {
+            projectId,
+            stage: "failed",
+            message: (error as Error).message,
+            progress: 0,
+          });
+          throw error;
+        }
       },
       "materials.list": ({ projectId }) => materials.list(projectId),
       "materials.getArtifacts": async ({ materialId }) => {
         const artifacts = await materials.getArtifacts(materialId);
         return { ...artifacts, annotations: annotations.withAssetUrlsForMany(artifacts.annotations || []) };
       },
+      "materials.refreshSourceHtml": ({ materialId }) => materials.refreshSourceHtml(materialId),
       "materials.prepareMessages": ({ materialId, forceNewVersion }) => tutor.prepareMessages(materialId, Boolean(forceNewVersion)),
       "materials.messageSetStatus": ({ materialId }) => tutor.messageSetStatus(materialId),
       "materials.getLearningIr": ({ messageSetId }) => tutor.preparedLearningIr(messageSetId),

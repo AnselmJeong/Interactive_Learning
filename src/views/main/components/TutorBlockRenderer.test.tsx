@@ -7,6 +7,32 @@ import type { TutorContentBlock } from "../../../shared/tutor-types";
 import { TutorBlockRenderer } from "./TutorBlockRenderer";
 
 describe("TutorBlockRenderer regressions", () => {
+  test("renders an HTML lesson's repeated outer and opening title only once", () => {
+    const blocks: TutorContentBlock[] = [{ type: "rich_html", title: "2.1 Introduction", body: "An explanation.", html: '<article><h2>2.1 INTRODUCTION</h2><p>An explanation.</p><h3>2.2 Next section</h3></article>' }];
+    const html = renderToStaticMarkup(createElement(TutorBlockRenderer, { blocks }));
+    expect(html.match(/2\.1 Introduction/gi)).toHaveLength(1);
+    expect(html).toContain("An explanation.");
+    expect(html).toContain("2.2 Next section");
+  });
+
+  test("cleans duplicate title paths in saved structured lessons without removing separate sections", () => {
+    const blocks: TutorContentBlock[] = [
+      { type: "bullets", title: "1. Introduction › 1 Introduction", items: ["First"] },
+      { type: "flow", title: "2. Introduction", steps: ["Second"] },
+    ];
+    const html = renderToStaticMarkup(createElement(TutorBlockRenderer, { blocks }));
+    expect(html).toContain("<h4>1. Introduction</h4>");
+    expect(html).toContain("<h4>2. Introduction</h4>");
+    expect(html).not.toContain("›");
+  });
+  test("renders a rich explanation and its evidence with passive diagrams and disclosures", () => {
+    const blocks: TutorContentBlock[] = [{ type: "rich_html", title: "A relationship", body: "Explanation", html: '<div class="learn-compare"><section><h4>Before</h4><p>A</p></section><section><h4>After</h4><p>B</p></section></div><details><summary>Reason</summary><p>More detail</p></details><script>bad()</script>', grounding: { status: "interpretation", evidence: [] } }];
+    const html = renderToStaticMarkup(createElement(TutorBlockRenderer, { blocks }));
+    expect(html).toContain('class="learn-compare"');
+    expect(html).toContain('<summary>Reason</summary>');
+    expect(html).toContain('해석적 재구성');
+    expect(html).not.toContain('bad()');
+  });
   test("omits an extracted figure-caption prefix from guided reading", () => {
     const blocks: TutorContentBlock[] = [{
       type: "guided_reading",

@@ -1,3 +1,4 @@
+import { APP_INFO } from "../shared/app-info";
 import { lookup } from "node:dns/promises";
 import { isIP } from "node:net";
 import { basename } from "node:path";
@@ -95,7 +96,7 @@ export async function loadDirectImage(
       redirect: "manual",
       headers: {
         accept: "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
-        "user-agent": "Learnie/0.10.0 desktop learning app",
+        "user-agent": `${APP_INFO.name}/${APP_INFO.version} desktop learning app`,
       },
       signal: AbortSignal.timeout(15_000),
     });

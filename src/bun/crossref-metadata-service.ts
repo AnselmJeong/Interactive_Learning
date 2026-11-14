@@ -1,3 +1,4 @@
+import { APP_INFO } from "../shared/app-info";
 import type { DocumentMetadataCandidate } from "../shared/rpc-types";
 
 type CrossrefDate = { "date-parts"?: number[][] };
@@ -68,7 +69,7 @@ export class CrossrefMetadataService {
       url.searchParams.set("query.title", title);
       url.searchParams.set("rows", "5");
       const response = await this.request(url, {
-        headers: { accept: "application/json", "user-agent": "Learnie/0.10.0 desktop metadata client" },
+        headers: { accept: "application/json", "user-agent": `${APP_INFO.name}/${APP_INFO.version} desktop metadata client` },
         signal: controller.signal,
       });
       if (!response.ok) {

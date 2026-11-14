@@ -1,11 +1,14 @@
+import { ExplanationEvidence } from "./ExplanationEvidence";
 import { memo, useState, type ReactNode } from "react";
 import type { MaterialAnnotation, SourceFigure } from "../../../shared/artifact-types";
 import type { SourceRef, TutorContentBlock } from "../../../shared/tutor-types";
-import { plainDisplayText } from "../../../shared/display-title";
+import { displayableOutlineTitle, plainDisplayText } from "../../../shared/display-title";
 import { stripLeadingFigureCaption, stripMarkdownImageTokens } from "../../../shared/markdown-image-text";
-import { restoreLegacyDisplayMathFlow, splitMarkdownPipes } from "../../../shared/markdown-pipes";
+import { splitMarkdownPipes } from "../../../shared/markdown-pipes";
+import { learningBlockPresentation, parseLearningTable } from "../../../shared/learning-structure";
 import { AnnotationInlineScope } from "./AnnotationInlineScope";
 import { MarkdownContent } from "./MarkdownContent";
+import { HtmlContent } from "./HtmlContent";
 import { SourceFigureCard } from "./SourceFigureCard";
 import { shouldAutoRenderSourceFigure } from "../source-figure-filter";
 import { sourceFiguresReferencedByText } from "../source-figure-reference";
@@ -14,40 +17,6 @@ type RpcRequest = (method: string, params: unknown) => Promise<unknown>;
 
 type CompareTableBlock = Extract<TutorContentBlock, { type: "compare_table" }>;
 type FlowBlock = Extract<TutorContentBlock, { type: "flow" }>;
-
-function pipeCells(line: string) {
-  const trimmedLine = line
-    .replace(/^\s*\|/, "")
-    .replace(/\|\s*$/, "");
-  return splitMarkdownPipes(trimmedLine)
-    .map((cell) => cell.trim())
-    .filter(Boolean);
-}
-
-function isMarkdownTableDivider(line: string) {
-  return pipeCells(line).every((cell) => /^:?-{3,}:?$/.test(cell));
-}
-
-function parseMarkdownPipeTable(text: string): CompareTableBlock | null {
-  const lines = text
-    .split(/\n+/)
-    .map((line) => line.trim())
-    .filter((line) => line.includes("|"));
-  if (lines.length < 2) return null;
-  const headerLine = lines[0];
-  const dividerLine = lines[1];
-  if (!headerLine || !dividerLine || !isMarkdownTableDivider(dividerLine)) return null;
-  const columns = pipeCells(headerLine).slice(0, 4);
-  if (columns.length < 2) return null;
-  const rows = lines
-    .slice(2)
-    .map((line) => pipeCells(line))
-    .filter((cells) => cells.length >= 2)
-    .map((cells) => Object.fromEntries(columns.map((column, index) => [column, (cells[index] || "").slice(0, 220)])))
-    .filter((row) => columns.some((column) => row[column]))
-    .slice(0, 5);
-  return rows.length ? { type: "compare_table", columns, rows } : null;
-}
 
 function splitFlowTitle(firstPart: string) {
   const normalized = firstPart.replace(/[：:]$/, "").replace(/\s+/g, " ").trim();
@@ -73,7 +42,7 @@ function parseLoosePipeFlow(text: string): FlowBlock | null {
 
 function parsePipeStructure(text: string): CompareTableBlock | FlowBlock | null {
   if (splitMarkdownPipes(text).length < 3) return null;
-  return parseMarkdownPipeTable(text) || parseLoosePipeFlow(text);
+  return parseLearningTable(text) || (text.includes("\n") ? null : parseLoosePipeFlow(text));
 }
 
 function splitNumberedFlowIntro(prefix: string) {
@@ -225,7 +194,7 @@ function stripFlowStepMarker(step: string) {
 }
 
 function BlockTitle({ title }: { title: string | undefined }) {
-  const displayTitle = title ? plainDisplayText(title) : "";
+  const displayTitle = title ? displayableOutlineTitle(title) : "";
   return displayTitle ? <h4>{displayTitle}</h4> : null;
 }
 
@@ -329,8 +298,9 @@ export const TutorBlockRenderer = memo(function TutorBlockRenderer({
                 "data-chat-role": "assistant",
               }}
             >
-              <TutorBlock block={block} />
+              <TutorBlock block={block} preserveAnnotatedList={inlineAnnotations.length > 0} />
             </AnnotationInlineScope>
+            <ExplanationEvidence grounding={block.grounding} sourceRefById={sourceRefById} />
             {figures.length && materialId && request ? (
               <div className="tutor-inline-figures">
                 {figures.map((figure) => (
@@ -376,12 +346,18 @@ export const TutorBlockRenderer = memo(function TutorBlockRenderer({
   );
 });
 
-function TutorBlock({ block }: { block: TutorContentBlock }) {
+function TutorBlock({ block: stored, preserveAnnotatedList = false }: { block: TutorContentBlock; preserveAnnotatedList?: boolean }) {
+  // An existing selection may span the label and explanation in one list item.
+  const presented = learningBlockPresentation(stored);
+  const splitsSelection = (presented.type === "compare_table" || stored.type === "paragraph") && presented.type !== stored.type;
+  const block = preserveAnnotatedList && splitsSelection ? stored : presented;
   if (block.type === "visual_ref") return null;
-  if (block.type === "flow") {
-    const restoredMath = restoreLegacyDisplayMathFlow(block.title, block.steps);
-    if (restoredMath) return <TutorBlock block={{ type: "paragraph", body: restoredMath }} />;
-  }
+  if (block.type === "rich_html") return (
+    <section className="tutor-block rich-explanation-block">
+      {block.title ? <h3>{displayableOutlineTitle(block.title)}</h3> : null}
+      <HtmlContent html={block.html} headingTitles={block.title ? [block.title, displayableOutlineTitle(block.title)] : []} />
+    </section>
+  );
   if (block.type === "hook") {
     return (
       <section className="tutor-block hook-block">
@@ -459,13 +435,15 @@ function TutorBlock({ block }: { block: TutorContentBlock }) {
   }
 
   if (block.type === "flow") {
+    const compact = block.steps.length <= 4 && block.steps.every((step) => step.length <= 65 && !step.includes("\n"));
     return (
       <section className="tutor-block flow-block">
         <BlockTitle title={block.title} />
-        <ol>
+        <ol className={compact ? "lesson-flow compact-flow" : "lesson-flow"} role="list">
           {block.steps.map((step, index) => (
             <li key={`${index}-${step}`}>
               <MarkdownContent content={stripFlowStepMarker(step)} compact />
+              {index < block.steps.length - 1 && <i className="flow-connector" aria-hidden="true" />}
             </li>
           ))}
         </ol>
@@ -477,23 +455,26 @@ function TutorBlock({ block }: { block: TutorContentBlock }) {
     return (
       <section className="tutor-block compare-table-block">
         <BlockTitle title={block.title} />
-        <div className="block-table-scroll">
-          <table>
+        <div className="block-table-scroll" tabIndex={0} role="region" aria-label={block.title ? displayableOutlineTitle(block.title) : "비교표"}>
+          <table aria-label={block.title ? displayableOutlineTitle(block.title) : undefined}>
             <thead>
               <tr>
                 {block.columns.map((column) => (
-                  <th key={column}>{plainDisplayText(column) || column}</th>
+                  <th key={column} scope="col">{plainDisplayText(column) || column}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {block.rows.map((row, rowIndex) => (
                 <tr key={rowIndex}>
-                  {block.columns.map((column) => (
-                    <td key={column}>
-                      <MarkdownContent content={row[column] || ""} compact />
-                    </td>
-                  ))}
+                  {block.columns.map((column, index) => {
+                    const Cell = index === 0 ? "th" : "td";
+                    return (
+                      <Cell key={column} scope={index === 0 ? "row" : undefined}>
+                        <MarkdownContent content={row[column] || ""} compact />
+                      </Cell>
+                    );
+                  })}
                 </tr>
               ))}
             </tbody>

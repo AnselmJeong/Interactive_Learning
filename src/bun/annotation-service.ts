@@ -1,3 +1,6 @@
+import { APP_INFO } from "../shared/app-info";
+import { passagePlanFor, readingContextChunks } from "./deep-reading-service";
+import { recallConversation, CONVERSATION_RECALL_RULE } from "./conversation-recall";
 import type { AiChatClient } from "./openai-compatible-client";
 import type { CourseArtifactService } from "./course-artifact-service";
 import { deleteMaterialAnnotation, getMaterialAnnotation, saveMaterialAnnotation, updateMaterialAnnotationResult } from "./annotation-store";
@@ -291,7 +294,7 @@ function compactEarlierThread(messages: QuestionThreadMessage[]) {
   const summary = messages
     .map((message) => {
       const visual = message.visual ? ` [visual: ${message.visual.type} · ${message.visual.title}]` : "";
-      return `${message.role === "user" ? "Learner" : "Tutor"}: ${compactText(message.content, 320)}${visual}`;
+      return `[${message.id}] ${message.role === "user" ? "Learner" : "Tutor"}: ${compactText(message.content, 320)}${visual}`;
     })
     .join("\n");
   return compactText(summary, QUESTION_THREAD_SUMMARY_CHARS);
@@ -422,26 +425,8 @@ function moduleForChunk(artifacts: MaterialArtifacts, chunkId: string) {
 function moduleQuestionContext(artifacts: MaterialArtifacts, chunkId: string, question: string) {
   const focus = chunkContext(artifacts, chunkId);
   const module = moduleForChunk(artifacts, chunkId);
-  const moduleChunkIds = new Set(module?.sourceChunkIds || []);
-  const focusChunk = focus.chunk;
-  const moduleChunks = artifacts.sourceChunks.filter((chunk) => moduleChunkIds.has(chunk.id));
-  const relatedTokens = question.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((token) => token.length >= 3).slice(0, 20);
-  const related = artifacts.sourceChunks
-    .filter((chunk) => chunk.id !== chunkId && !moduleChunkIds.has(chunk.id))
-    .map((chunk) => {
-      const haystack = `${chunk.headingPath.join(" ")} ${chunk.text}`.toLowerCase();
-      const score = relatedTokens.reduce((sum, token) => sum + (haystack.includes(token) ? 1 : 0), 0);
-      return { chunk, score };
-    })
-    .filter((item) => item.score > 0)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, 2)
-    .map((item) => item.chunk);
-  const contextChunks = [
-    focusChunk,
-    ...moduleChunks.filter((chunk) => chunk.id !== chunkId),
-    ...related,
-  ].slice(0, 6);
+  const contextChunks = readingContextChunks(artifacts, focus.chunk.id, question);
+  const plan = passagePlanFor(artifacts, focus.chunk.id);
 
   return {
     ...focus,
@@ -450,9 +435,9 @@ function moduleQuestionContext(artifacts: MaterialArtifacts, chunkId: string, qu
       .map((chunk) => {
         const label = chunk.id === chunkId ? "Selected text chunk" : "Module context chunk";
         const heading = chunk.headingPath.length ? ` (${chunk.headingPath.join(" > ")})` : "";
-        return `${label}${heading}:\n${compactText(chunk.text, chunk.id === chunkId ? 1800 : 900)}`;
+        return `${label} [${chunk.id} | ${chunk.locator}]${heading}:\n${compactText(chunk.text, chunk.id === chunkId ? 2400 : 1600)}`;
       })
-      .join("\n\n"),
+      .join("\n\n") + (plan ? `\n\nExplanation plan (interpretive guidance, verify against source): ${JSON.stringify(plan)}` : ""),
   };
 }
 
@@ -460,7 +445,7 @@ async function fetchJson<T>(url: string, timeoutMs = 10000): Promise<T> {
   const response = await fetch(url, {
     headers: {
       accept: "application/json",
-      "user-agent": "Learnie/0.10.0 desktop learning app",
+      "user-agent": `${APP_INFO.name}/${APP_INFO.version} desktop learning app`,
     },
     signal: AbortSignal.timeout(timeoutMs),
   });
@@ -480,7 +465,7 @@ async function fetchImageDataUrl(value: string, timeoutMs = 10000): Promise<stri
   const response = await fetch(url.toString(), {
     headers: {
       accept: "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
-      "user-agent": "Learnie/0.10.0 desktop learning app",
+      "user-agent": `${APP_INFO.name}/${APP_INFO.version} desktop learning app`,
     },
     signal: AbortSignal.timeout(timeoutMs),
   });
@@ -1457,6 +1442,7 @@ export class AnnotationService {
 
     const recentHistory = history.slice(-QUESTION_THREAD_CONTEXT_MESSAGES);
     const earlierSummary = compactEarlierThread(history.slice(0, -QUESTION_THREAD_CONTEXT_MESSAGES));
+    const originalRecall = recallConversation(history, question, QUESTION_THREAD_CONTEXT_MESSAGES);
     const referenceContext = [
       `Selected text: ${selectedText}`,
       `Source title: ${context.sourceTitle}`,
@@ -1486,7 +1472,10 @@ export class AnnotationService {
       "Keep the answer complete and substantive; do not stop mid-sentence.",
       referenceContext,
       useWebSearch ? questionWebSourceBlock(webSources) : "",
-      earlierSummary ? `Summary of earlier side-chat turns:\n${earlierSummary}` : "",
+      "Distinguish source content, reconstructed reasoning, analogy with its limits, background, and uncertainty in natural prose. Unpack the requested inference or distinction rather than merely lengthening the answer. Reading requires no quiz or reply.",
+      CONVERSATION_RECALL_RULE,
+      originalRecall ? `Relevant original exchanges:\n${originalRecall}` : "",
+      earlierSummary ? `Abbreviated earlier turns (may be incomplete):\n${earlierSummary}` : "",
     ].filter(Boolean).join("\n\n---\n\n");
     const messages = [
       { role: "system" as const, content: tutorInstructions },
@@ -1552,7 +1541,7 @@ export class AnnotationService {
     question: string,
     context: ReturnType<typeof moduleQuestionContext>
   ) {
-    if (!this.questionWebSearch) throw new Error("Ollama 웹 검색 기능이 구성되지 않았습니다.");
+    if (!this.questionWebSearch) throw new Error("TinyFish 웹 검색 기능이 구성되지 않았습니다.");
     const fallback = fallbackQuestionSearchQuery(selectedText, question);
     let query = fallback;
     try {

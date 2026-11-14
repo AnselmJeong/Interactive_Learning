@@ -1,18 +1,25 @@
 import { BookOpen, Clock3, FileText } from "lucide-react";
 import type { DocumentType, MaterialArtifacts } from "../../../shared/artifact-types";
 import { displayableCourseTitle, displayableModuleTitle } from "../../../shared/display-title";
+import { normalizeLearningHtml } from "../../../shared/learning-html";
+import { TutorBlockRenderer } from "./TutorBlockRenderer";
 
 export function SourceLearningPreview({
   artifacts,
   title: sourceTitle,
   documentType = "book",
+  onOpenSource,
 }: {
   artifacts: MaterialArtifacts;
   title?: string;
   documentType?: DocumentType;
+  onOpenSource?: (chunkId: string) => void;
 }) {
   const title = sourceTitle || displayableCourseTitle(artifacts.coursePlan.title) || artifacts.coursePlan.title;
   const isArticle = documentType === "article";
+  const example = artifacts.presentationPlan?.example;
+  const exampleIndex = example ? artifacts.sourceChunks.findIndex((chunk) => chunk.id === example.sourceChunkId) : -1;
+  const exampleBlock = example && exampleIndex >= 0 ? normalizeLearningHtml(example) : null;
 
   return (
     <article className="source-learning-preview" aria-labelledby="source-preview-title">
@@ -26,6 +33,16 @@ export function SourceLearningPreview({
             : <span><BookOpen size={15} aria-hidden="true" /> {artifacts.sourceChunks.length}개 대목 · {artifacts.coursePlan.modules.length}개 module</span>}
         </div>
       </header>
+
+      {example && exampleBlock ? (
+        <section className="source-preview-example" aria-label="학습 예시">
+          <div className="source-example-origin">
+            <span>학습 예시 · {exampleIndex + 1}번째 대목</span>
+            {onOpenSource ? <button type="button" className="text-button" onClick={() => onOpenSource(example.sourceChunkId)}>이 대목 원문보기</button> : null}
+          </div>
+          <TutorBlockRenderer blocks={[exampleBlock]} />
+        </section>
+      ) : null}
 
       <section className="source-preview-overview" aria-labelledby="source-overview-title">
         <h3 id="source-overview-title">{isArticle ? "이 논문이 다루는 것" : "이 자료에서 배우는 것"}</h3>

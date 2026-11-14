@@ -64,6 +64,26 @@ describe("learning IR compiler", () => {
     expect(ir.quality.status).toBe("degraded");
     expect(ir.generator.model).toBe("deterministic-fallback");
   });
+
+  test("reports each module as the source analysis advances", async () => {
+    const updates: Array<{ phase: string; completedModules: number; totalModules: number }> = [];
+    await compileLearningIr({
+      materialId: "material-1",
+      documentType: "book",
+      sourceCount: 1,
+      chunks,
+      coursePlan,
+      legacyConcepts: concepts,
+      onProgress: (progress) => updates.push(progress),
+    });
+
+    expect(updates.map((update) => [update.phase, update.completedModules, update.totalModules])).toEqual([
+      ["module", 0, 3],
+      ["module", 1, 3],
+      ["module", 2, 3],
+      ["complete", 3, 3],
+    ]);
+  });
 });
 
 describe("learning IR validator", () => {

@@ -19,10 +19,12 @@ from typing import Literal
 import pymupdf
 from docling.datamodel.base_models import InputFormat
 from docling.datamodel.document import ConversionResult
-from docling.datamodel.pipeline_options import PdfPipelineOptions
+from docling.datamodel.pipeline_options import HeadingHierarchyOptions, PdfPipelineOptions
 from docling.document_converter import DocumentConverter, PdfFormatOption
 from docling.pipeline.standard_pdf_pipeline import StandardPdfPipeline
 from docling_core.types.doc.document import DoclingDocument, PictureItem, TableItem
+from docling_core.types.doc import ImageRefMode
+from bs4 import BeautifulSoup
 
 from preppy.figures.captions import clean_caption_text
 from preppy.figures.export import FigureExporter
@@ -568,7 +570,15 @@ def convert(
                     context={"chapter_index": output_index},
                 )
             )
-        chapters.append(ChapterContent(meta=chapter_meta, markdown=markdown))
+        # Serialize the structured document before Markdown flattens tables,
+        # inline formatting and formula markup. The same item interval defines
+        # both representations, preserving chapter/matter boundaries.
+        html = doc.export_to_html(from_element=start_idx, to_element=end_idx, image_mode=ImageRefMode.EMBEDDED)
+        soup = BeautifulSoup(html, "html.parser")
+        body = soup.body or soup
+        for node in body.select("script, style"):
+            node.decompose()
+        chapters.append(ChapterContent(meta=chapter_meta, markdown=markdown, html=body.decode_contents()))
         output_index += 1
 
     if not chapters:
@@ -702,6 +712,7 @@ def convert(
         figures=figures,
         tables=tables,
         document_model=document_model,
+        docling_document=doc.export_to_dict(),
         diagnostics=diagnostics,
     )
 
@@ -715,6 +726,7 @@ def _run_docling(
     images_scale: float,
 ) -> ConversionResult:
     pipeline_options = PdfPipelineOptions()
+    pipeline_options.heading_hierarchy_options = HeadingHierarchyOptions(enabled=True)
     pipeline_options.do_ocr = ocr
     pipeline_options.do_table_structure = table_structure
     pipeline_options.generate_picture_images = extract_figures

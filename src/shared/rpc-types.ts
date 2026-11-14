@@ -332,9 +332,10 @@ export type AppRPC = {
       "progress.getProjectSnapshot": { params: { projectId: string }; response: ProjectProgressSnapshot };
       "progress.getDocumentSnapshot": { params: { projectId: string; documentId: string }; response: DocumentProgressSnapshot };
       "progress.getMaterialSnapshot": { params: { materialId: string }; response: MaterialProgressSnapshot };
-      "materials.generate": { params: { projectId: string; sourceIds: string[] }; response: MaterialSummary };
+      "materials.generate": { params: { projectId: string; sourceIds: string[]; forceNewVersion?: boolean }; response: MaterialSummary };
       "materials.list": { params: { projectId: string }; response: MaterialSummary[] };
       "materials.getArtifacts": { params: { materialId: string }; response: MaterialArtifacts };
+      "materials.refreshSourceHtml": { params: { materialId: string }; response: { artifacts: MaterialArtifacts; formatted: number; total: number; errors: string[] } };
       "materials.prepareMessages": { params: { materialId: string; forceNewVersion?: boolean }; response: LearningMessageSetSummary };
       "materials.messageSetStatus": { params: { materialId: string }; response: LearningMessageSetSummary[] };
       "materials.getLearningIr": { params: { messageSetId: string }; response: PreparedLearningIrResult };

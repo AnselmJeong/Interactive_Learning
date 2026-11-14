@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type PointerEvent } from "react";
+import { createPortal } from "react-dom";
 import { ChevronDown, ChevronUp, Globe2, Loader2, RotateCcw, Save, Send, X } from "lucide-react";
 import type { QuestionThreadResult } from "../../../shared/artifact-types";
 import type { ChatSubmitShortcut } from "../../../shared/settings-types";
@@ -120,7 +121,7 @@ export function SelectionSideChat({
 
   const messages = panel.thread?.messages || [];
 
-  return (
+  const sideChat = (
     <aside
       className={`selection-side-chat ${hasVisual ? "has-visual" : ""} ${dragging ? "dragging" : ""}`}
       role="dialog"
@@ -220,7 +221,7 @@ export function SelectionSideChat({
             disabled={busy}
             aria-label="사이드 대화 질문"
           />
-          <label className="question-search-option" title="Ollama Web Search로 외부 자료를 찾아 답변에 출처를 붙입니다">
+          <label className="question-search-option" title="TinyFish로 외부 자료를 찾아 답변에 출처를 붙입니다">
             <input
               type="checkbox"
               checked={Boolean(panel.webSearchEnabled)}
@@ -237,4 +238,8 @@ export function SelectionSideChat({
       </form>
     </aside>
   );
+
+  // The chat is opened from the central workspace. Rendering it at document-body
+  // level prevents the inspector grid item from painting over this fixed panel.
+  return typeof document === "undefined" ? sideChat : createPortal(sideChat, document.body);
 }

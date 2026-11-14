@@ -52,8 +52,13 @@ function visualForSection(ir: SourceSemanticIr, section: LearningSectionIr): Gro
     }, section, nodes);
   }
   if (section.kind === "argument_reconstruction" || section.kind === "causal_mechanism" || section.kind === "procedural_technical") {
-    const items = (claims.length ? claims.map((claim) => claim.statement) : concepts.map((concept) => concept.label)).slice(0, MAX_VISUAL_NODES);
-    return grounded({ id, type: "flow", title: section.title, items }, section, nodes);
+    const labels = new Map([...concepts.map((node) => [node.id, node.label] as const), ...claims.map((node) => [node.id, node.statement] as const)]);
+    const relationLabels = { supports: "지지", challenges: "반박·제한", causes: "원인", enables: "가능하게 함", contrasts_with: "대조", part_of: "부분", precedes: "선행", prerequisite_for: "전제", explains: "설명" };
+    const edges = ir.relations.filter((edge) => labels.has(edge.fromId) && labels.has(edge.toId) && edge.sourceChunkIds.length > 0)
+      .slice(0, 10).map((edge) => ({ from: edge.fromId, to: edge.toId, label: `${relationLabels[edge.type]}${edge.label ? ` · ${edge.label}` : ""}`, sourceChunkIds: edge.sourceChunkIds }));
+    if (!edges.length) return null;
+    const connected = new Set(edges.flatMap((edge) => [edge.from, edge.to]));
+    return grounded({ id, type: "relations", title: section.title, nodes: [...labels].filter(([nodeId]) => connected.has(nodeId)).map(([nodeId, label]) => ({ id: nodeId, label })), edges }, section, [...connected]);
   }
   if (section.kind === "quantitative") return null;
   return grounded({ id, type: "layers", title: section.title, items: concepts.map((concept) => concept.label) }, section, nodes);

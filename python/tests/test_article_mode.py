@@ -73,6 +73,13 @@ class _FakeDocument:
     def num_pages(self) -> int:
         return 3
 
+    def export_to_html(self, *, from_element: int, to_element: int, **kwargs) -> str:
+        from html import escape
+        return "<body>" + "".join(f"<p>{escape(item.text or '')}</p>" for item in self.items[from_element:to_element]) + "</body>"
+
+    def export_to_dict(self) -> dict:
+        return {"name": "test-document"}
+
 
 class _Status:
     value = "success"

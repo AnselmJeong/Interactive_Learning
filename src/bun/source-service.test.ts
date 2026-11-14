@@ -175,6 +175,31 @@ describe("article source packs", () => {
     tempRoot = "";
   });
 
+  test("imports native HTML and restores legacy formatting without changing stored source chunks", async () => {
+    const project = await new ProjectService().create({ title: "HTML reader" });
+    const pack = join(tempRoot, "book.preppy");
+    await mkdir(join(pack, "chapters"), { recursive: true });
+    await writeFile(join(pack, "chapters/001.md"), "# A chapter\n\nA precise original statement remains readable.");
+    await writeFile(join(pack, "chapters/001.html"), '<h1>A chapter</h1><p>A <em>precise</em> original statement remains readable.</p>');
+    await writeFile(join(pack, "manifest.json"), JSON.stringify({ schema_version: 2, source: { document_type: "book" }, output: { chapters_dir: "chapters", assets_dir: "assets" }, chapters: [{ index: 1, title: "A chapter", kind: "chapter", path: "chapters/001.md", char_count: 60 }] }));
+    const service = new SourceService();
+    const prepared = await service.prepareImport(project.id, [pack], "book");
+    const [source] = await service.commitPreparedImport(project.id, prepared.id, prepared.items.map((item) => item.id));
+    const imported = await service.loadChunks(source!.id);
+    expect(imported[0]?.html).toContain('<em>precise</em>');
+    const legacy = imported.map(({ html, ...chunk }) => chunk);
+    const row = getDb().query<{chunks_path: string}, [string]>("SELECT chunks_path FROM project_sources WHERE id = ?").get(source!.id)!;
+    const originalBytes = JSON.stringify(legacy);
+    await writeFile(row.chunks_path, originalBytes);
+    expect(await service.refreshReaderHtml(source!.id, legacy)).toEqual({ formatted: 1, total: 1 });
+    expect(await readFile(row.chunks_path, "utf8")).toBe(originalBytes);
+    const restored = await service.enrichReaderHtml(source!.id, legacy);
+    expect(restored[0]?.html).toContain('<em>precise</em>');
+    expect(restored.map(({html, ...chunk}) => chunk)).toEqual(legacy);
+    const modified = legacy.map((chunk) => ({ ...chunk, text: 'A changed source must never inherit old HTML.' }));
+    expect((await service.enrichReaderHtml(source!.id, modified))[0]?.html).toBeUndefined();
+  });
+
   test("merges every selected article pack section into one article source", async () => {
     const project = await new ProjectService().create({ title: "Article Project" });
     const pack = join(tempRoot, "paper.preppy");

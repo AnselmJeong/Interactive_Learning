@@ -1,3 +1,8 @@
+import { learningBlockPresentation, parseLearningTable } from "../shared/learning-structure";
+import { recallConversation, CONVERSATION_RECALL_RULE } from "./conversation-recall";
+import { LEARNING_HTML_RULE, normalizeLearningHtml } from "../shared/learning-html";
+import { reviewDeepReadingTurn } from "./deep-reading-review";
+import { currentDeepReading, DEEP_READING_TUTOR_RULE, passagePlanFor, readingContextChunks, validateExplanationGrounding, validatePassageEvidence } from "./deep-reading-service";
 import { createHash } from "node:crypto";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
@@ -53,7 +58,7 @@ const DIGRESSION_INTENTS = new Set<TutorIntent>(["question", "off_topic", "deepe
 const MAX_HISTORY_TURNS = 8;
 const MAX_HISTORY_CHARS = 1200;
 const MANAGED_MESSAGE_SET_PROMPT_PREFIX = "tutor-default-continue-";
-const PREFETCH_PROMPT_VERSION = "tutor-default-continue-v4-sequential-source-context";
+const PREFETCH_PROMPT_VERSION = "tutor-default-continue-v5-deep-reading";
 const MESSAGE_BATCH_PROMPT_VERSION = PREFETCH_PROMPT_VERSION;
 const PREFETCH_TTL_MS = 20 * 60 * 1000;
 const PREFETCH_PROVIDER_TIMEOUT_MS = 120 * 1000;
@@ -471,40 +476,6 @@ function stripTldrLead(text: string) {
 type CompareTableBlock = Extract<TutorContentBlock, { type: "compare_table" }>;
 type FlowBlock = Extract<TutorContentBlock, { type: "flow" }>;
 
-function pipeCells(line: string) {
-  const trimmedLine = line
-    .replace(/^\s*\|/, "")
-    .replace(/\|\s*$/, "");
-  return splitMarkdownPipes(trimmedLine)
-    .map((cell) => cell.trim())
-    .filter(Boolean);
-}
-
-function isMarkdownTableDivider(line: string) {
-  return pipeCells(line).every((cell) => /^:?-{3,}:?$/.test(cell));
-}
-
-function parseMarkdownPipeTable(text: string): CompareTableBlock | null {
-  const lines = text
-    .split(/\n+/)
-    .map((line) => line.trim())
-    .filter((line) => line.includes("|"));
-  if (lines.length < 2) return null;
-  const headerLine = lines[0];
-  const dividerLine = lines[1];
-  if (!headerLine || !dividerLine) return null;
-  const columns = pipeCells(headerLine).slice(0, 4);
-  if (columns.length < 2) return null;
-  const dataLines = isMarkdownTableDivider(dividerLine) ? lines.slice(2) : lines.slice(1);
-  const rows = dataLines
-    .map((line) => pipeCells(line))
-    .filter((cells) => cells.length >= 2)
-    .map((cells) => Object.fromEntries(columns.map((column, index) => [column, (cells[index] || "").slice(0, 220)])))
-    .filter((row) => columns.some((column) => row[column]))
-    .slice(0, 5);
-  return rows.length ? { type: "compare_table", columns, rows } : null;
-}
-
 function splitFlowTitle(firstPart: string) {
   const normalized = firstPart.replace(/[：:]$/, "").replace(/\s+/g, " ").trim();
   const match = normalized.match(/^(.{4,45}?(?:구조|맥락|과정|흐름|논리|구분|대조|관계|전개))\s+(.{2,})$/u);
@@ -531,7 +502,7 @@ function parseLoosePipeFlow(text: string): FlowBlock | null {
 
 function parsePipeStructureBlock(text: string): CompareTableBlock | FlowBlock | null {
   if (splitMarkdownPipes(text).length < 3) return null;
-  return parseMarkdownPipeTable(text) || parseLoosePipeFlow(text);
+  return parseLearningTable(text, true) || (text.includes("\n") ? null : parseLoosePipeFlow(text));
 }
 
 function splitNumberedFlowIntro(prefix: string) {
@@ -804,15 +775,14 @@ export function prefetchConsumeWaitMs(
   return Math.min(maxWaitMs, providerRemainingMs);
 }
 
-export function requiredTeachingTurnsForSourceChunk(chunk: SourceChunk) {
+export function requiredTeachingTurnsForSourceChunk(chunk: SourceChunk, semanticTurns = 1) {
   const length = chunk.text.replace(/\s+/g, " ").trim().length;
-  if (length <= 700) return 1;
-  if (length <= 1600) return 2;
-  return 3;
+  return Math.max(length <= 700 ? 1 : length <= 1600 ? 2 : 3, Math.min(3, semanticTurns));
 }
 
-export function estimateInitialMessageSetSize(sourceChunks: SourceChunk[]) {
-  return sourceChunks.reduce((total, chunk) => total + requiredTeachingTurnsForSourceChunk(chunk), 1);
+export function estimateInitialMessageSetSize(sourceChunks: SourceChunk[], artifacts?: MaterialArtifacts) {
+  const plans = artifacts ? currentDeepReading(artifacts)?.passages : undefined;
+  return sourceChunks.reduce((total, chunk) => total + requiredTeachingTurnsForSourceChunk(chunk, plans?.find((plan) => plan.chunkId === chunk.id)?.teachingTurns), 1);
 }
 
 function sameStringSet(a: string[], b: string[]) {
@@ -1093,7 +1063,7 @@ export class TutorService {
   }
 
   private estimateMessageSetSize(artifacts: MaterialArtifacts) {
-    return estimateInitialMessageSetSize(artifacts.sourceChunks);
+    return estimateInitialMessageSetSize(artifacts.sourceChunks, artifacts);
   }
 
   private async reconcileMessageSetTotals(materialId: string, artifacts?: MaterialArtifacts) {
@@ -2382,7 +2352,7 @@ export class TutorService {
       return this.progressPlan(session, artifacts, "continue_chunk", focusChunk.id, [...covered]);
     }
 
-    if (this.shouldContinueAdvanceToNextChunk(session, focusChunk, curriculum)) {
+    if (this.shouldContinueAdvanceToNextChunk(session, focusChunk, curriculum, artifacts)) {
       covered.add(focusChunk.id);
       const index = curriculum.findIndex((chunk) => chunk.id === focusChunk.id);
       const nextChunk = curriculum[index + 1];
@@ -2528,13 +2498,9 @@ export class TutorService {
     return curriculum.find((chunk) => chunk.id === session.currentChunkId) || curriculum[0];
   }
 
-  private shouldContinueAdvanceToNextChunk(session: SessionSnapshot, focusChunk: SourceChunk, curriculum: SourceChunk[]): boolean {
-    const requiredTurns = this.requiredTeachingTurnsForChunk(focusChunk);
+  private shouldContinueAdvanceToNextChunk(session: SessionSnapshot, focusChunk: SourceChunk, curriculum: SourceChunk[], artifacts: MaterialArtifacts): boolean {
+    const requiredTurns = requiredTeachingTurnsForSourceChunk(focusChunk, passagePlanFor(artifacts, focusChunk.id)?.teachingTurns);
     return this.currentChunkTeachingTurnCount(session, focusChunk.id, curriculum) >= requiredTurns;
-  }
-
-  private requiredTeachingTurnsForChunk(chunk: SourceChunk): number {
-    return requiredTeachingTurnsForSourceChunk(chunk);
   }
 
   private currentChunkTeachingTurnCount(session: SessionSnapshot, chunkId: string, curriculum: SourceChunk[]): number {
@@ -2570,7 +2536,7 @@ export class TutorService {
 
   private messageTeachingChunkRefs(message: TutorMessage): string[] {
     const blockRefs = this.collectBlockSourceRefs(message.blocks || []);
-    return blockRefs.length ? blockRefs : message.sourceRefs;
+    return blockRefs.length ? blockRefs : message.blocks?.some((block) => block.grounding) ? message.sourceRefs.slice(0, 1) : message.sourceRefs;
   }
 
   private completedModuleIdsFromChunks(artifacts: MaterialArtifacts, covered: Set<string>): string[] {
@@ -2685,6 +2651,7 @@ export class TutorService {
 
   private materialFingerprint(artifacts: MaterialArtifacts) {
     return stableHash({
+      deepReadingHash: currentDeepReading(artifacts)?.contentHash || null,
       artifactSchemaVersion: artifacts.manifest.artifactSchemaVersion || 1,
       sourceSemanticIrContentHash: artifacts.sourceSemanticIr?.contentHash || null,
       sourceFingerprint: artifacts.sourceSemanticIr?.sourceFingerprint || artifacts.manifest.sourceFingerprint || null,
@@ -2703,8 +2670,7 @@ export class TutorService {
         id: chunk.id,
         locator: chunk.locator,
         headingPath: chunk.headingPath,
-        length: chunk.text.length,
-        sample: chunk.text.slice(0, 160),
+        textHash: stableHash(chunk.text),
       })),
     });
   }
@@ -2876,7 +2842,7 @@ export class TutorService {
   private estimateDefaultContinueSteps(session: SessionSnapshot, artifacts: MaterialArtifacts) {
     let virtualSession = { ...session, messages: [...session.messages] };
     let count = 0;
-    const routeSafetyBound = estimateInitialMessageSetSize(artifacts.sourceChunks);
+    const routeSafetyBound = estimateInitialMessageSetSize(artifacts.sourceChunks, artifacts);
     while (count <= routeSafetyBound) {
       const plan = this.planDefaultContinue(virtualSession, artifacts);
       count += 1;
@@ -3694,8 +3660,12 @@ export class TutorService {
       ? `THIS IS THE FIRST TURN OF THE WHOLE SOURCE. Your FIRST block MUST be a "hook" that is a single short paragraph (3-5 sentences) summarizing the ENTIRE source in concrete terms: what it is actually about and what the learner will come to understand by the end, so they know what to expect. Do NOT give study advice or talk about how to read it — summarize the real content. Use this outline:
 Source: ${artifacts.coursePlan.title}${artifacts.coursePlan.subtitle ? ` — ${artifacts.coursePlan.subtitle}` : ""}
 ${artifacts.coursePlan.modules.map((item) => `- ${item.title}`).join("\n")}
-After that overview hook, teach the first source chunk with a guided_reading and invite reflection.`
+After that overview hook, teach the first source chunk with a guided_reading and offer optional exploration choices.`
       : "";
+    const recalled = payload.userText ? recallConversation(
+      getDb().query<MessageRow, [string]>(`SELECT * FROM (SELECT * FROM learning_messages WHERE session_id = ? AND delivery_state = 'visible' ORDER BY ordinal DESC LIMIT 120) ORDER BY ordinal ASC`).all(session.id).map(toMessage),
+      payload.userText,
+    ) : "";
     const lecturePlan = this.lectureModule(artifacts, module);
     const presentationPlan = this.presentationModule(artifacts, module);
     const visualIds = [this.moduleVisual(artifacts, module)?.id].filter((id): id is string => Boolean(id));
@@ -3704,6 +3674,8 @@ After that overview hook, teach the first source chunk with a guided_reading and
       : "\n\nRespond with ONLY the JSON object — no prose, no markdown fences, no explanation before or after. The response MUST start with { and end with }.";
     const result = await client.chatJson({
       temperature: attempt > 0 ? 0.4 : 0.7,
+      // Rich diagrams need markup in addition to visible text; leave room for reasoning.
+      maxTokens: 16_384,
       messages: [
         {
           role: "system",
@@ -3715,6 +3687,8 @@ ${MATH_RENDERING_RULE}
 ${originalTermLine}
 
 ${levelInstruction}
+${DEEP_READING_TUTOR_RULE}
+${recalled ? `${CONVERSATION_RECALL_RULE}\nRelevant original exchanges:\n${recalled}` : ""}
 
 ANSWER THE LEARNER. This is the most important rule. When the learner asks a question, raises a tangent, or says you are dodging, you MUST answer their actual question this turn. Never deflect with "let's move on", "that is a good starting point", or a transition to the next topic instead of answering. Dodging a direct question is a failure.
 
@@ -3733,15 +3707,16 @@ Detected learner intent for this turn: ${intent}. Handle it as follows:
 - answer / start: teach in place (turnMode "teach"). Do NOT mark the learner satisfied or advance just because they answered well — keep teaching this topic in more depth, cover the parts of the source not yet discussed, and if they seem ready simply offer them the option to continue. The learner advances by choosing the progression option, never by your decision.
 
 BE CONCISE AND VISUAL. The whole point of this app is to understand WITHOUT reading long text. Do not be discursive, speculative, or long-winded. Keep any paragraph/guided_reading to 2-3 short sentences. Each block should be tight; never write a wall of text.
-FORMAT CONTRACT: every explanatory block MUST use exactly one of these four formats:
+FORMAT CONTRACT: every explanatory block MUST use the form that best explains its content:
 1. Plain sentences: use paragraph or guided_reading for a compact explanation in normal prose.
 2. Bullet points: use bullets for a flat set of peer points, examples, takeaways, or corrections where order does not matter.
-3. Table: use compare_table only for a true grid with stable columns and parallel rows, such as X vs Y, category comparisons, or dimensions shared by every row.
-4. Numbered flow: use flow for a sequence, cause/effect chain, historical development, argument path, adaptation strategy, or any "A leads to B leads to C" structure.
+3. When the passage compares alternatives on shared dimensions, show the actual comparison as a compare_table. Give the columns meaningful labels in the tutor language and use only supported distinctions.
+4. When order explains the passage, use a flow diagram. For a single path emit flow with short, self-contained steps. For branching, feedback or convergence, use a rich_html SVG with labeled nodes and directional arrows that preserve those relationships.
+5. Rich explanation: use rich_html for a semantic HTML composition, SVG relationship diagram, worked equation, or an optional details/summary expansion. Follow the rich HTML contract below.
 Structural formats MUST be their own JSON blocks. Never put bullets, numbered steps, pipe-separated structures, or table-like text inside paragraph.body or guided_reading.body. A paragraph/guided_reading body is prose only.
 Never copy a figure or table caption into guided_reading. If the source chunk begins with a caption and then continues with body prose, teach only the body prose.
 If you need bullets, return {"type":"bullets","items":[...]}. If you need ordered steps, return {"type":"flow","steps":[...]}. If you need a grid, return {"type":"compare_table","columns":[...],"rows":[...]}.
-Before writing a structured explanation, decide explicitly which of the four formats fits. If it is not a true row/column comparison, do NOT use compare_table. If order or causality matters, use flow rather than bullets. If the points are parallel and unordered, bullets are appropriate.
+Before writing a structured explanation, decide explicitly which visual form fits. If it is not a true row/column comparison, do NOT use compare_table. If order or causality matters, draw the path with flow or the labeled SVG for a non-linear relationship. If the points are parallel and unordered, bullets are appropriate.
 Do not emit Mermaid syntax unless a Mermaid renderer is explicitly available; this app currently expects structured blocks, not mermaid code fences.
 Return 2-4 content blocks. Do not return paragraph-only output unless the learner asked a narrow factual question.
 Never simulate a flow, bullet list, or table inside paragraph or guided_reading text. If you are tempted to write "A | B | C", "1. A 2. B", or "- A - B", stop and emit either a flow, bullets, or compare_table block.
@@ -3755,8 +3730,9 @@ Current course: ${artifacts.coursePlan.title}
 Current topic title: ${module.title}
 Internal objective: ${module.learningGoal}
 Teaching hint: ${instruction}
+Passage explanation plan: ${JSON.stringify(passagePlanFor(artifacts, focusChunk?.id) || { status: "legacy", limitation: "No passage analysis is available; use the supplied source directly." })}
 Lecture plan: ${JSON.stringify(lecturePlan)}
-Presentation plan: ${JSON.stringify(presentationPlan)}
+Presentation plan (an optional outline; choose the visual form for the current passage even if the outline lists bullets): ${JSON.stringify(presentationPlan)}
 Concepts: ${concepts.map((concept) => `${concept.name}: ${concept.definition}`).join("\n")}
 ${courseOverviewLine}
 	${focusLine}
@@ -3764,6 +3740,8 @@ ${courseOverviewLine}
 	Surrounding source chunks (context only — teach the current chunk above): ${chunks.map((chunk) => `[${chunk.id}] ${stripLeadingFigureCaption(stripMarkdownImageTokens(chunk.text))}`).join("\n\n")}
 Available visual ids: ${visualIds.join(", ")}
 Block schema:
+${LEARNING_HTML_RULE}
+Every substantive block includes grounding: {"status":"source|interpretation|analogy|background|uncertain","evidence":[{"chunkId":"allowed chunk id","quote":"exact source excerpt"}]}. This is in addition to the fields below, never inside body text.
 - hook: {"type":"hook","body":"short intriguing opening"}
 - source_quote: {"type":"source_quote","quote":"25 words or fewer from an allowed chunk; only when exact wording genuinely helps","sourceRef":"chunk id","attribution":"optional"}
 - guided_reading: {"type":"guided_reading","body":"2-3 sentence plain explanation of the current source chunk","sourceRef":"chunk id"}
@@ -3781,10 +3759,10 @@ Output schema: {"message":"plain text fallback summary","blocks":[/* 2-4 blocks 
           content:
             payload.event === "start_module"
               ? isSourceOpening
-                ? "This is the very first turn. Open with a natural hook that summarizes the actual content of the source/module in one short paragraph. Do not start it with formulaic labels such as '핵심은', '요약하면', or 'TLDR'. Then teach the first source chunk with a guided_reading and invite reflection."
-                : "Open this module's first source chunk as a guided lecture: first a natural content-summary hook without formulaic labels such as '핵심은', then guided_reading of the current chunk, then invite reflection."
+                ? "This is the very first turn. Open with a natural hook that summarizes the actual content of the source/module in one short paragraph. Do not start it with formulaic labels such as '핵심은', '요약하면', or 'TLDR'. Then teach the first source chunk with a guided_reading and offer optional exploration choices."
+                : "Open this module's first source chunk as a guided lecture: first a natural content-summary hook without formulaic labels such as '핵심은', then guided_reading of the current chunk, then offer optional exploration choices."
               : payload.event === "next_chunk"
-                ? "Continue to the next source chunk. Open with a one-line bridge from the previous chunk, then teach the current chunk with a guided_reading, then invite reflection. Do not repeat a hook."
+                ? "Continue to the next source chunk. Open with a one-line bridge from the previous chunk, then teach the current chunk with a guided_reading, then offer optional exploration choices. Do not repeat a hook."
                 : payload.event === "continue_chunk"
                   ? "Continue the SAME current source chunk. Do not move to the next chunk. Do not repeat the earlier explanation; extend it by covering what remains implicit, under-explained, or newly useful in this chunk. Keep it concise and end with learner exploration choices."
                   : payload.event === "return_to_progress"
@@ -3794,7 +3772,10 @@ Output schema: {"message":"plain text fallback summary","blocks":[/* 2-4 blocks 
       ],
     });
     if (!result || typeof result !== "object") throw new Error("Model returned a non-object turn");
-    return result as Partial<TutorTurnOutput>;
+    const draft = result as Partial<TutorTurnOutput>;
+    return passagePlanFor(artifacts, focusChunk?.id)?.status === "analyzed" || draft.blocks?.some((block) => block.type === "rich_html")
+      ? reviewDeepReadingTurn({ client, model: settings.providers[settings.aiProvider].selectedModel }, draft, chunks)
+      : draft;
   }
 
   private async tutorProviderRuntime(session: SessionSnapshot) {
@@ -3867,7 +3848,7 @@ ${originalTermLine}
 ${levelInstruction}
 Answer the learner's actual latest turn. Do not grade, do not say to stick closer to the source, and do not repeat a canned fallback.
 Use the source chunks as primary context, but use your own knowledge when it helps. Be concise and scannable, not discursive. The goal is to understand without reading a wall of text.
-For repair text, use plain short sentences or simple bullet points. Do not simulate flows or tables with pipe characters, markdown tables, mermaid, or numbered pseudo-diagrams.
+Separate prose and each structure with a blank line. For a comparison, write one Markdown table with a header, separator row and comparable rows. For a sequence, write each numbered step on its own line, starting at 1. Use prose for branching or feedback when a single sequence would misrepresent it. Keep ordinary explanations as short paragraphs.
 Do not copy a figure or table caption into the learner-facing explanation.
 Teach one source chunk at a time; stay on the current chunk below and do not race ahead.
 If the learner is asking a question, answer directly first. If they gave an interpretation, connect their wording to the source and refine it.
@@ -3883,7 +3864,7 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${stripLeading
           role: "user",
           content:
             payload.event === "start_module" || payload.event === "next_chunk" || payload.event === "return_to_progress"
-              ? "Teach the current source chunk as a guided lecture. Teach first, then invite reflection."
+              ? "Teach the current source chunk as a guided lecture. Teach first, then offer optional exploration choices."
               : payload.event === "continue_chunk"
                 ? "Continue the SAME current source chunk. Do not move to the next chunk. Do not repeat the earlier explanation; cover still-undiscussed details, examples, mechanism, contrast, or implication from this chunk."
                 : `Learner just said: ${payload.userText}\nIntent looks like: ${intent}. Answer this turn.`,
@@ -3892,7 +3873,7 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${stripLeading
     });
     const blocks = this.textToTutorBlocks(text);
     if (!blocks.length) throw new Error("AI text repair returned empty content");
-    return {
+    const draft: Partial<TutorTurnOutput> = {
       message: blocksToPlainText(blocks),
       blocks,
       diagram: null,
@@ -3915,6 +3896,9 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${stripLeading
         criticWarning: "Structured tutor JSON failed; recovered with AI text repair.",
       },
     };
+    return passagePlanFor(artifacts, focusChunk?.id)?.status === "analyzed"
+      ? reviewDeepReadingTurn({ client, model: settings.providers[settings.aiProvider].selectedModel }, draft, chunks)
+      : draft;
   }
 
   private textToTutorBlocks(text: string): TutorContentBlock[] {
@@ -3922,10 +3906,17 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${stripLeading
       .replace(/^```(?:text|markdown)?/i, "")
       .replace(/```$/i, "")
       .split(/\n{2,}/)
-      .map((part) => this.scrubExamLanguage(part.replace(/\s+/g, " ").trim()))
-      .filter(Boolean)
+      .filter((part) => part.trim())
       .slice(0, 6)
-      .map((body) => ({ type: "paragraph" as const, body: body.slice(0, 4000) }));
+      .map((part): TutorContentBlock => {
+        const table = parseLearningTable(part);
+        if (table) return table;
+        const steps = part.trim().split(/\r?\n/).map((line) => /^\s*(\d+)[.)]\s+(.+)$/u.exec(line));
+        if (steps.length >= 2 && steps.every((step, index) => step && Number(step[1]) === index + 1)) {
+          return { type: "flow", steps: steps.map((step) => step![2]!) };
+        }
+        return { type: "paragraph", body: this.scrubExamLanguage(part.trim()).slice(0, 4000) };
+      });
   }
 
   private sanitizeOutput(
@@ -3980,11 +3971,14 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${stripLeading
     for (const id of module.sourceChunkIds) contextualIds.add(id);
     if (focusChunk) contextualIds.add(focusChunk.id);
     const blockRefs = this.collectBlockSourceRefs(blocks).filter((id) => allowedRefs.has(id));
-    const groundedBlockRefs = isProgressTurnEvent(payload.event) && focusChunk ? blockRefs.filter((id) => id === focusChunk.id) : blockRefs;
+    const evidenceRefs = blocks.flatMap((block) => block.grounding?.evidence.map((entry) => entry.chunkId) || []).filter((id) => contextualIds.has(id));
+    const groundedBlockRefs = uniqueStrings([...(isProgressTurnEvent(payload.event) && focusChunk ? blockRefs.filter((id) => id === focusChunk.id) : blockRefs), ...evidenceRefs]);
     const modelRefs = isProgressTurnEvent(payload.event) ? [] : Array.isArray(output.sourceRefs) ? output.sourceRefs.filter((id) => contextualIds.has(id)) : [];
     const mergedRefs = uniqueStrings([...groundedBlockRefs, ...modelRefs]);
     const fallbackRef = focusChunk?.id || contextualChunks[0]?.id || module.sourceChunkIds[0];
-    const sourceRefs = mergedRefs.length ? mergedRefs : fallbackRef ? [fallbackRef] : [];
+    const sourceRefs = isProgressTurnEvent(payload.event) && focusChunk
+      ? uniqueStrings([focusChunk.id, ...mergedRefs])
+      : mergedRefs.length ? mergedRefs : fallbackRef ? [fallbackRef] : [];
 
     const criticWarning = [output.stateUpdate?.criticWarning || null, this.examLanguageWarning(String(output.message || "") + "\n" + blocksToPlainText(blocks))]
       .filter(Boolean)
@@ -4025,13 +4019,20 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${stripLeading
     fallbackMessage?: unknown
   ): TutorContentBlock[] {
     const allowedRefs = new Set(artifacts.sourceChunks.map((chunk) => chunk.id));
-    const chunks = this.contextualChunks(artifacts, module, payload.userText, focusChunk?.id);
+    const chunks = this.contextualChunks(artifacts, module, payload.userText, focusChunk?.id, 6, isProgressTurnEvent(payload.event));
+    const contextIds = new Set(chunks.map((chunk) => chunk.id));
     const firstChunk = focusChunk || chunks[0];
     const lecturePlan = this.lectureModule(artifacts, module);
     const isOpening = payload.event === "start_module" || payload.event === "next_chunk" || payload.event === "return_to_progress";
     const rawCleaned = Array.isArray(blocks)
       ? blocks
-          .map((block) => this.sanitizeBlock(block, allowedRefs, payload.event === "user_message"))
+          .map((raw) => {
+            const block = this.sanitizeBlock(raw, contextIds, payload.event === "user_message");
+            if (!block) return null;
+            if (block.type === "source_quote" && !validatePassageEvidence([{ chunkId: block.sourceRef, quote: block.quote }], chunks).length) return null;
+            const grounding = validateExplanationGrounding((raw as Record<string, unknown>).grounding, chunks, contextIds);
+            return grounding ? { ...block, grounding } : block;
+          })
           .filter((block): block is TutorContentBlock => Boolean(block))
           .slice(0, 5)
       : [];
@@ -4059,9 +4060,11 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${stripLeading
     const fallbackBlocks: TutorContentBlock[] = cleaned.length
       ? cleaned
       : [{ type: "paragraph", body: this.scrubExamLanguage(String(fallbackMessage || "이 대목을 먼저 짧게 풀어 보겠습니다.")) }];
-    const expandedBlocks = this.expandPseudoStructures(fallbackBlocks);
+    const expandedBlocks = this.expandPseudoStructures(fallbackBlocks).map(learningBlockPresentation);
 
-    const assembled = [...requiredStartBlocks, ...expandedBlocks]
+    const planLimitation = isOpening ? passagePlanFor(artifacts, firstChunk?.id)?.limitation : null;
+    const limitationBlocks: TutorContentBlock[] = planLimitation ? [{ type: "paragraph", body: planLimitation, grounding: { status: "uncertain", evidence: [] } }] : [];
+    const assembled = [...requiredStartBlocks, ...expandedBlocks, ...limitationBlocks]
       .filter((block) => (isOpening ? block.type !== "source_quote" : true))
       .map((block) => (block.type === "guided_reading" && !block.sourceRef && firstChunk?.id ? { ...block, sourceRef: firstChunk.id } : block))
       .map((block) => this.reanchorProgressBlock(block, payload.event, firstChunk))
@@ -4089,16 +4092,16 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${stripLeading
       }
       const numberedFlowBlocks = parseNumberedFlowBlocks(block.body);
       if (numberedFlowBlocks) {
-        expanded.push(...numberedFlowBlocks);
+        expanded.push(...numberedFlowBlocks.map((item) => ({ ...item, grounding: block.grounding })));
         continue;
       }
       const dashBlocks = parseDashBulletBlocks(block.body);
       if (dashBlocks) {
-        expanded.push(...dashBlocks);
+        expanded.push(...dashBlocks.map((item) => ({ ...item, grounding: block.grounding })));
         continue;
       }
       const structure = parsePipeStructureBlock(block.body);
-      expanded.push(structure || block);
+      expanded.push(structure ? { ...structure, grounding: block.grounding } : block);
     }
     return expanded;
   }
@@ -4130,8 +4133,8 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${stripLeading
           continue;
         }
         pieces.forEach((piece, index) => {
-          if (block.type === "guided_reading" && index === 0) out.push({ type: "guided_reading", body: piece, sourceRef: block.sourceRef });
-          else out.push({ type: "paragraph", body: piece });
+          if (block.type === "guided_reading" && index === 0) out.push({ type: "guided_reading", body: piece, sourceRef: block.sourceRef, grounding: block.grounding });
+          else out.push({ type: "paragraph", body: piece, grounding: block.grounding });
         });
       } else {
         out.push(block);
@@ -4144,6 +4147,7 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${stripLeading
     if (!block || typeof block !== "object" || !("type" in block)) return null;
     const raw = block as Record<string, unknown>;
     const type = String(raw.type);
+    if (type === "rich_html") return normalizeLearningHtml(raw);
     if (type === "hook") return { type, body: stripTldrLead(String(raw.body || "").slice(0, 280)) };
     if (type === "guided_reading") {
       const sourceRef = typeof raw.sourceRef === "string" && allowedRefs.has(raw.sourceRef) ? raw.sourceRef : undefined;
@@ -4225,6 +4229,7 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${stripLeading
   private scrubBlock(block: TutorContentBlock): TutorContentBlock {
     const clean = (text: string) => this.scrubExamLanguage(stripMarkdownImageTokens(text));
     if (block.type === "visual_ref") return block;
+    if (block.type === "rich_html") return { ...(normalizeLearningHtml(block) || { type: "paragraph" as const, body: clean(block.body) }), grounding: block.grounding };
     if (block.type === "bullets") return { ...block, items: block.items.map(clean).filter(Boolean) };
     if (block.type === "flow") return { ...block, steps: block.steps.map(clean).filter(Boolean) };
     if (block.type === "compare_table") {
@@ -4304,6 +4309,9 @@ Surrounding source chunks: ${chunks.map((chunk) => `[${chunk.id}] ${stripLeading
     limit = 6,
     sequentialOnly = false
   ): SourceChunk[] {
+    if (focusChunkId && (currentDeepReading(artifacts) || userText)) {
+      return readingContextChunks(artifacts, focusChunkId, userText, limit);
+    }
     if (sequentialOnly && focusChunkId) {
       return sequentialTutorContext(artifacts.sourceChunks, focusChunkId, Math.min(limit, 3));
     }
