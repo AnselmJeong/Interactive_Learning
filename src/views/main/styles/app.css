@@ -6424,3 +6424,10 @@ button:not(:where(.astryx-button, .astryx-tab, .astryx-selector, .astryx-field *
 .progress-page .progress-main { padding: 0; border: 0; }
 .inspector-tabs-astryx { margin: var(--spacing-2) 0 var(--spacing-3); }
 .course-strip-actions { display: flex; align-items: center; justify-content: flex-end; gap: var(--spacing-2); flex-wrap: wrap; }
+
+/* The Astryx reset removes list markers everywhere; prose lists in learning
+   content keep their bullets and numbers. */
+:where(.markdown-content, .rich-html, .tutor-block) :where(ul, ol) {
+  list-style: revert;
+  padding-inline-start: revert;
+}
