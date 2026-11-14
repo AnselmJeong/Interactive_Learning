@@ -431,6 +431,59 @@ describe("immutable prepared message route", () => {
     expect((await internal.revealPreparedMessageUnlocked("session-route")).message).toBe("A1");
   });
 
+  test("finishing the last chunk completes the session without a finish-or-continue confirmation", async () => {
+    seedRoute();
+    const now = Date.now();
+    const db = getDb();
+    const allCovered = ["chunk-a1", "chunk-a2", "chunk-b1"];
+    db.query("UPDATE learning_message_sets SET total_messages = 4, completed_messages = 4, next_route_index = 4 WHERE id = 'set-route'").run();
+    db.query(
+      `INSERT INTO prepared_learning_messages
+       (id, message_set_id, route_index, module_id, module_index, source_chunk_id, target_event, content, blocks_json,
+        source_refs_json, choices_json, state_update_json, route_before_json, route_after_json, created_at)
+       VALUES ('prepared-finish', 'set-route', 3, 'module-b', 1, 'chunk-b1', 'finish_prompt', ?, '[]', '[]', ?, ?, ?, ?, ?)`
+    ).run(
+      "여기까지 원문의 모든 대목을 함께 살펴봤습니다. 학습을 마칠까요, 아니면 더 짚어 보고 싶은 부분이 있으신가요?",
+      JSON.stringify(["네, 마칠게요.", "아니요, 더 질문이 있어요."]),
+      JSON.stringify({ nextPhase: "complete", readyToContinue: false, nextSuggestedStep: "stay", detectedConfusion: null, turnMode: "synthesize" }),
+      JSON.stringify({ currentModuleId: "module-b", currentChunkId: "chunk-b1", coveredChunkIds: ["chunk-a1", "chunk-a2"], completedModuleIds: ["module-a"] }),
+      JSON.stringify({ currentModuleId: "module-b", currentChunkId: "chunk-b1", coveredChunkIds: allCovered, completedModuleIds: ["module-a", "module-b"] }),
+      now + 3,
+    );
+
+    const service = new TutorService();
+    const internal = service as unknown as {
+      artifacts: { getArtifacts: (id: string) => Promise<unknown> };
+      revealPreparedMessageUnlocked: (id: string) => Promise<import("../shared/tutor-types").TutorTurnOutput>;
+      completeSessionAfterFinishTurn: (id: string, output: import("../shared/tutor-types").TutorTurnOutput) => Promise<void>;
+    };
+    internal.artifacts = {
+      getArtifacts: async () => ({
+        sourceChunks: allCovered.map((id) => ({ id, headingPath: [], locator: id, kind: "body", text: id, confidence: 1 })),
+        coursePlan: { modules: [{ id: "module-a", sourceChunkIds: ["chunk-a1", "chunk-a2"] }, { id: "module-b", sourceChunkIds: ["chunk-b1"] }] },
+      }),
+    };
+
+    for (const expected of ["A0", "A1", "B0"]) {
+      const step = await internal.revealPreparedMessageUnlocked("session-route");
+      expect(step.message).toBe(expected);
+      await internal.completeSessionAfterFinishTurn("session-route", step);
+      expect(db.query<{ status: string }, []>("SELECT status FROM learning_sessions WHERE id = 'session-route'").get()?.status).toBe("active");
+    }
+    const output = await internal.revealPreparedMessageUnlocked("session-route");
+    await internal.completeSessionAfterFinishTurn("session-route", output);
+
+    expect(output.choices).toEqual([]);
+    expect(output.message).not.toContain("마칠까요");
+    const session = db.query<{ status: string }, []>("SELECT status FROM learning_sessions WHERE id = 'session-route'").get();
+    expect(session?.status).toBe("completed");
+    const last = db.query<{ content: string; choices_json: string }, []>(
+      "SELECT content, choices_json FROM learning_messages WHERE session_id = 'session-route' AND delivery_state = 'visible' ORDER BY ordinal DESC LIMIT 1"
+    ).get();
+    expect(last?.content).toBe(output.message);
+    expect(JSON.parse(last?.choices_json || "[]")).toEqual([]);
+  });
+
   test("automatically continues with another 50-message batch after a batch checkpoint", async () => {
     seedRoute();
     const now = Date.now();

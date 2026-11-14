@@ -170,6 +170,10 @@ function materialAnnotationContext(artifacts: MaterialArtifacts) {
   }).join("\n")}`;
 }
 
+// Shown once the last chunk is finished; the session completes right away instead of asking
+// whether to study more or finish.
+const FINISH_TURN_MESSAGE = "원문의 모든 대목을 다뤘습니다. 학습을 마칩니다. 수고하셨습니다!";
+
 // Detects an explicit learner confirmation to end the session after all modules are done.
 function isFinishConfirmation(text: string) {
   const t = text.trim();
@@ -1701,6 +1705,7 @@ export class TutorService {
 
   private async continueSessionUnlocked(sessionId: string) {
     const output = await this.revealPreparedMessageUnlocked(sessionId);
+    await this.completeSessionAfterFinishTurn(sessionId, output);
     await this.persistSessionSnapshot(sessionId);
     return { session: this.snapshot(sessionId), context: await this.context(sessionId), output };
   }
@@ -1716,12 +1721,14 @@ export class TutorService {
     if (mode === "paragraph") {
       const revealed = await this.tryRevealNextPreparedMessage(sessionId);
       if (revealed) {
+        await this.completeSessionAfterFinishTurn(sessionId, revealed);
         await this.persistSessionSnapshot(sessionId);
         this.scheduleDefaultContinue(sessionId, "assistant_turn");
         return { session: this.snapshot(sessionId), context: await this.context(sessionId), output: revealed };
       }
       const consumed = await this.tryConsumeDefaultContinue(sessionId, { waitForGenerating: !this.hasPreparedMessages(sessionId) });
       if (consumed) {
+        await this.completeSessionAfterFinishTurn(sessionId, consumed);
         await this.persistSessionSnapshot(sessionId);
         this.scheduleDefaultContinue(sessionId, "assistant_turn");
         return { session: this.snapshot(sessionId), context: await this.context(sessionId), output: consumed };
@@ -1730,6 +1737,7 @@ export class TutorService {
       const plan = this.planDefaultContinue(session, artifacts);
       const output = await this.generatePlannedProgressTurn(session, artifacts, plan);
       this.commitPlannedTutorTurn(sessionId, artifacts, plan, output);
+      await this.completeSessionAfterFinishTurn(sessionId, output);
       await this.persistSessionSnapshot(sessionId);
       this.scheduleDefaultContinue(sessionId, "assistant_turn");
       return { session: this.snapshot(sessionId), context: await this.context(sessionId), output };
@@ -1740,6 +1748,7 @@ export class TutorService {
     const plan = this.planExplicitProgress(session, artifacts, mode);
     const output = await this.generatePlannedProgressTurn(session, artifacts, plan);
     this.commitPlannedTutorTurn(sessionId, artifacts, plan, output);
+    await this.completeSessionAfterFinishTurn(sessionId, output);
     await this.persistSessionSnapshot(sessionId);
     if (plan.targetEvent !== "finish_prompt") this.scheduleDefaultContinue(sessionId, "assistant_turn");
     return { session: this.snapshot(sessionId), context: await this.context(sessionId), output };
@@ -1753,6 +1762,7 @@ export class TutorService {
     const boundSetId = this.getSessionRow(sessionId).message_set_id;
     if (boundSetId) {
       const output = await this.revealPreparedMessageUnlocked(sessionId, { returning: true });
+      await this.completeSessionAfterFinishTurn(sessionId, output);
       await this.persistSessionSnapshot(sessionId);
       return { session: this.snapshot(sessionId), context: await this.context(sessionId), output };
     }
@@ -1764,12 +1774,14 @@ export class TutorService {
     }
     const revealed = await this.tryRevealNextPreparedMessage(sessionId, { returning: true });
     if (revealed) {
+      await this.completeSessionAfterFinishTurn(sessionId, revealed);
       await this.persistSessionSnapshot(sessionId);
       this.scheduleDefaultContinue(sessionId, "assistant_turn");
       return { session: this.snapshot(sessionId), context: await this.context(sessionId), output: revealed };
     }
     const consumed = await this.tryConsumeDefaultContinue(sessionId, { returning: true, waitForGenerating: !this.hasPreparedMessages(sessionId) });
     if (consumed) {
+      await this.completeSessionAfterFinishTurn(sessionId, consumed);
       await this.persistSessionSnapshot(sessionId);
       this.scheduleDefaultContinue(sessionId, "assistant_turn");
       return { session: this.snapshot(sessionId), context: await this.context(sessionId), output: consumed };
@@ -1778,9 +1790,43 @@ export class TutorService {
     const plan = this.planExplicitProgress(session, artifacts, "return_to_progress");
     const output = await this.generatePlannedProgressTurn(session, artifacts, plan);
     this.commitPlannedTutorTurn(sessionId, artifacts, plan, output);
+    await this.completeSessionAfterFinishTurn(sessionId, output);
     await this.persistSessionSnapshot(sessionId);
     if (plan.targetEvent !== "finish_prompt") this.scheduleDefaultContinue(sessionId, "assistant_turn");
     return { session: this.snapshot(sessionId), context: await this.context(sessionId), output };
+  }
+
+  // The finish turn closes the session as soon as the last chunk is studied: no "finish or keep
+  // going?" confirmation. Prepared message sets generated before this change still hold the old
+  // question text, so the revealed message is rewritten to the farewell as well.
+  private async completeSessionAfterFinishTurn(sessionId: string, output: TutorTurnOutput) {
+    if (output.stateUpdate?.nextPhase !== "complete") return;
+    const session = this.snapshotHeader(sessionId);
+    if (session.status !== "active") return;
+    const artifacts = await this.artifacts.getArtifacts(session.materialId);
+    const curriculumIds = new Set(this.orderedCurriculum(artifacts).map((chunk) => chunk.id));
+    const covered = session.coveredChunkIds.filter((id) => curriculumIds.has(id));
+    if (!curriculumIds.size || new Set(covered).size < curriculumIds.size) return;
+    const now = Date.now();
+    const blocks = [{ type: "bridge" as const, body: FINISH_TURN_MESSAGE }];
+    getDb().transaction(() => {
+      const latest = getDb()
+        .query<{ id: string }, [string]>(
+          `SELECT id FROM learning_messages
+           WHERE session_id = ? AND role = 'assistant' AND delivery_state = 'visible'
+           ORDER BY ordinal DESC LIMIT 1`
+        )
+        .get(sessionId);
+      if (latest) {
+        getDb()
+          .query("UPDATE learning_messages SET content = ?, blocks_json = ?, choices_json = '[]' WHERE id = ?")
+          .run(FINISH_TURN_MESSAGE, JSON.stringify(blocks), latest.id);
+      }
+      getDb().query("UPDATE learning_sessions SET status = 'completed', updated_at = ? WHERE id = ?").run(now, sessionId);
+    })();
+    output.message = FINISH_TURN_MESSAGE;
+    output.blocks = blocks;
+    output.choices = [];
   }
 
   async selectModule(sessionId: string, moduleId: string) {
@@ -2314,13 +2360,13 @@ export class TutorService {
   }
 
   private buildFinishPromptTurn(module: CourseModule): TutorTurnOutput {
-    const body = "여기까지 원문의 모든 대목을 함께 살펴봤습니다. 학습을 마칠까요, 아니면 더 짚어 보고 싶은 부분이 있으신가요?";
+    const body = FINISH_TURN_MESSAGE;
     return {
       message: body,
       blocks: [{ type: "bridge", body }],
       diagram: null,
       visualPlacement: null,
-      choices: ["네, 마칠게요.", "아니요, 더 질문이 있어요."],
+      choices: [],
       progress: 100,
       moduleId: module.id,
       sourceRefs: [],

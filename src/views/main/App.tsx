@@ -33,7 +33,7 @@ import { SideNav, SideNavHeading, SideNavItem, SideNavSection } from "@astryxdes
 import { Badge } from "@astryxdesign/core/Badge";
 import { Button } from "@astryxdesign/core/Button";
 import { Tab, TabList } from "@astryxdesign/core/TabList";
-import { LEARNING_MILESTONES } from "./learning-milestones";
+import { LEARNING_MILESTONES, learningProgressPercent } from "./learning-milestones";
 import { SourceLearningPreview } from "./components/SourceLearningPreview";
 import { LearningGuideView } from "./components/LearningGuideView";
 import { AnnotationInlineScope } from "./components/AnnotationInlineScope";
@@ -2297,7 +2297,7 @@ export function App({ request }: { request: RpcRequest }) {
   const reachedChunks = coveredChunks + (currentChunkId && !context?.session.coveredChunkIds.includes(currentChunkId) ? 1 : 0);
   const learningProgressValue = totalChunks ? Math.min(reachedChunks, totalChunks) : 0;
   const progressText = artifacts ? `${learningProgressValue}/${totalChunks}` : "0/0";
-  const progressPercent = totalChunks ? Math.round((learningProgressValue / totalChunks) * 100) : 0;
+  const progressPercent = learningProgressPercent(reachedChunks, coveredChunks, totalChunks);
   const materialMessageSets = activeMaterial ? messageSetsByMaterial[activeMaterial.id] || [] : [];
   const availableMessageSets = materialMessageSets.filter((item) => item.status !== "cancelled" && item.status !== "superseded");
   const resumableSession = state.sessions.find((item) => item.status === "active") || null;
@@ -2407,7 +2407,8 @@ export function App({ request }: { request: RpcRequest }) {
     return () => cancelAnimationFrame(frame);
   }, [latestAssistantId, settings?.answerReadySound, tutorThinking]);
 
-  // Once every chunk is covered, the tutor offers an explicit "마칠게요 / 더 질문 있어요" pair.
+  // Finishing the last chunk now completes the session directly. The "학습 종료 / 더 짚어보기" pair
+  // only remains for older sessions that were left active at the former finish prompt.
   // Normal turns show three exploratory choices, while chunk/module progression lives in
   // separate command buttons below the choices.
   const allModulesCovered = totalChunks > 0 && coveredChunks >= totalChunks;
@@ -3285,7 +3286,7 @@ export function App({ request }: { request: RpcRequest }) {
                 </div>
               ) : sessionReadOnly ? (
                 <div className="read-only-session">
-                  <p>{session.status === "completed" ? "Completed session opened for review." : "Archived session opened for review."}</p>
+                  <p>{session.status === "completed" ? "원문의 모든 대목을 학습했습니다. 수고하셨습니다!" : "Archived session opened for review."}</p>
                   <button className="wide-button primary" onClick={() => startSession("new")} disabled={busy}>
                     <MessageSquare size={16} /> Start new from this material
                   </button>
