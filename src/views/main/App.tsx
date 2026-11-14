@@ -54,6 +54,7 @@ import { shouldSubmitTextArea } from "./submit-shortcut";
 import { isMessageSetPreparationComplete } from "./message-set-state";
 import { sessionDeletionTransition } from "./session-deletion-transition";
 import { groupFiguresByCanonicalChunk } from "../../shared/source-figure-placement";
+import { pinElementToTop } from "./scroll-anchor";
 import {
   additionalExplorationChoices,
   additionalExplorationContext,
@@ -890,6 +891,7 @@ export function App({ request }: { request: RpcRequest }) {
   const answerReadyNotificationPendingRef = useRef(false);
   const latestNotifiedAssistantIdRef = useRef<string | null>(null);
   const latestAlignedAssistantKeyRef = useRef<string | null>(null);
+  const chatScrollSpacerRef = useRef<HTMLDivElement | null>(null);
   const sessionStartTokenRef = useRef(0);
   const pendingAnnotationDeletionRef = useRef<MaterialAnnotation | null>(null);
   const pendingAnnotationDeletionTimerRef = useRef<number | null>(null);
@@ -2258,33 +2260,29 @@ export function App({ request }: { request: RpcRequest }) {
   useEffect(() => {
     if (viewMode !== "chat") {
       latestAlignedAssistantKeyRef.current = null;
+      if (chatScrollSpacerRef.current) chatScrollSpacerRef.current.style.height = "0px";
       return;
     }
     if (!latestAssistantForScrollId) return;
     const alignmentKey = `${selectedModuleId || "all"}:${latestAssistantForScrollId}`;
     if (latestAlignedAssistantKeyRef.current === alignmentKey) return;
     latestAlignedAssistantKeyRef.current = alignmentKey;
-    let secondFrame = 0;
-    const alignLatestAssistant = () => {
-      const surface = tutorSurfaceRef.current;
-      if (!surface) return;
-      const target = Array.from(surface.querySelectorAll<HTMLElement>("[data-chat-message-id]"))
-        .find((element) => element.dataset.chatMessageId === latestAssistantForScrollId);
-      if (!target) return;
-      const surfaceRect = surface.getBoundingClientRect();
-      const targetRect = target.getBoundingClientRect();
-      const topInset = 0;
-      const nextTop = surface.scrollTop + targetRect.top - surfaceRect.top - topInset;
-      const maxTop = Math.max(0, surface.scrollHeight - surface.clientHeight);
-      surface.scrollTo({ top: Math.max(0, Math.min(nextTop, maxTop)), behavior: "auto" });
-    };
-    const firstFrame = requestAnimationFrame(() => {
-      alignLatestAssistant();
-      secondFrame = requestAnimationFrame(alignLatestAssistant);
+    const surface = tutorSurfaceRef.current;
+    if (!surface) return;
+    const findTarget = () => Array.from(surface.querySelectorAll<HTMLElement>("[data-chat-message-id]"))
+      .find((element) => element.dataset.chatMessageId === latestAssistantForScrollId) || null;
+    // Pin the new message to the top until layout settles (collapsing 추가 탐색 panels, async
+    // figures/diagrams, the thinking bubble going away), instead of aligning once and drifting.
+    const stopPinning = pinElementToTop({
+      surface,
+      getTarget: findTarget,
+      spacer: chatScrollSpacerRef.current,
+      observe: [surface.querySelector<HTMLElement>(".chat-log"), findTarget()],
     });
     return () => {
-      cancelAnimationFrame(firstFrame);
-      if (secondFrame) cancelAnimationFrame(secondFrame);
+      stopPinning();
+      // Let a StrictMode remount (same key) pin again instead of being skipped.
+      if (latestAlignedAssistantKeyRef.current === alignmentKey) latestAlignedAssistantKeyRef.current = null;
     };
   }, [latestAssistantForScrollId, selectedModuleId, viewMode]);
 
@@ -3284,6 +3282,7 @@ export function App({ request }: { request: RpcRequest }) {
               onResumeHandled={handleSideChatResumeHandled}
             />
           ) : null}
+          {viewMode === "chat" && session ? <div ref={chatScrollSpacerRef} aria-hidden="true" /> : null}
           </section>
           {viewMode === "chat" && session && !sessionReadOnly && !selectedModuleReadOnly ? (
             <ChatComposer
