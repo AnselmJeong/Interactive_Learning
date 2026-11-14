@@ -11,9 +11,15 @@ export type AiProviderPublicSettings = {
   selectedVisionModel: string;
 };
 
+/**
+ * "subscription" means the provider authenticates through a locally logged-in CLI
+ * (Codex for OpenAI, Claude Code for Claude) instead of an API key.
+ */
+export type AiProviderKeySource = "settings" | "env" | "subscription";
+
 export type AiProviderKeyState = {
   hasApiKey: boolean;
-  apiKeySource: "settings" | "env" | null;
+  apiKeySource: AiProviderKeySource | null;
 };
 
 export type AppSettings = {
@@ -49,7 +55,7 @@ export type AiProviderStatus = {
   provider: AiProviderId;
   baseUrl: string;
   hasApiKey: boolean;
-  apiKeySource: "settings" | "env" | null;
+  apiKeySource: AiProviderKeySource | null;
   keyStates: Record<AiProviderId, AiProviderKeyState>;
   tinyfishSearchKeyState: AiProviderKeyState;
   braveSearchKeyState: AiProviderKeyState;

@@ -5,10 +5,16 @@ import { readJsonFile, writeJsonFile } from "./json-file";
 import { SOURCE_IMPORT_MIN_CHARS_OPTIONS, type AiProviderId, type AppSettings, type ChatSubmitShortcut, type SourceImportMinChars } from "../shared/settings-types";
 import { modelSupportsVision } from "../shared/vision-models";
 
+const SUBSCRIPTION_BASE_URLS = {
+  openai: "subscription:codex",
+  anthropic: "subscription:claude-code",
+} as const;
+
 const DEFAULT_PROVIDERS: AppSettings["providers"] = {
   ollama: { baseUrl: "http://localhost:11434/v1", selectedModel: "", selectedVisionModel: "" },
-  openai: { baseUrl: "https://api.openai.com/v1", selectedModel: "", selectedVisionModel: "" },
-  anthropic: { baseUrl: "https://api.anthropic.com", selectedModel: "", selectedVisionModel: "" },
+  // OpenAI and Claude use the Codex / Claude Code CLI subscription login; there is no HTTP endpoint to configure.
+  openai: { baseUrl: SUBSCRIPTION_BASE_URLS.openai, selectedModel: "", selectedVisionModel: "" },
+  anthropic: { baseUrl: SUBSCRIPTION_BASE_URLS.anthropic, selectedModel: "", selectedVisionModel: "" },
   gemini: { baseUrl: "https://generativelanguage.googleapis.com/v1beta", selectedModel: "", selectedVisionModel: "" },
 };
 
@@ -128,6 +134,9 @@ export function normalizeSettings(saved: Partial<AppSettings>, defaults = runtim
     };
     return acc;
   }, {} as AppSettings["providers"]);
+  // Older settings stored the OpenAI / Anthropic API URLs here; subscription providers have no editable endpoint.
+  providers.openai.baseUrl = SUBSCRIPTION_BASE_URLS.openai;
+  providers.anthropic.baseUrl = SUBSCRIPTION_BASE_URLS.anthropic;
   const savedOllamaBaseUrl = typeof saved.ollamaBaseUrl === "string" ? saved.ollamaBaseUrl.trim() : "";
   const savedOllamaProvider = (savedProviders as Partial<AppSettings["providers"]>).ollama;
   if (savedOllamaBaseUrl && !savedOllamaProvider?.baseUrl) {

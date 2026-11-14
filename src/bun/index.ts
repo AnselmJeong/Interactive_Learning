@@ -9,6 +9,7 @@ import { SessionExportService } from "./session-export-service";
 import { SettingsService } from "./settings-service";
 import { AiProviderSettingsService } from "./ai-provider-settings";
 import { createAiProviderClient } from "./ai-provider-client";
+import { isSubscriptionProvider } from "./subscription-cli-client";
 import { describeImportSelection, SourceService } from "./source-service";
 import { CourseArtifactService } from "./course-artifact-service";
 import { AnnotationService } from "./annotation-service";
@@ -160,7 +161,7 @@ function requireExternalHtmlAnnotations() {
 async function providerClient(input: AiProviderConnectionInput = {}) {
   const publicSettings = input.settings || await settings.get();
   const provider = input.provider || publicSettings.aiProvider;
-  const overrideKey = input.apiKeys?.[provider]?.trim();
+  const overrideKey = isSubscriptionProvider(provider) ? "" : input.apiKeys?.[provider]?.trim();
   const apiKey = overrideKey ? { value: overrideKey, source: "settings" as const } : await secrets.getApiKey(provider);
   return {
     publicSettings,
@@ -180,7 +181,7 @@ async function materialOverviewRuntime() {
 async function providerStatus(reachable = false, error?: string, input: AiProviderConnectionInput = {}) {
   const publicSettings = input.settings || await settings.get();
   const provider = input.provider || publicSettings.aiProvider;
-  const overrideKey = input.apiKeys?.[provider]?.trim();
+  const overrideKey = isSubscriptionProvider(provider) ? "" : input.apiKeys?.[provider]?.trim();
   const apiKey = overrideKey ? { value: overrideKey, source: "settings" as const } : await secrets.getApiKey(provider);
   const keyStates = await secrets.keyStates();
   const tinyfishSearchKeyState = await secrets.tinyfishSearchKeyState();
