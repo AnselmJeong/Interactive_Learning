@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
-import { BarChart3, BookOpen, Check, Download, Highlighter, Info, LibraryBig, Loader2, LocateFixed, MessageSquare, Moon, PanelLeftClose, PanelLeftOpen, PanelRightClose, PanelRightOpen, Pencil, Play, Send, Settings, Sparkles, Sun, Trash2, Upload, X } from "lucide-react";
+import { BarChart3, BookOpen, Check, Download, Highlighter, Info, LibraryBig, Loader2, LocateFixed, MessageSquare, Moon, PanelRightClose, PanelRightOpen, Pencil, Play, Send, Settings, Sparkles, Sun, Trash2, Upload, X } from "lucide-react";
 import type { AnnotationReadableExport, DocumentMetadataCandidate, DocumentMetadataSearchInput, DocumentRemovalImpact, DocumentSummary, GenerationProgress, MaterialProgressSnapshot, MaterialSummary, SourceImportSelection, PreparedSourceImport, ProjectProgressSnapshot, ProjectSummary, SourceRemovalImpact, SourceSummary } from "../../shared/rpc-types";
 import type { ProjectTransferExport, ProjectTransferPreview, SessionReadableExport } from "../../shared/project-transfer-types";
 import type { DocumentTransferExport, DocumentTransferImportPreview, DocumentTransferImportResult } from "../../shared/document-transfer-types";
@@ -28,6 +28,11 @@ import { AnnotationPage, LibraryPage, ProgressPage } from "./components/Workspac
 import { SourceFigureCard } from "./components/SourceFigureCard";
 import { LearningBuddy } from "./components/LearningBuddy";
 import { MilestoneConfetti } from "./components/MilestoneConfetti";
+import { AppShell } from "@astryxdesign/core/AppShell";
+import { SideNav, SideNavHeading, SideNavItem, SideNavSection } from "@astryxdesign/core/SideNav";
+import { Badge } from "@astryxdesign/core/Badge";
+import { Button } from "@astryxdesign/core/Button";
+import { Tab, TabList } from "@astryxdesign/core/TabList";
 import { LEARNING_MILESTONES } from "./learning-milestones";
 import { SourceLearningPreview } from "./components/SourceLearningPreview";
 import { LearningGuideView } from "./components/LearningGuideView";
@@ -840,7 +845,6 @@ export function App({ request }: { request: RpcRequest }) {
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>("sessions");
   const [leftPaneOpen, setLeftPaneOpen] = useState(true);
   const [leftPaneWidth, setLeftPaneWidth] = useState(initialLeftPaneWidth);
-  const [leftPaneResizing, setLeftPaneResizing] = useState(false);
   const [rightPaneOpen, setRightPaneOpen] = useState(true);
   const [editingSourceId, setEditingSourceId] = useState<string | null>(null);
   const [sourceTitleDraft, setSourceTitleDraft] = useState("");
@@ -889,7 +893,6 @@ export function App({ request }: { request: RpcRequest }) {
   const sessionStartTokenRef = useRef(0);
   const pendingAnnotationDeletionRef = useRef<MaterialAnnotation | null>(null);
   const pendingAnnotationDeletionTimerRef = useRef<number | null>(null);
-  const leftPaneResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
 
   function queueAnswerReadySound() {
     answerReadyNotificationPendingRef.current = true;
@@ -932,29 +935,6 @@ export function App({ request }: { request: RpcRequest }) {
   useEffect(() => {
     window.localStorage.setItem(LEFT_PANE_WIDTH_STORAGE_KEY, String(leftPaneWidth));
   }, [leftPaneWidth]);
-
-  useEffect(() => {
-    if (!leftPaneResizing) return;
-    document.body.classList.add("pane-resizing");
-    function onPointerMove(event: globalThis.PointerEvent) {
-      const drag = leftPaneResizeRef.current;
-      if (!drag) return;
-      setLeftPaneWidth(clampLeftPaneWidth(drag.startWidth + event.clientX - drag.startX));
-    }
-    function finishResize() {
-      leftPaneResizeRef.current = null;
-      setLeftPaneResizing(false);
-    }
-    window.addEventListener("pointermove", onPointerMove);
-    window.addEventListener("pointerup", finishResize);
-    window.addEventListener("pointercancel", finishResize);
-    return () => {
-      document.body.classList.remove("pane-resizing");
-      window.removeEventListener("pointermove", onPointerMove);
-      window.removeEventListener("pointerup", finishResize);
-      window.removeEventListener("pointercancel", finishResize);
-    };
-  }, [leftPaneResizing]);
 
   async function toggleTheme() {
     const nextTheme: AppSettings["theme"] = theme === "dark" ? "light" : "dark";
@@ -1676,13 +1656,6 @@ export function App({ request }: { request: RpcRequest }) {
     } finally {
       setSourceRenameBusy(false);
     }
-  }
-
-  function startLeftPaneResize(event: ReactPointerEvent<HTMLDivElement>) {
-    if (!leftPaneOpen || event.button !== 0) return;
-    event.preventDefault();
-    leftPaneResizeRef.current = { startX: event.clientX, startWidth: leftPaneWidth };
-    setLeftPaneResizing(true);
   }
 
   async function deleteDocument(document: DocumentSummary) {
@@ -2768,8 +2741,6 @@ export function App({ request }: { request: RpcRequest }) {
   const shellClassName = [
     "app-shell",
     `route-${workspaceRoute}`,
-    leftPaneOpen ? "" : "left-pane-collapsed",
-    leftPaneResizing ? "left-pane-resizing" : "",
     rightPaneOpen ? "" : "right-pane-collapsed",
   ].filter(Boolean).join(" ");
   const shellStyle = { "--left-pane-width": `${leftPaneWidth}px` } as CSSProperties;
@@ -2805,27 +2776,31 @@ export function App({ request }: { request: RpcRequest }) {
     : state.sources;
 
   return (
-    <div className={shellClassName} style={shellStyle}>
-      <aside className="sidebar">
-        <button
-          type="button"
-          className="icon-button pane-edge-toggle left-pane-toggle"
-          onClick={() => setLeftPaneOpen((open) => !open)}
-          title={leftPaneOpen ? "Hide left pane" : "Show left pane"}
-          aria-label={leftPaneOpen ? "Hide left pane" : "Show left pane"}
-          aria-pressed={leftPaneOpen}
-        >
-          {leftPaneOpen ? <PanelLeftClose size={18} /> : <PanelLeftOpen size={18} />}
-        </button>
-        <div className="pane-content">
-          <div className="brand-row">
-            <div className="brand-mark" aria-hidden="true">lr</div>
-            <div>
-              <h1>Learnie</h1>
-              <p>Source-grounded tutoring</p>
-            </div>
-          </div>
-
+    <AppShell
+      variant="section"
+      height="fill"
+      sideNav={
+        <SideNav
+          aria-label="Learnie"
+          className="learnie-sidenav"
+          resizable={{
+            defaultWidth: leftPaneWidth,
+            minWidth: LEFT_PANE_MIN_WIDTH,
+            maxWidth: LEFT_PANE_MAX_WIDTH,
+            onWidthChange: (width) => setLeftPaneWidth(clampLeftPaneWidth(width)),
+            isCollapsed: !leftPaneOpen,
+            onCollapseChange: (collapsed) => setLeftPaneOpen(!collapsed),
+          }}
+          collapsible={{ hasButton: true, buttonLabel: leftPaneOpen ? "왼쪽 패널 접기" : "왼쪽 패널 펼치기" }}
+          header={
+            <SideNavHeading
+              heading="Learnie"
+              subheading={activeProject?.title || "Source-grounded tutoring"}
+              icon={<span className="brand-mark" aria-hidden="true">lr</span>}
+            />
+          }
+          topContent={
+            <div className="sidenav-scope">
           <section className="pane-section">
             <div className="section-heading">
               <h2>{workspaceRoute === "learning" ? "Book" : "Project"}</h2>
@@ -2853,22 +2828,28 @@ export function App({ request }: { request: RpcRequest }) {
               />
             )}
           </section>
-          <nav className="workspace-navigation" aria-label="Workspace">
-            <p>Workspace</p>
-            <button type="button" className={workspaceRoute === "library" ? "active" : ""} onClick={() => setWorkspaceRoute("library")}>
-              <LibraryBig size={19} /> <span>프로젝트</span>
-            </button>
-            <button type="button" className={workspaceRoute === "learning" ? "active" : ""} onClick={continueWorkspaceLearning}>
-              <BookOpen size={19} /> <span>학습 공간</span>
-            </button>
-            <button type="button" className={workspaceRoute === "annotations" ? "active" : ""} onClick={() => setWorkspaceRoute("annotations")}>
-              <Highlighter size={19} /> <span>하이라이트 · 노트</span>
-            </button>
-            <button type="button" className={workspaceRoute === "progress" ? "active" : ""} onClick={() => setWorkspaceRoute("progress")}>
-              <BarChart3 size={19} /> <span>학습 진척도</span>
-            </button>
-          </nav>
-
+            </div>
+          }
+          footer={
+            <SideNavSection title="앱" isHeaderHidden>
+              <SideNavItem
+                label={theme === "dark" ? "밝은 테마" : "어두운 테마"}
+                icon={theme === "dark" ? Sun : Moon}
+                onClick={() => void toggleTheme()}
+              />
+              <SideNavItem label="설정" icon={Settings} onClick={() => setSettingsOpen(true)} />
+              <SideNavItem label="Learnie 정보" icon={Info} onClick={() => setAboutOpen(true)} />
+            </SideNavSection>
+          }
+        >
+          <SideNavSection title="작업 공간">
+            <SideNavItem label="프로젝트" icon={LibraryBig} isSelected={workspaceRoute === "library"} onClick={() => setWorkspaceRoute("library")} endContent={documents.length ? <Badge label={String(documents.length)} /> : undefined} />
+            <SideNavItem label="학습 공간" icon={BookOpen} isSelected={workspaceRoute === "learning"} onClick={continueWorkspaceLearning} />
+            <SideNavItem label="하이라이트 · 노트" icon={Highlighter} isSelected={workspaceRoute === "annotations"} onClick={() => setWorkspaceRoute("annotations")} endContent={projectAnnotations.length ? <Badge label={String(projectAnnotations.length)} /> : undefined} />
+            <SideNavItem label="학습 진척도" icon={BarChart3} isSelected={workspaceRoute === "progress"} onClick={() => setWorkspaceRoute("progress")} />
+          </SideNavSection>
+          {leftPaneOpen ? (
+          <div className="sidenav-scope sidenav-sources">
           {workspaceRoute === "learning" ? (
           <section className="pane-section sources-section workspace-source-section" aria-labelledby="workspace-sources-title">
             <div className="section-heading">
@@ -2985,52 +2966,12 @@ export function App({ request }: { request: RpcRequest }) {
             </div>
           </section>
           ) : null}
-
-          <div className="sidebar-footer">
-            <button
-              type="button"
-              className="wide-button settings-button sidebar-theme-toggle"
-              onClick={() => void toggleTheme()}
-              title={theme === "dark" ? "밝은 테마로 전환" : "어두운 테마로 전환"}
-              aria-label={theme === "dark" ? "밝은 테마로 전환" : "어두운 테마로 전환"}
-            >
-              {theme === "dark" ? <Sun size={16} /> : <Moon size={16} />}
-              <span>{theme === "dark" ? "밝은 테마" : "어두운 테마"}</span>
-            </button>
-            <button className="wide-button settings-button" onClick={() => setSettingsOpen(true)}>
-              <Settings size={16} /> Settings
-            </button>
-            <button className="wide-button settings-button" onClick={() => setAboutOpen(true)}>
-              <Info size={16} /> About
-            </button>
           </div>
-        </div>
-      </aside>
-
-      <div
-        className="left-pane-splitter"
-        role="separator"
-        aria-label="Left pane width"
-        aria-orientation="vertical"
-        aria-valuemin={LEFT_PANE_MIN_WIDTH}
-        aria-valuemax={LEFT_PANE_MAX_WIDTH}
-        aria-valuenow={leftPaneWidth}
-        tabIndex={leftPaneOpen ? 0 : -1}
-        title="드래그해서 left pane 폭 조절"
-        onPointerDown={startLeftPaneResize}
-        onDoubleClick={() => setLeftPaneWidth(LEFT_PANE_DEFAULT_WIDTH)}
-        onKeyDown={(event) => {
-          let nextWidth: number | null = null;
-          if (event.key === "ArrowLeft") nextWidth = leftPaneWidth - 16;
-          if (event.key === "ArrowRight") nextWidth = leftPaneWidth + 16;
-          if (event.key === "Home") nextWidth = LEFT_PANE_MIN_WIDTH;
-          if (event.key === "End") nextWidth = LEFT_PANE_MAX_WIDTH;
-          if (nextWidth === null) return;
-          event.preventDefault();
-          setLeftPaneWidth(clampLeftPaneWidth(nextWidth));
-        }}
-      />
-
+          ) : null}
+        </SideNav>
+      }
+    >
+    <div className={shellClassName} style={shellStyle}>
       <main className="workspace">
         {workspaceRoute === "library" ? (
           <LibraryPage
@@ -3148,55 +3089,49 @@ export function App({ request }: { request: RpcRequest }) {
             </div>
             <div className="course-strip-actions">
               {artifacts && !artifacts.lecturePlan?.deepReading?.passages.some((passage) => passage.status === "analyzed") ? (
-                <button type="button" className="wide-button topbar-button" disabled={busy || batchGenerating || sessionStartBusy || activeMaterialRegenerating}
-                  title={activeMaterialRegenerating
+                <Button
+                  size="sm"
+                  label={activeMaterialRegenerating ? "깊이 읽기 준비 중" : "깊이 읽기로 새로 준비"}
+                  isDisabled={busy || batchGenerating || sessionStartBusy || activeMaterialRegenerating}
+                  tooltip={activeMaterialRegenerating
                     ? "깊이 읽기 버전을 백그라운드에서 준비하고 있습니다. 그동안 계속 학습할 수 있습니다."
                     : "기존 대화와 진도를 보존하고, 같은 원문에 설명 계획과 근거 연결을 담은 새 학습 자료를 만듭니다."}
-                  onClick={() => void prepareDeepReadingVersion()}>
-                  {activeMaterialRegenerating ? <Loader2 size={14} className="spin" aria-hidden="true" /> : null}
-                  {activeMaterialRegenerating ? "깊이 읽기 준비 중" : "깊이 읽기로 새로 준비"}
-                </button>
+                  icon={activeMaterialRegenerating ? <Loader2 size={14} className="spin" aria-hidden="true" /> : <Sparkles size={14} aria-hidden="true" />}
+                  onClick={() => void prepareDeepReadingVersion()}
+                />
               ) : null}
-              <div className="segmented-control" aria-label="View mode">
-                <button type="button" className={viewMode === "source" ? "active" : ""} onClick={() => setViewMode("source")}>
-                  원문보기
-                </button>
-                <button type="button" className={viewMode === "chat" ? "active" : ""} onClick={() => setViewMode("chat")}>
-                  학습공간
-                </button>
+              <TabList value={viewMode} onChange={(value) => setViewMode(value as "chat" | "source" | "guide")} size="sm">
+                <Tab value="source" label="원문보기" />
+                <Tab value="chat" label="학습공간" />
                 {preparationComplete ? (
-                  <button
-                    type="button"
-                    className={viewMode === "guide" ? "active" : ""}
-                    onClick={() => setViewMode("guide")}
-                    title={preparedLearningIrBusy
-                      ? "학습지도 화면에서 생성 상태를 확인할 수 있습니다"
-                      : preparedLearningIr.status === "unavailable"
-                        ? "학습지도 화면에서 오류를 확인하고 다시 만들 수 있습니다"
-                        : "완성된 학습 메시지에서 만든 학습지도"}
-                  >
-                    {preparedLearningIrBusy ? <Loader2 size={14} className="spin" /> : null}
-                    학습지도
-                  </button>
+                  <Tab
+                    value="guide"
+                    label="학습지도"
+                    icon={preparedLearningIrBusy ? <Loader2 size={14} className="spin" /> : undefined}
+                  />
                 ) : null}
-              </div>
-              <button
-                className={`wide-button topbar-button batch-button ${batchGenerating ? "generating" : preparationComplete ? "complete" : activeMessageSet?.status || "idle"}`}
-                onClick={() => void (batchGenerating ? cancelBatchMessages() : startBatchMessages())}
-                disabled={batchButtonDisabled}
-                title={batchButtonTitle}
-              >
-                {batchActionBusy || batchGenerating
+              </TabList>
+              <Button
+                size="sm"
+                label={batchButtonLabel}
+                tooltip={batchButtonTitle}
+                isDisabled={batchButtonDisabled}
+                icon={batchActionBusy || batchGenerating
                   ? <Loader2 size={16} className="spin" />
                   : preparationComplete || activeMessageSet?.status === "ready"
                     ? <Check size={16} />
                     : <MessageSquare size={16} />}
-                {batchButtonLabel}
-              </button>
+                onClick={() => void (batchGenerating ? cancelBatchMessages() : startBatchMessages())}
+              />
               {!session && (resumableSession || state.sessions.length === 0) ? (
-                <button className="wide-button topbar-button primary" onClick={() => void startOrContinueSession()} disabled={busy || sessionStartBusy}>
-                  <MessageSquare size={16} /> {resumableSession ? "학습 이어가기" : "학습시작"}
-                </button>
+                <Button
+                  size="sm"
+                  variant="primary"
+                  label={resumableSession ? "학습 이어가기" : "학습시작"}
+                  icon={<Play size={14} />}
+                  isDisabled={busy || sessionStartBusy}
+                  onClick={() => void startOrContinueSession()}
+                />
               ) : null}
             </div>
           </section>
@@ -3404,27 +3339,11 @@ export function App({ request }: { request: RpcRequest }) {
           </div>
           {activeMaterial ? (
             <>
-              <div className={`inspector-tabs ${isArticlePreview ? "single" : ""}`} role="tablist" aria-label="Inspector sections">
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={inspectorTab === "sessions"}
-                  aria-controls="inspector-sessions-panel"
-                  className={inspectorTab === "sessions" ? "active" : ""}
-                  onClick={() => setInspectorTab("sessions")}
-                >
-                  Sessions
-                </button>
-                {!isArticlePreview ? <button
-                  type="button"
-                  role="tab"
-                  aria-selected={inspectorTab === "modules"}
-                  aria-controls="inspector-modules-panel"
-                  className={inspectorTab === "modules" ? "active" : ""}
-                  onClick={() => setInspectorTab("modules")}
-                >
-                  Modules
-                </button> : null}
+              <div className="inspector-tabs-astryx">
+                <TabList value={inspectorTab} onChange={(value) => setInspectorTab(value as InspectorTab)} size="sm" layout="fill" hasDivider>
+                  <Tab value="sessions" label="세션" />
+                  {!isArticlePreview ? <Tab value="modules" label="모듈" /> : null}
+                </TabList>
               </div>
               {inspectorTab === "modules" && !isArticlePreview ? (
                 <section className="inspector-section inspector-tab-panel" id="inspector-modules-panel" role="tabpanel">
@@ -3604,5 +3523,6 @@ export function App({ request }: { request: RpcRequest }) {
         </div>
       ) : null}
     </div>
+    </AppShell>
   );
 }

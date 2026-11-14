@@ -17,10 +17,6 @@
   },
   "dependencies": {
     "@astryxdesign/core": "^0.7.16",
-    "@astryxdesign/theme-chocolate": "^0.7.16",
-    "@astryxdesign/theme-gothic": "^0.7.16",
-    "@astryxdesign/theme-matcha": "^0.7.16",
-    "@astryxdesign/theme-neutral": "^0.7.16",
     "@astryxdesign/theme-stone": "^0.7.16",
     "@stylexjs/stylex": "^0.19.2",
     "@vitejs/plugin-react": "^4.5.2",

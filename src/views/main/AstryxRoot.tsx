@@ -17,6 +17,9 @@ function readMode(): Mode {
 export function AstryxRoot({ children }: { children: ReactNode }) {
   const [mode, setMode] = useState<Mode>(readMode);
   useEffect(() => {
+    // Scope the theme tokens to the whole document so portals (side chat,
+    // image previews) and Learnie's bridged CSS variables resolve them too.
+    document.documentElement.dataset.astryxTheme = defaultThemeSlug;
     const observer = new MutationObserver(() => setMode(readMode()));
     observer.observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
     return () => observer.disconnect();
