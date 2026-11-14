@@ -16,7 +16,7 @@ describe("TutorBlockRenderer regressions", () => {
     expect(html).toContain("2.2 Next section");
   });
 
-  test("lays out a structured diagram block with KaTeX labels", () => {
+  test("lays out a structured diagram block with SVG math labels", () => {
     const block = normalizeDiagramBlock({
       type: "diagram",
       title: "EEG가 잡히는 원리",
@@ -29,8 +29,10 @@ describe("TutorBlockRenderer regressions", () => {
     expect(html).toContain("<h4>EEG가 잡히는 원리</h4>");
     expect(html).toContain("pele-flowchart");
     expect(html).toContain("learn-accent");
-    expect(html).toContain('class="pele-math"');
-    expect(html.match(/class="katex"/g)?.length).toBeGreaterThanOrEqual(2);
+    // Node math is self-contained SVG (WebKit mis-places KaTeX HTML inside foreignObject); the caption stays KaTeX.
+    expect(html).toContain('<svg class="pele-math"');
+    expect(html).not.toContain("foreignObject");
+    expect(html.match(/class="katex"/g)?.length).toBe(1);
   });
 
   test("cleans duplicate title paths in saved structured lessons without removing separate sections", () => {
