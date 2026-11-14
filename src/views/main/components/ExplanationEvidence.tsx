@@ -1,13 +1,15 @@
-import type { ExplanationGrounding } from "../../../shared/deep-reading-types";
+import type { ExplanationGrounding, ExplanationStatus } from "../../../shared/deep-reading-types";
 import type { SourceRef } from "../../../shared/tutor-types";
 
-const labels = { source: "원문 내용", interpretation: "해석적 재구성", analogy: "설명용 비유", background: "배경지식", uncertain: "판단 보류" };
+// "source" and "interpretation" carry no learning value as visible labels, so only the
+// statuses that warn the learner (analogy, background, uncertain) get a badge.
+const labels: Partial<Record<ExplanationStatus, string>> = { analogy: "설명용 비유", background: "배경지식", uncertain: "판단 보류" };
 
 export function ExplanationEvidence({ grounding, sourceRefById }: { grounding?: ExplanationGrounding; sourceRefById?: Map<string, SourceRef> }) {
   if (!grounding) return null;
   return (
     <aside className="explanation-evidence">
-      {grounding.status !== "source" ? <span className="explanation-status">{labels[grounding.status]}</span> : null}
+      {labels[grounding.status] ? <span className="explanation-status">{labels[grounding.status]}</span> : null}
       {grounding.evidence.length ? (
         <details>
           <summary>연결된 원문 {grounding.evidence.length > 1 ? `· ${grounding.evidence.length}` : ""}</summary>
