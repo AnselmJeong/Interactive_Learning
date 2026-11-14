@@ -30,7 +30,7 @@ import {
 } from "../shared/learning-ir-types";
 import type { MaterialSummary } from "../shared/rpc-types";
 import type { GenerationProgress } from "../shared/rpc-types";
-import { displayableCourseTitle, displayableHeadingPath, displayableModuleTitle, displayableOutlineTitle, plainDisplayText } from "../shared/display-title";
+import { displayableCourseTitle, displayableHeadingPath, displayableModuleTitle, displayableOutlineTitle, isFigureHeading, moduleSubtopicFromTitle, plainDisplayText } from "../shared/display-title";
 import type { AiChatClient } from "./openai-compatible-client";
 import { compileLearningIr } from "./learning-ir-compiler";
 import { sha256 } from "./learning-ir-validator";
@@ -352,6 +352,93 @@ export async function generateMaterialOverview(
   throw new Error("AI가 원문 전체에 대한 한국어 주제 요약을 올바른 형식으로 생성하지 못했습니다");
 }
 
+export const MODULE_SUBTOPIC_MAX_LENGTH = 40;
+const MODULE_SUBTOPIC_EXCERPT_CHARS = 1600;
+
+/** Deterministic fallback: the most specific heading of each module. */
+export function fallbackModuleSubtopics(modules: Array<{ title: string }>) {
+  return modules.map((module, index) => moduleSubtopicFromTitle(module.title) || `학습 단계 ${index + 1}`);
+}
+
+function validModuleSubtopic(value: unknown) {
+  if (typeof value !== "string") return "";
+  const text = plainDisplayText(value)
+    .replace(/^\s*(?:\d{1,3}(?:\.\d{1,3})*[.)]?|[-•·])\s+/u, "")
+    .replace(/^["'“‘]+|["'”’]+$/gu, "")
+    .trim();
+  if (!text || text.length > MODULE_SUBTOPIC_MAX_LENGTH) return "";
+  return text;
+}
+
+/**
+ * Ask the model for one short, distinct subtopic per module, so modules that
+ * share a chapter heading become distinguishable in the learner's outline.
+ * Returns null when the response cannot be used; callers fall back to headings.
+ */
+export async function generateModuleSubtopics(
+  title: string,
+  modules: Array<{ title: string; text: string }>,
+  runtime: MaterialOverviewRuntime,
+): Promise<string[] | null> {
+  if (!modules.length) return [];
+  const system = [
+    "당신은 학습 자료의 목차를 만드는 편집자다.",
+    "각 모듈은 원문의 한 대목이다. 모듈마다 그 대목이 실제로 다루는 소주제를 한국어 명사구 하나로 붙인다.",
+    `소주제는 ${MODULE_SUBTOPIC_MAX_LENGTH}자 이내로 짧고 구체적이어야 하며, 모듈끼리 서로 구분되어야 한다.`,
+    "장(chapter) 제목을 반복하지 말고, 번호·따옴표·마침표를 붙이지 않는다. 필요한 전문 용어나 약어(EEG 등)는 그대로 써도 된다.",
+    "반환 형식은 반드시 {\"subtopics\":[\"소주제1\",\"소주제2\"]} 형태의 JSON 객체 하나이며, 배열 길이와 순서는 모듈 수와 순서에 정확히 일치해야 한다.",
+  ].join(" ");
+  const user = [
+    `자료 제목: ${title}`,
+    `모듈 수: ${modules.length}`,
+    "",
+    ...modules.map((module, index) => [
+      `## 모듈 ${index + 1}`,
+      `원문 제목: ${module.title}`,
+      module.text.replace(/\s+/g, " ").trim().slice(0, MODULE_SUBTOPIC_EXCERPT_CHARS),
+    ].join("\n")),
+  ].join("\n\n");
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const response = await runtime.client.chatJson({
+        model: runtime.model,
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: user },
+          ...(attempt
+            ? [{ role: "user" as const, content: `이전 응답은 형식이 맞지 않았다. 정확히 ${modules.length}개의 소주제를 담은 JSON 객체 하나만 반환하라.` }]
+            : []),
+        ],
+        temperature: 0.2,
+        maxTokens: 400 + modules.length * 60,
+        timeoutMs: 120_000,
+        thinking: "disabled",
+      });
+      const raw = (response as { subtopics?: unknown })?.subtopics;
+      if (!Array.isArray(raw) || raw.length !== modules.length) continue;
+      const subtopics = raw.map(validModuleSubtopic);
+      if (subtopics.some((subtopic) => !subtopic)) continue;
+      return subtopics;
+    } catch (error) {
+      if (attempt === 0 && isRetryableOverviewFormatError(error)) continue;
+      throw error;
+    }
+  }
+  return null;
+}
+
+/** Title every module "N. subtopic", keeping the subtopic for display. */
+export function applyModuleSubtopics(coursePlan: CoursePlan, subtopics: string[]): CoursePlan {
+  const fallback = fallbackModuleSubtopics(coursePlan.modules);
+  return {
+    ...coursePlan,
+    modules: coursePlan.modules.map((module, index) => {
+      const subtopic = subtopics[index] || fallback[index]!;
+      return { ...module, subtopic, title: `${index + 1}. ${subtopic}` };
+    }),
+  };
+}
+
 function sourceSpark(text: string) {
   const words = text.replace(/\s+/g, " ").trim().split(/\s+/).slice(0, 25);
   return words.join(" ");
@@ -362,7 +449,10 @@ function chunkTitle(chunk: SourceChunk, fallback: string) {
 }
 
 function sectionTitle(chunk: SourceChunk, fallback: string, leadingTitle?: string) {
-  return displayableHeadingPath(chunk.headingPath, " > ", leadingTitle ? [leadingTitle] : []) || chunkTitle(chunk, fallback);
+  // A trailing "Figure 2.1" heading labels a caption inside the current
+  // section; it must not split that section into its own module.
+  const headingPath = chunk.headingPath.filter((part) => !isFigureHeading(part));
+  return displayableHeadingPath(headingPath, " > ", leadingTitle ? [leadingTitle] : []) || chunkTitle(chunk, fallback);
 }
 
 function learningSections(chunks: SourceChunk[], sourceTitleForChunk?: SourceTitleForChunk): LearningSection[] {
@@ -462,6 +552,7 @@ function sanitizeCoursePlan(coursePlan: CoursePlan): CoursePlan {
     modules: coursePlan.modules.map((module) => ({
       ...module,
       title: displayableModuleTitle(module.title) || plainDisplayText(module.title) || module.title,
+      ...(module.subtopic ? { subtopic: plainDisplayText(module.subtopic) || module.subtopic } : {}),
       learningGoal: plainDisplayText(module.learningGoal) || module.learningGoal,
     })),
   };
@@ -653,7 +744,7 @@ export class CourseArtifactService {
         progress: 10,
       });
       const legacyConceptMap = buildConcepts(sourceChunks);
-      const coursePlan = buildCoursePlan(title, sourceChunks, legacyConceptMap, sourceTitleForChunk);
+      const sectionPlan = buildCoursePlan(title, sourceChunks, legacyConceptMap, sourceTitleForChunk);
       const runtime = this.materialOverviewRuntime ? await this.materialOverviewRuntime().catch((error) => {
         console.warn("Learning artifact generation is using the deterministic fallback", (error as Error).message);
         return undefined;
@@ -671,6 +762,30 @@ export class CourseArtifactService {
             return deterministicMaterialOverview(title, sourceChunks, documentType);
           })
         : deterministicMaterialOverview(title, sourceChunks, documentType);
+      if (runtime) {
+        reportGenerationProgress(reportProgress, {
+          projectId,
+          materialId: id,
+          stage: "brief",
+          message: "모듈별 소주제를 정리하는 중",
+          progress: 16,
+        });
+      }
+      const chunkTextById = new Map(sourceChunks.map((chunk) => [chunk.id, chunk.text]));
+      const subtopics = runtime
+        ? await generateModuleSubtopics(
+            title,
+            sectionPlan.modules.map((module) => ({
+              title: module.title,
+              text: module.sourceChunkIds.map((chunkId) => chunkTextById.get(chunkId) || "").join("\n\n"),
+            })),
+            runtime,
+          ).catch((error) => {
+            console.warn("Module subtopic generation degraded", (error as Error).message);
+            return null;
+          })
+        : null;
+      const coursePlan = applyModuleSubtopics(sectionPlan, subtopics || []);
       const learningIr = await compileLearningIr({
         materialId: id,
         documentType: documentTypeForLearningIr(documentType, sourceIds.length),

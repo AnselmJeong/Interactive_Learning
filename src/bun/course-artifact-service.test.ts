@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { canReuseMaterialForGeneration, deterministicMaterialOverview, generateMaterialOverview, materialGenerationKey, normalizeFigureCaptionChunks } from "./course-artifact-service";
-import type { SourceChunk } from "../shared/artifact-types";
+import { applyModuleSubtopics, canReuseMaterialForGeneration, generateModuleSubtopics, deterministicMaterialOverview, generateMaterialOverview, materialGenerationKey, normalizeFigureCaptionChunks } from "./course-artifact-service";
+import type { CoursePlan, SourceChunk } from "../shared/artifact-types";
 import type { AiChatClient, ChatParams } from "./openai-compatible-client";
 
 describe("material generation dedupe", () => {
@@ -161,5 +161,70 @@ describe("material overview", () => {
     }], "article");
     expect(overview.paragraph).toContain("examines how recognition");
     expect(overview.paragraph).not.toMatch(/312|Results|conclusion|effect size/i);
+  });
+});
+
+describe("module subtopics", () => {
+  const chapter = "2 Advantages and Limitations of Time- and Time-Frequency-Domain Analyses";
+  const modules = [
+    { title: `${chapter} > 2.1 Why EEG?`, text: "EEG offers millisecond temporal resolution." },
+    { title: `${chapter} > 2.2 Why Not EEG?`, text: "EEG has poor spatial resolution." },
+  ];
+  const plan = (): CoursePlan => ({
+    id: "course",
+    title: "Course",
+    subtitle: "",
+    audience: "",
+    estimatedTimeMinutes: 10,
+    modules: modules.map((module, index) => ({
+      id: `module-${index + 1}`,
+      title: module.title,
+      learningGoal: "",
+      conceptIds: [],
+      sourceChunkIds: [],
+      visualIds: [],
+      hookIntent: "",
+      checkpointRubric: "",
+      masterySignals: [],
+      misconceptionSignals: [],
+      remediationStrategy: "",
+    })),
+  });
+
+  test("asks the model for one subtopic per module and titles modules with serial numbers", async () => {
+    let userPrompt = "";
+    const client = {
+      listModels: async () => [],
+      chatText: async () => "",
+      chatJson: async (params: ChatParams) => {
+        userPrompt = params.messages.find((message) => message.role === "user")?.content || "";
+        return { subtopics: ["1. EEG의 시간 해상도", "\"EEG의 공간적 한계\""] };
+      },
+    } satisfies AiChatClient;
+
+    const subtopics = await generateModuleSubtopics("Analyzing Neural Time Series", modules, { client, model: "test-model" });
+    expect(userPrompt).toContain(modules[0]!.text);
+    expect(userPrompt).toContain(modules[1]!.title);
+    expect(subtopics).toEqual(["EEG의 시간 해상도", "EEG의 공간적 한계"]);
+
+    const titled = applyModuleSubtopics(plan(), subtopics!);
+    expect(titled.modules.map((module) => module.title)).toEqual(["1. EEG의 시간 해상도", "2. EEG의 공간적 한계"]);
+    expect(titled.modules[1]!.subtopic).toBe("EEG의 공간적 한계");
+  });
+
+  test("returns null when the model miscounts and falls back to section headings", async () => {
+    let calls = 0;
+    const client = {
+      listModels: async () => [],
+      chatText: async () => "",
+      chatJson: async () => {
+        calls += 1;
+        return { subtopics: ["하나뿐"] };
+      },
+    } satisfies AiChatClient;
+
+    expect(await generateModuleSubtopics("Source", modules, { client, model: "test-model" })).toBeNull();
+    expect(calls).toBe(2);
+    expect(applyModuleSubtopics(plan(), []).modules.map((module) => module.title)).toEqual(["1. Why EEG?", "2. Why Not EEG?"]);
   });
 });

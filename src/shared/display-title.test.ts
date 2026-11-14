@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { displayableCourseTitle, displayableHeadingPath, displayableModuleTitle, displayableOutlineTitle, displayableSourceTitle, plainDisplayText, stripRepeatedSourceHeading, titleCasedSourceTitle } from "./display-title";
+import { displayableCourseTitle, isFigureHeading, moduleSubtopicFromTitle, numberedModuleTitle, displayableHeadingPath, displayableModuleTitle, displayableOutlineTitle, displayableSourceTitle, plainDisplayText, stripRepeatedSourceHeading, titleCasedSourceTitle } from "./display-title";
 
 describe("display title text", () => {
   test("omits a title-only part fragment but preserves any actual explanation", () => {
@@ -97,5 +97,28 @@ describe("display title text", () => {
 
   test("preserves manually authored mixed case", () => {
     expect(titleCasedSourceTitle("From myth to Science")).toBe("From myth to Science");
+  });
+});
+
+describe("module subtopic titles", () => {
+  const chapter = "2 Advantages and Limitations of Time- and Time-Frequency-Domain Analyses";
+
+  test("drops the repeated chapter prefix, section numbers, and figure labels", () => {
+    expect(moduleSubtopicFromTitle(`${chapter} > 2.1 Why EEG?`)).toBe("Why EEG?");
+    expect(moduleSubtopicFromTitle(`${chapter} > 2.5 Limitations of ERPs > Figure 2.1`)).toBe("Limitations of ERPs");
+    expect(moduleSubtopicFromTitle("Introduction")).toBe("Introduction");
+  });
+
+  test("numbers modules by position and prefers the extracted subtopic", () => {
+    expect(numberedModuleTitle({ title: `${chapter} > 2.2 Why Not EEG?` }, 1)).toBe("2. Why Not EEG?");
+    expect(numberedModuleTitle({ title: "1. 왜 EEG인가", subtopic: "EEG를 쓰는 이유" }, 0)).toBe("1. EEG를 쓰는 이유");
+  });
+
+  test("recognizes figure and table headings only", () => {
+    expect(isFigureHeading("Figure 2.1")).toBe(true);
+    expect(isFigureHeading("Fig. 3")).toBe(true);
+    expect(isFigureHeading("Table 1")).toBe(true);
+    expect(isFigureHeading("Figurative Language")).toBe(false);
+    expect(isFigureHeading("Tables of the Law")).toBe(false);
   });
 });

@@ -410,7 +410,10 @@ export type CriticReport = {
 
 export type CourseModule = {
   id: string;
+  /** Numbered display title, e.g. "3. Why EEG falls short". */
   title: string;
+  /** Short subtopic extracted for this module (without the serial number). */
+  subtopic?: string;
   learningGoal: string;
   conceptIds: string[];
   sourceChunkIds: string[];
