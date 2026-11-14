@@ -48,7 +48,7 @@ describe("TutorBlockRenderer regressions", () => {
     const html = renderToStaticMarkup(createElement(TutorBlockRenderer, { blocks }));
     expect(html).toContain('class="learn-compare"');
     expect(html).toContain('<summary>Reason</summary>');
-    expect(html).toContain('해석적 재구성');
+    expect(html).not.toContain('해석적 재구성');
     expect(html).not.toContain('bad()');
   });
   test("omits an extracted figure-caption prefix from guided reading", () => {

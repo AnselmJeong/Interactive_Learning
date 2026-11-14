@@ -1,10 +1,15 @@
 import { memo, useId, useLayoutEffect, useMemo, useRef } from "react";
 import { sanitizeRichHtml, stripRepeatedHtmlHeading } from "../../../shared/rich-html";
+import { renderMathInHtml } from "../math-html";
 
 export const HtmlContent = memo(function HtmlContent({ html, source = false, headingTitles = [] }: { html: string; source?: boolean; headingTitles?: string[] }) {
   const id = useId();
   const root = useRef<HTMLDivElement>(null);
-  const safeHtml = useMemo(() => stripRepeatedHtmlHeading(sanitizeRichHtml(html, { source, idPrefix: id }), headingTitles), [html, source, id, headingTitles]);
+  const safeHtml = useMemo(
+    // Source documents only get explicitly delimited math; learning HTML also gets bare LaTeX.
+    () => renderMathInHtml(stripRepeatedHtmlHeading(sanitizeRichHtml(html, { source, idPrefix: id }), headingTitles), { bareLatex: !source }),
+    [html, source, id, headingTitles],
+  );
   useLayoutEffect(() => {
     if (source || !root.current) return;
     let cancelled = false;
