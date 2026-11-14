@@ -421,14 +421,16 @@ const rpc = BrowserView.defineRPC<AppRPC>({
       "progress.getDocumentSnapshot": ({ projectId, documentId }) => progress.getDocumentSnapshot(projectId, documentId),
       "progress.getMaterialSnapshot": ({ materialId }) => progress.getMaterialSnapshot(materialId),
       "materials.generate": async ({ projectId, sourceIds, forceNewVersion }) => {
+        const job = { sourceIds, forceNewVersion: Boolean(forceNewVersion) };
         try {
           const result = await materials.generate(projectId, sourceIds, (progress) => {
-            sendToView("materials.generationProgress", progress);
+            sendToView("materials.generationProgress", { ...progress, ...job });
           }, forceNewVersion);
-          sendToView("materials.generationProgress", { projectId, materialId: result.id, stage: "complete", message: "학습 자료 준비 완료", progress: 100 });
+          sendToView("materials.generationProgress", { projectId, materialId: result.id, stage: "complete", message: "학습 자료 준비 완료", progress: 100, ...job });
           return result;
         } catch (error) {
           sendToView("materials.generationProgress", {
+            ...job,
             projectId,
             stage: "failed",
             message: (error as Error).message,

@@ -250,6 +250,9 @@ export type IngestionProgress = {
 export type GenerationProgress = {
   projectId: string;
   materialId?: string;
+  // Identify the background job (source set + version mode) so the view can track several at once.
+  sourceIds?: string[];
+  forceNewVersion?: boolean;
   stage:
     | "normalize"
     | "extract"
