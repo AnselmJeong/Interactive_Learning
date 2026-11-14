@@ -7,12 +7,17 @@ type RpcRequest = (method: string, params: unknown) => Promise<unknown>;
 type ModelTarget = "learning" | "vision";
 type SettingsSectionId = "models" | "access" | "folders" | "preferences";
 
-const PROVIDERS: Array<{ id: AiProviderId; label: string; keyLabel: string }> = [
+// OpenAI and Claude authenticate through the locally logged-in Codex / Claude Code CLI (subscription), not an API key.
+const PROVIDERS: Array<{ id: AiProviderId; label: string; keyLabel: string; subscriptionLogin?: string }> = [
   { id: "ollama", label: "Ollama", keyLabel: "Ollama API key (remote)" },
-  { id: "openai", label: "OpenAI", keyLabel: "OpenAI API key" },
-  { id: "anthropic", label: "Claude", keyLabel: "Claude API key" },
+  { id: "openai", label: "Codex (ChatGPT 구독)", keyLabel: "Codex · ChatGPT subscription", subscriptionLogin: "codex login" },
+  { id: "anthropic", label: "Claude (Claude 구독)", keyLabel: "Claude Code · Claude subscription", subscriptionLogin: "claude → /login" },
   { id: "gemini", label: "Gemini", keyLabel: "Gemini API key" },
 ];
+
+function isSubscriptionProvider(providerId: AiProviderId) {
+  return Boolean(PROVIDERS.find((provider) => provider.id === providerId)?.subscriptionLogin);
+}
 
 const EMPTY_KEYS: Record<AiProviderId, string> = { ollama: "", openai: "", anthropic: "", gemini: "" };
 const SETTINGS_NAV: Array<{
@@ -211,11 +216,15 @@ export function SettingsModal({
     if (provider === "ollama" && isLoopbackOllamaBaseUrl(draft.providers.ollama.baseUrl) && !state?.hasApiKey) {
       return "Ollama key: optional for local";
     }
+    if (isSubscriptionProvider(provider)) {
+      return state?.hasApiKey ? `${providerLabel(provider)}: CLI ready` : `${providerLabel(provider)}: CLI not found`;
+    }
     return state?.hasApiKey ? `${providerLabel(provider)} key: ${state.apiKeySource}` : `${providerLabel(provider)} key: missing`;
   }
 
   function renderBaseUrl(provider: AiProviderId, target: ModelTarget) {
     if (target === "vision" && provider === draft.aiProvider) return null;
+    if (isSubscriptionProvider(provider)) return null;
     return (
       <label className="route-full">
         <span>Base URL</span>
@@ -338,10 +347,20 @@ export function SettingsModal({
       <section className="settings-panel" aria-labelledby="settings-access-title">
         <div className="settings-section-intro">
           <h3 id="settings-access-title">Provider Access</h3>
-          <p>API 키를 저장합니다. 비워 두면 기존 키가 유지됩니다.</p>
+          <p>API 키를 저장합니다. 비워 두면 기존 키가 유지됩니다. Codex와 Claude는 API 키 대신 각 CLI에 로그인한 구독 계정을 사용합니다.</p>
         </div>
         <div className="provider-key-grid">
-          {PROVIDERS.map((provider) => (
+          {PROVIDERS.map((provider) => provider.subscriptionLogin ? (
+            <label key={provider.id}>
+              <span>
+                {provider.keyLabel}
+                <small className={providerStatus.keyStates[provider.id]?.hasApiKey ? "" : "missing"}>
+                  {providerStatus.keyStates[provider.id]?.hasApiKey ? "CLI found · uses your subscription login" : "CLI not found · install it, then log in"}
+                </small>
+              </span>
+              <input readOnly value={`Log in with: ${provider.subscriptionLogin}`} />
+            </label>
+          ) : (
             <label key={provider.id}>
               <span>
                 {provider.keyLabel}

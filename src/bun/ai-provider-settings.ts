@@ -1,6 +1,10 @@
 import { dataPath } from "./paths";
 import { readJsonFile, writeJsonFile } from "./json-file";
-import type { AiProviderId, AiProviderKeyState } from "../shared/settings-types";
+import type { AiProviderId, AiProviderKeySource, AiProviderKeyState } from "../shared/settings-types";
+import { isSubscriptionProvider, subscriptionCliState } from "./subscription-cli-client";
+
+/** Placeholder credential for subscription providers; the CLI holds the real login. */
+export const SUBSCRIPTION_CREDENTIAL = "subscription";
 
 type AiProviderSecretSettings = {
   ollamaApiKey?: string;
@@ -76,7 +80,8 @@ export class AiProviderSettingsService {
     return { hasApiKey: Boolean(key.value), apiKeySource: key.source };
   }
 
-  async getApiKey(provider: AiProviderId) {
+  async getApiKey(provider: AiProviderId): Promise<{ value: string; source: AiProviderKeySource | null }> {
+    if (isSubscriptionProvider(provider)) return subscriptionCredential(provider);
     const fromEnv = firstEnvValue(PROVIDER_ENV_KEYS[provider]);
     if (fromEnv) return { value: fromEnv, source: "env" as const };
     const saved = await readJsonFile<AiProviderSecretSettings>(secretPath(), {});
@@ -88,6 +93,11 @@ export class AiProviderSettingsService {
     const saved = await readJsonFile<AiProviderSecretSettings>(secretPath(), {});
     const states = {} as Record<AiProviderId, AiProviderKeyState>;
     for (const provider of AI_PROVIDERS) {
+      if (isSubscriptionProvider(provider)) {
+        const credential = subscriptionCredential(provider);
+        states[provider] = { hasApiKey: Boolean(credential.value), apiKeySource: credential.source };
+        continue;
+      }
       const fromEnv = firstEnvValue(PROVIDER_ENV_KEYS[provider]);
       const savedKey = saved[PROVIDER_KEY_FIELDS[provider]];
       states[provider] = {
@@ -116,6 +126,7 @@ export class AiProviderSettingsService {
       next.ollamaApiKey = input.ollamaApiKey.trim();
     }
     for (const provider of AI_PROVIDERS) {
+      if (isSubscriptionProvider(provider)) continue;
       const value = input.apiKeys?.[provider];
       if (typeof value === "string" && value.trim()) {
         next[PROVIDER_KEY_FIELDS[provider]] = value.trim();
@@ -132,6 +143,12 @@ export class AiProviderSettingsService {
     }
     await writeJsonFile(secretPath(), next);
   }
+}
+
+function subscriptionCredential(provider: "openai" | "anthropic") {
+  return subscriptionCliState(provider).installed
+    ? { value: SUBSCRIPTION_CREDENTIAL, source: "subscription" as const }
+    : { value: "", source: null };
 }
 
 function firstEnvValue(names: string[]) {
