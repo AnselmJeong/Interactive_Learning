@@ -80,6 +80,36 @@ describe("OpenAI-compatible thinking controls", () => {
     expect(body).not.toHaveProperty("thinking");
   });
 
+  test.each(["deepseek-v4.1-flash:1017", "deepseek-v4:latest", "deepseek-v4"])("disables thinking for Ollama DeepSeek V4 variant %s", async (model) => {
+    let body: Record<string, unknown> = {};
+    globalThis.fetch = (async (_input, init) => {
+      body = JSON.parse(String(init?.body || "{}"));
+      return new Response(JSON.stringify({
+        choices: [{ finish_reason: "stop", message: { content: "{}" } }],
+      }), { status: 200 });
+    }) as typeof fetch;
+
+    const client = new OpenAICompatibleClient({ baseUrl: "https://ollama.com/v1", apiKey: "test-key", model, providerName: "Ollama Cloud" });
+    await client.chatJson({ messages: [{ role: "user", content: "{}" }], thinking: "disabled" });
+
+    expect(body.reasoning_effort).toBe("none");
+  });
+
+  test("does not send a thinking toggle to unrelated DeepSeek-named models", async () => {
+    let body: Record<string, unknown> = {};
+    globalThis.fetch = (async (_input, init) => {
+      body = JSON.parse(String(init?.body || "{}"));
+      return new Response(JSON.stringify({
+        choices: [{ finish_reason: "stop", message: { content: "{}" } }],
+      }), { status: 200 });
+    }) as typeof fetch;
+
+    const client = new OpenAICompatibleClient({ baseUrl: "https://ollama.com/v1", apiKey: "test-key", model: "deepseek-v40", providerName: "Ollama Cloud" });
+    await client.chatJson({ messages: [{ role: "user", content: "{}" }], thinking: "disabled" });
+
+    expect(body).not.toHaveProperty("reasoning_effort");
+  });
+
   test("keeps DeepSeek-style thinking objects for non-Ollama DeepSeek endpoints", async () => {
     let body: Record<string, unknown> = {};
     globalThis.fetch = (async (_input, init) => {

@@ -232,7 +232,7 @@ export class OpenAICompatibleClient implements AiChatClient {
     const name = this.providerName().toLowerCase();
     const baseUrl = this.settings.baseUrl.toLowerCase();
     const modelId = model.toLowerCase();
-    return name.includes("deepseek") || baseUrl.includes("deepseek") || modelId.startsWith("deepseek-v4-");
+    return name.includes("deepseek") || baseUrl.includes("deepseek") || /^deepseek-v4(?:[.:-]|$)/.test(modelId);
   }
 
   private applyThinkingToggle(body: Record<string, unknown>, thinking: "enabled" | "disabled") {
