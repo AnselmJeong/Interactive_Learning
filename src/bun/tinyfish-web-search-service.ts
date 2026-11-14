@@ -4,6 +4,10 @@ type TinyFishSearchResult = {
   title?: unknown;
   url?: unknown;
   snippet?: unknown;
+  pdf_url?: unknown;
+  authors?: unknown;
+  venue?: unknown;
+  year?: unknown;
 };
 
 type TinyFishSearchResponse = {
@@ -11,6 +15,19 @@ type TinyFishSearchResponse = {
 };
 
 type FetchLike = typeof fetch;
+
+export type TinyFishSearchOptions = {
+  maxResults?: number;
+  fetchImpl?: FetchLike;
+  /** Result language code such as `en` or `ko`. TinyFish defaults to `en` when location is also omitted. */
+  language?: string;
+  /** Country code such as `US` or `KR`. */
+  location?: string;
+  /** `research_paper` searches scholarly literature instead of the general web. */
+  domainType?: "web" | "news" | "research_paper";
+  /** Short description of the search goal; TinyFish uses it to improve ranking. */
+  purpose?: string;
+};
 
 const TINYFISH_SEARCH_URL = "https://api.search.tinyfish.ai";
 const DEFAULT_MAX_RESULTS = 5;
@@ -33,11 +50,29 @@ function safeHttpUrl(value: unknown) {
   }
 }
 
-function sourceFromResult(result: TinyFishSearchResult, index: number, retrievedAt: string): LookupSourceMeta | null {
-  const url = safeHttpUrl(result.url);
+function paperCitationLine(result: TinyFishSearchResult) {
+  const authors = Array.isArray(result.authors)
+    ? result.authors.filter((author): author is string => typeof author === "string" && Boolean(author.trim()))
+    : [];
+  const authorText = authors.length > 3 ? `${authors.slice(0, 3).join(", ")} et al.` : authors.join(", ");
+  const venue = typeof result.venue === "string" ? result.venue.trim() : "";
+  const year = typeof result.year === "number" || typeof result.year === "string" ? String(result.year).trim() : "";
+  return [authorText, venue, year].filter(Boolean).join(" · ");
+}
+
+function sourceFromResult(
+  result: TinyFishSearchResult,
+  index: number,
+  retrievedAt: string,
+  domainType: TinyFishSearchOptions["domainType"],
+): LookupSourceMeta | null {
+  const url = safeHttpUrl(result.url) || safeHttpUrl(result.pdf_url);
   if (!url) return null;
   const title = typeof result.title === "string" ? compact(result.title, 180) : undefined;
-  const snippet = typeof result.snippet === "string" ? compact(result.snippet, 700) : undefined;
+  const isPaper = domainType === "research_paper";
+  const citation = isPaper ? paperCitationLine(result) : "";
+  const rawSnippet = typeof result.snippet === "string" ? result.snippet : "";
+  const snippet = compact([citation, rawSnippet].filter(Boolean).join(" — "), 700);
   let hostname = url;
   try {
     hostname = new URL(url).hostname.replace(/^www\./, "");
@@ -48,7 +83,7 @@ function sourceFromResult(result: TinyFishSearchResult, index: number, retrieved
     id: `S${index + 1}`,
     title: title || hostname,
     url,
-    provider: "TinyFish web search",
+    provider: isPaper ? "TinyFish research papers" : "TinyFish web search",
     retrievedAt,
     ...(snippet ? { snippet } : {}),
   };
@@ -61,7 +96,7 @@ function errorDetail(raw: string) {
 export async function searchTinyFishWeb(
   query: string,
   apiKey: string,
-  options: { maxResults?: number; fetchImpl?: FetchLike } = {},
+  options: TinyFishSearchOptions = {},
 ): Promise<LookupSourceMeta[]> {
   const normalizedQuery = query.replace(/\s+/g, " ").trim().slice(0, 500);
   if (!normalizedQuery) throw new Error("웹 검색어가 비어 있습니다.");
@@ -70,6 +105,13 @@ export async function searchTinyFishWeb(
   const maxResults = Math.min(Math.max(Math.round(options.maxResults || DEFAULT_MAX_RESULTS), 1), MAX_RESULTS);
   const fetchImpl = options.fetchImpl || fetch;
   const params = new URLSearchParams({ query: normalizedQuery });
+  const language = options.language?.trim();
+  const location = options.location?.trim();
+  const purpose = options.purpose?.replace(/\s+/g, " ").trim().slice(0, 2000);
+  if (language && /^[a-z]{2,3}(?:-[A-Za-z]{2,4})?$/.test(language)) params.set("language", language);
+  if (location && /^[A-Za-z]{2}$/.test(location)) params.set("location", location.toUpperCase());
+  if (options.domainType && options.domainType !== "web") params.set("domain_type", options.domainType);
+  if (purpose) params.set("purpose", purpose);
 
   let response: Response;
   try {
@@ -104,7 +146,7 @@ export async function searchTinyFishWeb(
     .slice(0, maxResults)
     .flatMap((result, index) => {
       if (typeof result !== "object" || result === null) return [];
-      const source = sourceFromResult(result as TinyFishSearchResult, index, retrievedAt);
+      const source = sourceFromResult(result as TinyFishSearchResult, index, retrievedAt, options.domainType);
       return source ? [source] : [];
     });
 }

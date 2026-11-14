@@ -38,7 +38,17 @@ type ProviderClientContext = {
 
 type ProviderClientFactory = () => Promise<ProviderClientContext>;
 
-type QuestionWebSearch = (query: string) => Promise<LookupSourceMeta[]>;
+export type QuestionWebSearchOptions = {
+  /** Result language code such as `en` or `ko`. */
+  language?: string;
+  /** Country code such as `US` or `KR`. */
+  location?: string;
+  /** `research_paper` searches scholarly literature instead of the general web. */
+  domainType?: "web" | "research_paper";
+  /** Short description of the search goal for ranking. */
+  purpose?: string;
+};
+type QuestionWebSearch = (query: string, options?: QuestionWebSearchOptions) => Promise<LookupSourceMeta[]>;
 type ImageSearch = (query: string) => Promise<{ images: ImageLookupItem[]; warning?: string }>;
 
 type SelectionLookupInput = {
@@ -176,6 +186,9 @@ const QUESTION_THREAD_CONTEXT_MESSAGES = 16;
 const QUESTION_THREAD_SUMMARY_CHARS = 4_000;
 const QUESTION_WEB_SEARCH_QUERY_CHARS = 260;
 const QUESTION_WEB_SEARCH_FOCUS_CHARS = 120;
+const QUESTION_WEB_SEARCH_PLAN_TOKENS = 200;
+const QUESTION_WEB_SOURCES_MAX = 10;
+const QUESTION_WEB_SOURCE_QUOTAS = { english: 5, papers: 3, original: 2 } as const;
 const TERM_RENDERING_RULE = [
   "When writing in Korean, do not replace romanized proper nouns or culturally specific technical terms with Korean-only transliterations.",
   "If the source or lookup result gives a romanized original form, preserve that form.",
@@ -877,8 +890,8 @@ function normalizedSearchWords(value: string) {
     .match(/[\p{L}\p{N}]+/gu) || [];
 }
 
-function selectedSearchFocus(selectedText: string) {
-  const focus = normalizeSelectedPassage(selectedText, QUESTION_WEB_SEARCH_FOCUS_CHARS);
+function searchFocus(text: string) {
+  const focus = normalizeSelectedPassage(text, QUESTION_WEB_SEARCH_FOCUS_CHARS);
   const allWords = normalizedSearchWords(focus);
   const ignoredWords = new Set(["a", "an", "and", "for", "in", "of", "on", "or", "the", "to"]);
   const meaningfulWords = allWords.filter((word) => word.length > 1 && !ignoredWords.has(word));
@@ -887,40 +900,131 @@ function selectedSearchFocus(selectedText: string) {
   return { focus, words, isTermLike };
 }
 
+function selectedSearchFocus(selectedText: string) {
+  return searchFocus(selectedText);
+}
+
+/** True when the text contains Hangul/CJK/kana, i.e. an English-only query would need translation. */
+function hasNonEnglishScript(value: string) {
+  return /[\p{Script=Hangul}\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(value);
+}
+
+function quotedFocus(focus: string) {
+  return `"${focus.replace(/["\n\r]/g, " ").replace(/\s+/g, " ").trim()}"`;
+}
+
 function queryIncludesSelectedFocus(query: string, focus: string, words: string[]) {
   const queryText = normalizedSearchWords(query).join(" ");
   const focusText = words.join(" ");
   return Boolean(focusText) && (queryText.includes(focusText) || words.every((word) => queryText.includes(word)));
 }
 
-function ensureSelectedFocusInQuery(query: string, selectedText: string) {
-  const { focus, words, isTermLike } = selectedSearchFocus(selectedText);
+/**
+ * Anchor a query to the subject term. For English queries the anchor must be the English form of the
+ * term: quoting a Korean phrase inside an English query restricts the search engine to Korean pages.
+ */
+function ensureFocusInQuery(query: string, focusText: string) {
+  const { focus, words, isTermLike } = searchFocus(focusText);
   if (!isTermLike || queryIncludesSelectedFocus(query, focus, words)) return query;
-  return `"${focus.replace(/["\n\r]/g, " ")}" ${query}`.replace(/\s+/g, " ").trim().slice(0, QUESTION_WEB_SEARCH_QUERY_CHARS);
+  return `${quotedFocus(focus)} ${query}`.replace(/\s+/g, " ").trim().slice(0, QUESTION_WEB_SEARCH_QUERY_CHARS);
 }
 
-function searchSourcesMatchSelectedFocus(sources: LookupSourceMeta[], selectedText: string) {
-  const { words, isTermLike } = selectedSearchFocus(selectedText);
-  if (!isTermLike) return true;
-  return sources.some((source) => {
-    const sourceWords = new Set(normalizedSearchWords(`${source.title} ${source.snippet || ""}`));
-    return words.every((word) => sourceWords.has(word));
+function sourceMatchesFocus(source: LookupSourceMeta, focusTexts: string[]) {
+  const sourceWords = new Set(normalizedSearchWords(`${source.title} ${source.snippet || ""}`));
+  return focusTexts.some((text) => {
+    const { words } = searchFocus(text);
+    return words.length > 0 && words.every((word) => sourceWords.has(word));
   });
+}
+
+function searchSourcesMatchFocus(sources: LookupSourceMeta[], selectedText: string, englishFocus?: string) {
+  const { isTermLike } = selectedSearchFocus(selectedText);
+  if (!isTermLike) return true;
+  const focusTexts = [selectedText, englishFocus].filter((text): text is string => Boolean(text?.trim()));
+  return sources.some((source) => sourceMatchesFocus(source, focusTexts));
 }
 
 function fallbackQuestionSearchQuery(selectedText: string, question: string) {
   const { focus, isTermLike } = selectedSearchFocus(selectedText);
-  const anchoredFocus = isTermLike ? `"${focus.replace(/["\n\r]/g, " ")}"` : focus;
+  const anchoredFocus = isTermLike ? quotedFocus(focus) : focus;
   return `${anchoredFocus} ${question}`.replace(/\s+/g, " ").trim().slice(0, QUESTION_WEB_SEARCH_QUERY_CHARS);
 }
 
-function retryQuestionSearchQuery(selectedText: string, question: string) {
+function englishFallbackQuery(selectedText: string, question: string, englishFocus?: string) {
+  if (englishFocus) return `${quotedFocus(englishFocus)} explanation overview`.slice(0, QUESTION_WEB_SEARCH_QUERY_CHARS);
+  return fallbackQuestionSearchQuery(selectedText, question);
+}
+
+function retryQuestionSearchQuery(selectedText: string, question: string, englishFocus?: string) {
   const { focus, isTermLike } = selectedSearchFocus(selectedText);
+  if (englishFocus) return `${quotedFocus(englishFocus)} authoritative sources`.slice(0, QUESTION_WEB_SEARCH_QUERY_CHARS);
   if (!isTermLike) return fallbackQuestionSearchQuery(selectedText, question);
-  return `"${focus.replace(/["\n\r]/g, " ")}" ${question} authoritative sources`
+  return `${quotedFocus(focus)} ${question} authoritative sources`
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, QUESTION_WEB_SEARCH_QUERY_CHARS);
+}
+
+type QuestionSearchPlan = {
+  englishFocus?: string;
+  webQuery?: string;
+  paperQuery?: string;
+};
+
+function parseQuestionSearchPlan(raw: string): QuestionSearchPlan {
+  const plan: QuestionSearchPlan = {};
+  const unlabeled: string[] = [];
+  for (const line of raw.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    const match = trimmed.match(/^(?:[-*]\s*)?\**(FOCUS|TERM|WEB|QUERY|PAPERS?|SCHOLARLY|LITERATURE)\**\s*[:：]\s*(.*)$/i);
+    if (!match) {
+      unlabeled.push(trimmed);
+      continue;
+    }
+    const label = match[1]!.toUpperCase();
+    const value = normalizeGeneratedSearchQuery(match[2] || "");
+    if (!value || /^(?:none|n\/a|-)$/i.test(value)) continue;
+    if (label === "FOCUS" || label === "TERM") plan.englishFocus = value.slice(0, QUESTION_WEB_SEARCH_FOCUS_CHARS);
+    else if (label === "WEB" || label === "QUERY") plan.webQuery = value;
+    else plan.paperQuery = value;
+  }
+  // Tolerate a model that ignored the format and returned only a single query line.
+  if (!plan.webQuery && unlabeled.length) plan.webQuery = normalizeGeneratedSearchQuery(unlabeled[0]!) || undefined;
+  // An "English" query that is still Korean would only return Korean pages again.
+  if (plan.webQuery && hasNonEnglishScript(plan.webQuery)) delete plan.webQuery;
+  if (plan.paperQuery && hasNonEnglishScript(plan.paperQuery)) delete plan.paperQuery;
+  if (plan.englishFocus && hasNonEnglishScript(plan.englishFocus)) delete plan.englishFocus;
+  return plan;
+}
+
+function mergeQuestionWebSources(groups: { sources: LookupSourceMeta[]; quota: number }[]): LookupSourceMeta[] {
+  const seen = new Set<string>();
+  const keyOf = (source: LookupSourceMeta) => (source.url || source.title).replace(/[#?].*$/, "").replace(/\/$/, "").toLowerCase();
+  const picked: LookupSourceMeta[] = [];
+  const leftovers: LookupSourceMeta[] = [];
+  for (const group of groups) {
+    let taken = 0;
+    for (const source of group.sources) {
+      const key = keyOf(source);
+      if (seen.has(key)) continue;
+      if (taken < group.quota) {
+        seen.add(key);
+        picked.push(source);
+        taken += 1;
+      } else {
+        leftovers.push(source);
+      }
+    }
+  }
+  for (const source of leftovers) {
+    if (picked.length >= QUESTION_WEB_SOURCES_MAX) break;
+    const key = keyOf(source);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    picked.push(source);
+  }
+  return picked.slice(0, QUESTION_WEB_SOURCES_MAX).map((source, index) => ({ ...source, id: `S${index + 1}` }));
 }
 
 function questionWebSourceBlock(sources: LookupSourceMeta[]) {
@@ -936,6 +1040,7 @@ function questionWebSourceBlock(sources: LookupSourceMeta[]) {
       ].filter(Boolean).join("\n");
     }),
     [
+      "Sources may be in English or other languages; synthesize them regardless of language and write the answer in the learner's language. Prefer English-language scholarly and reference sources for substantive claims when they are available.",
       "The learner explicitly enabled web search because they want an answer that goes beyond the document. Treat the selected text only as the starting point for the question, not as the factual boundary or primary evidence.",
       "Build the substantive answer primarily from the web source excerpts and add concrete, relevant information that is not already stated in the selected text or module context.",
       "Place a citation such as [S1] immediately after every claim taken from a web source, and use only the source IDs listed above.",
@@ -1541,27 +1646,32 @@ export class AnnotationService {
     question: string,
     context: ReturnType<typeof moduleQuestionContext>
   ) {
-    if (!this.questionWebSearch) throw new Error("TinyFish 웹 검색 기능이 구성되지 않았습니다.");
-    const fallback = fallbackQuestionSearchQuery(selectedText, question);
-    let query = fallback;
+    const search = this.questionWebSearch;
+    if (!search) throw new Error("TinyFish 웹 검색 기능이 구성되지 않았습니다.");
+    const learnerUsesOtherLanguage = hasNonEnglishScript(`${selectedText} ${question}`);
+    const selectedIsNonEnglish = hasNonEnglishScript(selectedText);
+
+    let plan: QuestionSearchPlan = {};
     try {
       const generated = await client.chatText({
         model,
         temperature: 0,
-        maxTokens: 64,
-        timeoutMs: 30_000,
+        maxTokens: QUESTION_WEB_SEARCH_PLAN_TOKENS,
+        timeoutMs: 45_000,
         thinking: "disabled",
         messages: [
           {
             role: "system",
             content: [
-              "Create one web search query that interprets the selected text together with the learner's question and finds broad, high-quality references that answer that combined intent.",
+              "Plan English-language web searches that interpret the selected text together with the learner's question and find broad, high-quality references, including English scholarly literature.",
               "The selected text is the primary search subject. The source title and current topic are disambiguation hints only and must never replace the selected subject.",
-              "When the selected text is a short name, title, concept, or technical term, include it exactly in the query.",
-              "Write the query in English even when the learner asks in another language.",
-              "Preserve exact names, titles, and technical terms when translation could lose precision.",
-              "Return only the query text, under 18 words, with no label or explanation.",
-            ].join(" "),
+              "Translate the subject and the learner's intent into English even when the learner writes in Korean or another language. Use the established English (or original-language romanized) name of a person, work, or technical term, not a literal translation.",
+              "Never put Korean, Chinese, or Japanese characters in the queries.",
+              "Return exactly three lines and nothing else:",
+              "FOCUS: the English name of the selected subject (2-8 words; the canonical English term if the selection is a name, title, or concept)",
+              "WEB: an English web search query under 18 words that answers the learner's combined intent",
+              "PAPER: an English query under 14 words for academic papers, reviews, or books on the topic",
+            ].join("\n"),
           },
           {
             role: "user",
@@ -1575,47 +1685,98 @@ export class AnnotationService {
           },
         ],
       });
-      query = ensureSelectedFocusInQuery(normalizeGeneratedSearchQuery(generated) || fallback, selectedText);
+      plan = parseQuestionSearchPlan(generated);
     } catch (error) {
-      console.warn("[annotations] Web search query rewrite failed; using the learner question", error);
+      console.warn("[annotations] Web search query planning failed; using a fallback query", error);
     }
-    console.info(`[annotations] Web search query: ${query}`);
-    const initialSources = normalizeSourceMetaList(await this.questionWebSearch(query), 10);
-    if (searchSourcesMatchSelectedFocus(initialSources, selectedText)) return initialSources;
 
-    let retryQuery = retryQuestionSearchQuery(selectedText, question);
+    // Without an English subject name from the model, resolve it through Wikipedia/Wikidata so the
+    // English search is still anchored to the right concept instead of a quoted Korean phrase.
+    if (!plan.englishFocus && selectedIsNonEnglish && selectedSearchFocus(selectedText).isTermLike) {
+      try {
+        const resolved = await resolveEnglishWikipediaTitleFromKorean(cleanupLookupQuery(selectedText));
+        if (resolved) plan.englishFocus = resolved;
+      } catch {
+        // Fall through without an English anchor.
+      }
+    }
+
+    const englishFocus = plan.englishFocus || (selectedIsNonEnglish ? undefined : selectedText);
+    const englishAnchor = englishFocus || selectedText;
+    const englishQuery = ensureFocusInQuery(
+      plan.webQuery || englishFallbackQuery(selectedText, question, plan.englishFocus),
+      englishAnchor
+    );
+    const paperQuery = ensureFocusInQuery(plan.paperQuery || englishQuery, englishAnchor);
+    const originalQuery = learnerUsesOtherLanguage ? fallbackQuestionSearchQuery(selectedText, question) : "";
+    const purpose = `Find authoritative explanations, reference works, and scholarly literature about "${englishFocus || selectedText}" for a learner who asked: ${question}`
+      .slice(0, 600);
+
+    const runSearches = async (webQuery: string, papersQuery: string, includeOriginal: boolean) => {
+      console.info(`[annotations] Web search queries: en="${webQuery}" papers="${papersQuery}"${includeOriginal && originalQuery ? ` original="${originalQuery}"` : ""}`);
+      const tasks: Promise<LookupSourceMeta[]>[] = [
+        search(webQuery, { language: "en", location: "US", purpose }),
+        search(papersQuery, { domainType: "research_paper", purpose }),
+        includeOriginal && originalQuery ? search(originalQuery, { language: "ko", location: "KR", purpose }) : Promise.resolve([]),
+      ];
+      const settled = await Promise.allSettled(tasks);
+      const [web, papers, original] = settled.map((result) =>
+        result.status === "fulfilled" ? normalizeSourceMetaList(result.value, 10) : []
+      );
+      const failures = settled.filter((result): result is PromiseRejectedResult => result.status === "rejected");
+      if (failures.length === settled.length || (failures.length && !web!.length && !papers!.length && !original!.length)) {
+        throw failures[0]!.reason;
+      }
+      for (const failure of failures) console.warn("[annotations] One web search request failed", failure.reason);
+      return mergeQuestionWebSources([
+        { sources: web!, quota: QUESTION_WEB_SOURCE_QUOTAS.english },
+        { sources: papers!, quota: QUESTION_WEB_SOURCE_QUOTAS.papers },
+        { sources: original!, quota: QUESTION_WEB_SOURCE_QUOTAS.original },
+      ]);
+    };
+
+    const initialSources = await runSearches(englishQuery, paperQuery, true);
+    if (searchSourcesMatchFocus(initialSources, selectedText, englishFocus)) return initialSources;
+
+    let retryQuery = retryQuestionSearchQuery(selectedText, question, plan.englishFocus);
     try {
       const rewrittenRetry = await client.chatText({
         model,
         temperature: 0,
         maxTokens: 64,
-        timeoutMs: 30_000,
+        timeoutMs: 45_000,
         thinking: "disabled",
         messages: [
           {
             role: "system",
             content: [
               "Rewrite a failed web search query so the results directly concern the selected text and answer the learner's intent.",
-              "Include a short selected name, title, concept, or technical term exactly as written.",
+              "Include the established English name of the selected subject exactly; never use Korean, Chinese, or Japanese characters.",
               "Do not include the document title or module topic unless it is part of the learner's question.",
               "Write one English query under 18 words. Return only the query, with no label or explanation.",
             ].join(" "),
           },
           {
             role: "user",
-            content: `Selected text: ${selectedText}\nLearner question: ${question}\nFailed query: ${query}`,
+            content: [
+              `Selected text: ${selectedText}`,
+              englishFocus ? `English subject name: ${englishFocus}` : "",
+              `Learner question: ${question}`,
+              `Failed query: ${englishQuery}`,
+            ].filter(Boolean).join("\n"),
           },
         ],
       });
-      retryQuery = ensureSelectedFocusInQuery(normalizeGeneratedSearchQuery(rewrittenRetry) || retryQuery, selectedText);
+      const rewritten = normalizeGeneratedSearchQuery(rewrittenRetry);
+      if (rewritten && !hasNonEnglishScript(rewritten)) retryQuery = ensureFocusInQuery(rewritten, englishAnchor);
     } catch (error) {
-      console.warn("[annotations] Web search retry rewrite failed; using an exact selected-text query", error);
+      console.warn("[annotations] Web search retry rewrite failed; using an anchored fallback query", error);
     }
-    if (retryQuery === query) retryQuery = retryQuestionSearchQuery(selectedText, question);
-    if (retryQuery === query) return initialSources;
+    if (retryQuery === englishQuery) retryQuery = retryQuestionSearchQuery(selectedText, question, plan.englishFocus);
+    if (retryQuery === englishQuery) return initialSources;
     console.info(`[annotations] Web search results missed the selected text; retrying with: ${retryQuery}`);
-    const retrySources = normalizeSourceMetaList(await this.questionWebSearch(retryQuery), 10);
-    return searchSourcesMatchSelectedFocus(retrySources, selectedText) ? retrySources : [];
+    const retrySources = await runSearches(retryQuery, retryQuery, false);
+    return searchSourcesMatchFocus(retrySources, selectedText, englishFocus) ? retrySources : [];
   }
 
   private async ensureWebGroundedAnswer(

@@ -57,9 +57,9 @@ const figureAssetServer = createFigureAssetServer(async (materialId, figureId) =
   return figure ? { path: figure.assetPath, mimeType: figure.mimeType || "image/png" } : null;
 });
 const annotationAssetServer = createAnnotationAssetServer(resolveNoteImageAsset);
-const annotations = new AnnotationService(materials, providerClient, async (query) => {
+const annotations = new AnnotationService(materials, providerClient, async (query, options) => {
   const tinyfishKey = await secrets.getTinyFishApiKey();
-  return searchTinyFishWeb(query, tinyfishKey.value);
+  return searchTinyFishWeb(query, tinyfishKey.value, options);
 }, async (query) => {
   const braveKey = await secrets.getBraveSearchApiKey();
   if (!braveKey.value) {

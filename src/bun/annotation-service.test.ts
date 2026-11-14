@@ -7,7 +7,7 @@ import type { ChatParams } from "./openai-compatible-client";
 import type { MaterialArtifacts } from "../shared/artifact-types";
 import { closeDbForTests, getDb } from "./project-db";
 import { getMaterialAnnotation, saveMaterialAnnotation } from "./annotation-store";
-import { AnnotationService } from "./annotation-service";
+import { AnnotationService, type QuestionWebSearchOptions } from "./annotation-service";
 import { questionThreadFromResult } from "../shared/question-thread";
 
 describe("annotation image search routing", () => {
@@ -357,7 +357,7 @@ describe("annotation side-chat service", () => {
       chatJson: async () => ({}),
       chatText: async (params: ChatParams) => {
         webCalls.push(params);
-        if (params.maxTokens === 64) return "premise conclusion current evidence";
+        if (params.maxTokens === 200) return "FOCUS: selected claim\nWEB: premise conclusion current evidence\nPAPER: premise conclusion review";
         if (params.messages.some((message) => message.content.includes("citation repair"))) {
           return "검색 근거에서 확인한 새로운 설명입니다. [S1]";
         }
@@ -371,8 +371,9 @@ describe("annotation side-chat service", () => {
         apiKey: { value: "test-key", source: "test" },
         client,
       }) as never,
-      async (query) => {
+      async (query, options) => {
         searchQueries.push(query);
+        if (options?.domainType === "research_paper") return [];
         return [{
           id: "S1",
           title: "Research source",
@@ -392,7 +393,11 @@ describe("annotation side-chat service", () => {
       useWebSearch: true,
     });
 
-    expect(searchQueries).toEqual(['"selected claim" premise conclusion current evidence']);
+    expect(searchQueries).toEqual([
+      '"selected claim" premise conclusion current evidence',
+      '"selected claim" premise conclusion review',
+      '"selected claim" 최신 연구 근거도 알려줘',
+    ]);
     expect(webCalls[0]?.messages[1]?.content).toContain("Selected text: selected claim");
     expect(webCalls[1]?.messages.some((message) => message.content.includes("[S1] Research source"))).toBe(true);
     expect(webCalls[1]?.messages[0]?.content).toContain("primary factual basis");
@@ -413,11 +418,13 @@ describe("annotation side-chat service", () => {
       chatJson: async () => ({}),
       chatText: async (params: ChatParams) => {
         webCalls.push(params);
+        if (params.maxTokens === 200) {
+          queryRewriteCount += 1;
+          return "FOCUS: imago Dei\nWEB: Roman Stoicism comprehensive overview history principles\nPAPER: Roman Stoicism ethics";
+        }
         if (params.maxTokens === 64) {
           queryRewriteCount += 1;
-          return queryRewriteCount === 1
-            ? "Roman Stoicism comprehensive overview history principles"
-            : "imago Dei Christian theology meaning history significance";
+          return "imago Dei Christian theology meaning history significance";
         }
         return "imago Dei는 기독교 신학의 인간 이해와 연결되는 개념입니다. [S1]";
       },
@@ -438,7 +445,7 @@ describe("annotation side-chat service", () => {
       }) as never,
       async (query) => {
         searchQueries.push(query);
-        if (searchQueries.length === 1) {
+        if (!query.includes("Christian theology")) {
           return [{ id: "S1", title: "Roman Stoicism", url: "https://example.com/stoicism", snippet: "Stoic ethics and Roman philosophy." }];
         }
         return [{ id: "S1", title: "Imago Dei", url: "https://example.com/imago-dei", snippet: "Imago Dei in Christian theological anthropology." }];
@@ -457,17 +464,116 @@ describe("annotation side-chat service", () => {
     expect(webCalls[0]?.messages[1]?.content).toContain("Learner question: 포괄적으로 설명해줘");
     expect(searchQueries).toEqual([
       '"imago Dei" Roman Stoicism comprehensive overview history principles',
+      '"imago Dei" Roman Stoicism ethics',
+      '"imago Dei" 포괄적으로 설명해줘',
+      "imago Dei Christian theology meaning history significance",
       "imago Dei Christian theology meaning history significance",
     ]);
+    expect(queryRewriteCount).toBe(2);
     expect(response.thread.messages[1]?.content).toContain("[S1]");
     expect(response.thread.messages[1]?.sources?.[0]?.url).toBe("https://example.com/imago-dei");
+  });
+
+  test("searches English web and scholarly sources for a Korean selection instead of quoting the Korean phrase", async () => {
+    const searches: { query: string; options?: QuestionWebSearchOptions }[] = [];
+    const webCalls: ChatParams[] = [];
+    const client = {
+      listModels: async () => [],
+      chatJson: async () => ({}),
+      chatText: async (params: ChatParams) => {
+        webCalls.push(params);
+        if (params.maxTokens === 200) {
+          return "FOCUS: free will\nWEB: free will compatibilism determinism debate overview\nPAPER: free will neuroscience Libet review";
+        }
+        return "자유의지 논쟁은 양립가능론과 결정론의 관계를 다룹니다. [S1] 신경과학 연구도 있습니다. [S2]";
+      },
+    };
+    service = new AnnotationService(
+      { getArtifacts: async () => artifacts() } as never,
+      async () => ({
+        publicSettings: { aiProvider: "openai", providers: { openai: { selectedModel: "test-model" } } },
+        apiKey: { value: "test-key", source: "test" },
+        client,
+      }) as never,
+      async (query, options) => {
+        searches.push({ query, options });
+        if (options?.domainType === "research_paper") {
+          return [{ id: "S1", title: "Free will and neuroscience: a review", url: "https://doi.org/10.1000/fw", snippet: "Review of free will research." }];
+        }
+        if (options?.language === "ko") {
+          return [{ id: "S1", title: "자유의지 - 위키백과", url: "https://ko.wikipedia.org/wiki/자유의지", snippet: "자유의지는 ..." }];
+        }
+        return [{ id: "S1", title: "Free Will (Stanford Encyclopedia of Philosophy)", url: "https://plato.stanford.edu/entries/freewill/", snippet: "Free will and compatibilism." }];
+      }
+    );
+
+    const response = await service.askTurn({
+      materialId: "material-1",
+      chunkId: "chunk-1",
+      selectedText: "자유의지",
+      userText: "이 개념에 대한 최근 논쟁을 알려줘",
+      useWebSearch: true,
+    });
+
+    const english = searches.find((item) => item.options?.language === "en");
+    const papers = searches.find((item) => item.options?.domainType === "research_paper");
+    const korean = searches.find((item) => item.options?.language === "ko");
+    expect(english?.query).toBe("free will compatibilism determinism debate overview");
+    expect(english?.query).not.toMatch(/[가-힣]/);
+    expect(papers?.query).toBe("free will neuroscience Libet review");
+    expect(korean?.query).toContain("자유의지");
+    expect(searches).toHaveLength(3);
+    const sources = response.thread.messages[1]?.sources || [];
+    expect(sources.map((source) => source.url)).toEqual([
+      "https://plato.stanford.edu/entries/freewill/",
+      "https://doi.org/10.1000/fw",
+      "https://ko.wikipedia.org/wiki/%EC%9E%90%EC%9C%A0%EC%9D%98%EC%A7%80",
+    ]);
+    expect(sources.map((source) => source.id)).toEqual(["S1", "S2", "S3"]);
+  });
+
+  test("keeps the English search anchored to the English term when the planner omits it from the query", async () => {
+    const searches: { query: string; options?: QuestionWebSearchOptions }[] = [];
+    const client = {
+      listModels: async () => [],
+      chatJson: async () => ({}),
+      chatText: async (params: ChatParams) => params.maxTokens === 200
+        ? "FOCUS: imago Dei\nWEB: Christian theological anthropology meaning\nPAPER: 신학 논문"
+        : "설명입니다. [S1]",
+    };
+    service = new AnnotationService(
+      { getArtifacts: async () => artifacts() } as never,
+      async () => ({
+        publicSettings: { aiProvider: "openai", providers: { openai: { selectedModel: "test-model" } } },
+        apiKey: { value: "test-key", source: "test" },
+        client,
+      }) as never,
+      async (query, options) => {
+        searches.push({ query, options });
+        return [{ id: "S1", title: "Imago Dei", url: `https://example.com/${searches.length}`, snippet: "Imago Dei in theology." }];
+      }
+    );
+
+    await service.askTurn({
+      materialId: "material-1",
+      chunkId: "chunk-1",
+      selectedText: "하나님의 형상",
+      userText: "의미를 알려줘",
+      useWebSearch: true,
+    });
+
+    const english = searches.find((item) => item.options?.language === "en");
+    const papers = searches.find((item) => item.options?.domainType === "research_paper");
+    expect(english?.query).toBe('"imago Dei" Christian theological anthropology meaning');
+    // A Korean "PAPER" line is rejected and replaced by the English query.
+    expect(papers?.query).toBe('"imago Dei" Christian theological anthropology meaning');
   });
 
   test("fails closed when a searched answer still omits every valid source citation after repair", async () => {
     const client = {
       listModels: async () => [],
       chatJson: async () => ({}),
-      chatText: async (params: ChatParams) => params.maxTokens === 64 ? "relevant evidence" : "인용 없는 답변",
+      chatText: async (params: ChatParams) => params.maxTokens === 200 ? "WEB: relevant evidence" : "인용 없는 답변",
     };
     service = new AnnotationService(
       { getArtifacts: async () => artifacts() } as never,
