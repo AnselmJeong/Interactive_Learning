@@ -1,5 +1,18 @@
-import { useEffect, useMemo, useState, type ClipboardEvent } from "react";
-import { ArrowRight, BookOpen, Download, Search, Trash2, Upload } from "lucide-react";
+import React, { useEffect, useMemo, useState, type ClipboardEvent } from "react";
+import { ArrowRight, BookOpen, Download, FileSearch, Search, Trash2, Upload } from "lucide-react";
+import { Badge } from "@astryxdesign/core/Badge";
+import { Button } from "@astryxdesign/core/Button";
+import { Card } from "@astryxdesign/core/Card";
+import { EmptyState } from "@astryxdesign/core/EmptyState";
+import { Grid } from "@astryxdesign/core/Grid";
+import { Heading } from "@astryxdesign/core/Heading";
+import { IconButton } from "@astryxdesign/core/IconButton";
+import { ProgressBar } from "@astryxdesign/core/ProgressBar";
+import { Selector } from "@astryxdesign/core/Selector";
+import { HStack, VStack } from "@astryxdesign/core/Stack";
+import { Tab, TabList } from "@astryxdesign/core/TabList";
+import { Text } from "@astryxdesign/core/Text";
+import { TextInput } from "@astryxdesign/core/TextInput";
 import type { DocumentProgressSnapshot, DocumentSummary, LearningActivityDay, ProjectProgressSnapshot, ProjectSummary, SourceSummary } from "../../../shared/rpc-types";
 import type { MaterialAnnotation, NoteImageUpload } from "../../../shared/artifact-types";
 import type { TutorMessage } from "../../../shared/tutor-types";
@@ -41,6 +54,31 @@ function documentProgress(document: DocumentSummary, sources: SourceSummary[], p
   return Math.round(score / children.length);
 }
 
+function PageHeader({ kicker, title, subtitle, actions }: { kicker: string; title: string; subtitle?: string; actions?: React.ReactNode }) {
+  return (
+    <header className="renovation-header ws-header">
+      <VStack gap={0.5}>
+        <Text type="supporting" color="secondary">{kicker}</Text>
+        <Heading level={1}>{title}</Heading>
+        {subtitle ? <Text type="supporting">{subtitle}</Text> : null}
+      </VStack>
+      {actions ? <HStack gap={2} vAlign="center" wrap="wrap" justify="end">{actions}</HStack> : null}
+    </header>
+  );
+}
+
+function StatTile({ label, value, detail }: { label: string; value: string; detail?: string }) {
+  return (
+    <Card padding={4}>
+      <VStack gap={1}>
+        <Text type="supporting">{label}</Text>
+        <Heading level={2} maxLines={1}>{value}</Heading>
+        {detail ? <Text type="supporting" maxLines={1}>{detail}</Text> : null}
+      </VStack>
+    </Card>
+  );
+}
+
 function coverTone(index: number) {
   return ["ink", "forest", "clay", "ochre"][index % 4];
 }
@@ -68,102 +106,114 @@ export function LibraryPage({ project, documents, sources, selectedDocumentId, p
   const activeProgress = activeDocument ? documentProgress(activeDocument, sources, progress) : 0;
   const heroTitle = project?.title || "새로운 프로젝트";
 
+  const bookCount = documents.filter((document) => document.documentType === "book").length;
+  const articleCount = documents.filter((document) => document.documentType === "article").length;
+  const overallPercent = progress?.percent ?? (documents.length ? Math.round(documents.reduce((sum, document) => sum + documentProgress(document, sources, progress), 0) / documents.length) : 0);
+
   return (
     <div className="renovation-page library-page">
-      <header className="renovation-header">
-        <div>
-          <p className="renovation-kicker">Project</p>
-          <h2>나의 프로젝트</h2>
-          <span>책 {documents.filter((document) => document.documentType === "book").length}권 · 논문 {documents.filter((document) => document.documentType === "article").length}편 · 마지막 학습 {formatRelativeTime(activeDocument?.lastStudiedAt || null)}</span>
-        </div>
-        <label className="library-search">
-          <Search size={19} aria-hidden="true" />
-          <input value={query} onChange={(event) => setQuery(event.currentTarget.value)} placeholder="제목이나 저자로 검색" aria-label="프로젝트 자료 검색" />
-        </label>
-      </header>
+      <PageHeader
+        kicker="Project"
+        title="나의 프로젝트"
+        subtitle={`책 ${bookCount}권 · 논문 ${articleCount}편 · 마지막 학습 ${formatRelativeTime(activeDocument?.lastStudiedAt || null)}`}
+        actions={<>
+          <TextInput label="프로젝트 자료 검색" isLabelHidden value={query} onChange={(value) => setQuery(value)} placeholder="제목이나 저자로 검색" startIcon={Search} hasClear width={280} />
+          <Button label="프로젝트 내보내기" icon={<Download size={16} />} isDisabled={!project || busy} onClick={() => { if (project) onExportProject(project); }} />
+          <Button label="새 책·논문 가져오기" variant="primary" icon={<Upload size={16} />} onClick={onImport} />
+        </>}
+      />
 
-      <div className="renovation-scroll">
-        <section className="library-hero">
-          <div>
-            <p>Current project</p>
-            <h3>{heroTitle}</h3>
-          </div>
-          <button type="button" className="library-project-export" disabled={!project || busy} onClick={() => { if (project) onExportProject(project); }}>
-            <Download size={17} aria-hidden="true" /> 프로젝트 내보내기
-          </button>
-        </section>
+      <div className="renovation-scroll ws-scroll">
+        <VStack gap={6}>
+          <Grid columns={{ minWidth: 200 }} gap={4}>
+            <StatTile label="Current project" value={heroTitle} detail={project?.description || undefined} />
+            <StatTile label="전체 진도" value={`${overallPercent}%`} detail={progress ? `${progress.coveredChunks} / ${progress.totalChunks} 대목` : undefined} />
+            <StatTile label="자료" value={`${documents.length}개`} detail={`책 ${bookCount} · 논문 ${articleCount}`} />
+            <StatTile label="마지막 학습" value={formatRelativeTime(activeDocument?.lastStudiedAt || null)} detail={activeDocument?.title} />
+          </Grid>
 
-        <section className="library-collection">
-          <div className="renovation-section-heading">
-            <div>
-              <h3>학습 중인 책·논문</h3>
-              <p>읽은 양보다 이해한 지점을 기준으로 정리합니다.</p>
-            </div>
-            <button type="button" className="text-action" onClick={onImport}><Upload size={15} /> 새 책·논문 가져오기</button>
-          </div>
-          {filteredDocuments.length ? (
-            <div className="document-grid">
-              {filteredDocuments.map((document, index) => {
-                const progressValue = documentProgress(document, sources, progress);
-                const hasBibliography = document.documentType !== "book" || document.metadataStatus === "found" || document.metadataStatus === "manual";
-                const title = (hasBibliography || document.hasPdfChapters) ? document.title : "서지 정보 없음";
-                const bibliographicLine = document.documentType === "book"
-                  ? [document.authors.join(", "), document.publisher, document.publishedDate?.slice(0, 4)].filter(Boolean).join(" · ")
-                  : [document.authors.join(", "), document.journal, document.publishedDate?.slice(0, 4)].filter(Boolean).join(" · ");
-                return (
-                  <article key={document.id} className={`document-tile ${selectedDocumentId === document.id ? "selected" : ""}`}>
-                    <button type="button" className="document-tile-open" onClick={() => onOpenDocument(document.id)} aria-label={`${title} 학습 열기`}>
-                      <span className={`book-cover ${coverTone(index)}`}>
-                        {document.coverUrl ? <img src={document.coverUrl} alt={`${title} 표지`} /> : hasBibliography ? <em>{title}</em> : null}
-                      </span>
-                      <span className="document-copy">
-                        <strong>{title}</strong>
-                        <span className="document-kind-line">{document.documentType === "book" ? "책" : "논문"} · Source {document.sourceCount}개</span>
-                        {hasBibliography && document.subtitle ? <span className="document-subtitle">{document.subtitle}</span> : null}
-                        <small>{bibliographicLine || "서지 정보 없음"}</small>
-                        <b>{progressValue ? `${progressValue}% learned` : document.preparation.percent >= 100 ? "학습 준비 완료" : "아직 시작하지 않음"}</b>
-                      </span>
-                    </button>
-                    <div className="document-tile-actions">
-                      <button
-                        type="button"
-                        className="document-tile-action document-metadata-action"
-                        onClick={() => onFindMetadata(document)}
-                        aria-label={`${title} 서지 정보 설정`}
-                        title="서지 정보 설정"
-                      ><Search size={16} aria-hidden="true" /></button>
-                      <button
-                        type="button"
-                        className="document-tile-action document-delete-action"
-                        onClick={() => onDeleteDocument(document)}
-                        aria-label={`${title} ${document.documentType === "book" ? "책" : "논문"} 삭제`}
-                        title={`${document.documentType === "book" ? "책" : "논문"} 전체 삭제`}
-                      ><Trash2 size={16} aria-hidden="true" /></button>
-                    </div>
-                  </article>
-                );
-              })}
-            </div>
-          ) : (
-            <div className="renovation-empty">
-              <BookOpen size={28} />
-              <h3>{query ? "검색 결과가 없습니다" : "첫 자료를 가져오세요"}</h3>
-              <p>{query ? "다른 제목이나 저자로 검색해 보세요." : "PDF, EPUB, Markdown 또는 Learnie 내보내기 ZIP을 가져올 수 있습니다."}</p>
-              {!query ? <button type="button" className="renovation-primary" onClick={onImport}><Upload size={16} /> 책·논문 가져오기</button> : null}
-            </div>
-          )}
-        </section>
+          {activeDocument?.documentType === "article" ? (
+            <Card padding={5} variant="muted">
+              <HStack gap={4} vAlign="center" justify="between">
+                <VStack gap={1}>
+                  <Text type="supporting">Article</Text>
+                  <Heading level={3}>{activeDocument.title}</Heading>
+                  <Text type="supporting" maxLines={2}>{activeDocument.description || activeDocument.subtitle || [activeDocument.authors.join(", "), activeDocument.journal, activeDocument.publishedDate].filter(Boolean).join(" · ") || "이 논문은 하나의 Source로 바로 학습할 수 있습니다."}</Text>
+                </VStack>
+                <Button label={`논문 ${activeProgress ? "계속 학습하기" : "학습 시작"}`} variant="primary" endContent={<ArrowRight size={16} />} onClick={() => onOpenDocument(activeDocument.id)} />
+              </HStack>
+            </Card>
+          ) : null}
 
-        {activeDocument?.documentType === "article" ? (
-          <section className="library-article-overview">
-            <p className="renovation-kicker">Article</p>
-            <h3>{activeDocument.title}</h3>
-            <p>{activeDocument.description || activeDocument.subtitle || [activeDocument.authors.join(", "), activeDocument.journal, activeDocument.publishedDate].filter(Boolean).join(" · ") || "이 논문은 하나의 Source로 바로 학습할 수 있습니다."}</p>
-            <button type="button" className="renovation-primary" onClick={() => {
-              onOpenDocument(activeDocument.id);
-            }}>논문 {activeProgress ? "계속 학습하기" : "학습 시작"} <ArrowRight size={16} /></button>
-          </section>
-        ) : null}
+          <VStack gap={3}>
+            <HStack justify="between" vAlign="end">
+              <VStack gap={0.5}>
+                <Heading level={2}>학습 중인 책·논문</Heading>
+                <Text type="supporting">읽은 양보다 이해한 지점을 기준으로 정리합니다.</Text>
+              </VStack>
+            </HStack>
+            {filteredDocuments.length ? (
+              <Card padding={0}>
+                <div className="document-table" role="table" aria-label="책·논문 목록">
+                  <div className="document-table-head" role="row">
+                    <span role="columnheader">제목</span>
+                    <span role="columnheader">유형</span>
+                    <span role="columnheader">진도</span>
+                    <span role="columnheader">최근 학습</span>
+                    <span role="columnheader" className="visually-hidden">작업</span>
+                  </div>
+                  {filteredDocuments.map((document, index) => {
+                    const progressValue = documentProgress(document, sources, progress);
+                    const hasBibliography = document.documentType !== "book" || document.metadataStatus === "found" || document.metadataStatus === "manual";
+                    const title = (hasBibliography || document.hasPdfChapters) ? document.title : "서지 정보 없음";
+                    const bibliographicLine = document.documentType === "book"
+                      ? [document.authors.join(", "), document.publisher, document.publishedDate?.slice(0, 4)].filter(Boolean).join(" · ")
+                      : [document.authors.join(", "), document.journal, document.publishedDate?.slice(0, 4)].filter(Boolean).join(" · ");
+                    const kind = document.documentType === "book" ? "책" : "논문";
+                    return (
+                      <div key={document.id} role="row" className={`document-row ${selectedDocumentId === document.id ? "selected" : ""}`}>
+                        <button type="button" role="cell" className="document-row-open" onClick={() => onOpenDocument(document.id)} aria-label={`${title} 학습 열기`}>
+                          <span className={`book-cover mini ${coverTone(index)}`}>
+                            {document.coverUrl ? <img src={document.coverUrl} alt="" /> : <em>{title.slice(0, 1)}</em>}
+                          </span>
+                          <VStack gap={0.5}>
+                            <Text type="label" maxLines={1}>{title}</Text>
+                            <Text type="supporting" maxLines={1}>{bibliographicLine || "서지 정보 없음"} · Source {document.sourceCount}개</Text>
+                          </VStack>
+                        </button>
+                        <span role="cell"><Badge label={kind} variant={document.documentType === "book" ? "blue" : "purple"} /></span>
+                        <span role="cell" className="document-row-progress">
+                          <ProgressBar
+                            label={`${title} 진도`}
+                            isLabelHidden
+                            hasValueLabel
+                            value={progressValue}
+                            variant={progressValue >= 100 ? "success" : "accent"}
+                            formatValueLabel={(value) => value ? `${value}%` : document.preparation.percent >= 100 ? "준비 완료" : "시작 전"}
+                          />
+                        </span>
+                        <span role="cell"><Text type="supporting">{formatRelativeTime(document.lastStudiedAt)}</Text></span>
+                        <span role="cell" className="document-row-actions">
+                          <IconButton label={`${title} 서지 정보 설정`} tooltip="서지 정보 설정" variant="ghost" size="sm" icon={<FileSearch size={16} />} onClick={() => onFindMetadata(document)} />
+                          <IconButton label={`${title} ${kind} 삭제`} tooltip={`${kind} 전체 삭제`} variant="ghost" size="sm" icon={<Trash2 size={16} />} onClick={() => onDeleteDocument(document)} />
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </Card>
+            ) : (
+              <Card padding={6}>
+                <EmptyState
+                  icon={<BookOpen size={28} />}
+                  title={query ? "검색 결과가 없습니다" : "첫 자료를 가져오세요"}
+                  description={query ? "다른 제목이나 저자로 검색해 보세요." : "PDF, EPUB, Markdown 또는 Learnie 내보내기 ZIP을 가져올 수 있습니다."}
+                  actions={!query ? <Button label="책·논문 가져오기" variant="primary" icon={<Upload size={16} />} onClick={onImport} /> : undefined}
+                />
+              </Card>
+            )}
+          </VStack>
+        </VStack>
       </div>
     </div>
   );
@@ -317,23 +367,31 @@ export function AnnotationPage({ project, annotations, documents, sources, selec
 
   return (
     <div className="renovation-page annotation-page">
-      <header className="renovation-header">
-        <div><p className="renovation-kicker">Reading traces</p><h2>하이라이트 · 노트</h2><span>{project?.title || "Project"} · {annotations.length}개의 기록</span></div>
-        <button type="button" className="renovation-secondary" onClick={() => onExport(filtered.map((annotation) => annotation.id))} disabled={!filtered.length || exporting}><Download size={16} /> {exporting ? "내보내는 중" : `${filtered.length}개 내보내기`}</button>
-      </header>
+      <PageHeader
+        kicker="Reading traces"
+        title="하이라이트 · 노트"
+        subtitle={`${project?.title || "Project"} · ${annotations.length}개의 기록`}
+        actions={<Button label={exporting ? "내보내는 중" : `${filtered.length}개 내보내기`} icon={<Download size={16} />} isDisabled={!filtered.length || exporting} onClick={() => onExport(filtered.map((annotation) => annotation.id))} />}
+      />
       <div className="annotation-layout">
         <section className="annotation-index">
           <div className="annotation-filters" aria-label="기록 필터">
-            {([['all', '전체'], ['highlight', '하이라이트'], ['note', '내 노트'], ['question', '질문'], ['lookup', '찾아보기'], ['image', '이미지']] as const).map(([value, label]) => (
-              <button key={value} type="button" className={filter === value ? "active" : ""} onClick={() => setFilter(value)}>{label}</button>
-            ))}
+            <TabList value={filter} onChange={(value) => setFilter(value as AnnotationFilter)} size="sm" hasDivider>
+              {([['all', '전체'], ['highlight', '하이라이트'], ['note', '내 노트'], ['question', '질문'], ['lookup', '찾아보기'], ['image', '이미지']] as const).map(([value, label]) => (
+                <Tab key={value} value={value} label={label} />
+              ))}
+            </TabList>
           </div>
           <div className="annotation-search-row">
-            <label><Search size={16} /><input value={query} onChange={(event) => setQuery(event.currentTarget.value)} placeholder="기록 검색" aria-label="Annotation 검색" /></label>
-            <select value={documentId} onChange={(event) => setDocumentId(event.currentTarget.value)} aria-label="자료별 필터">
-              <option value="all">모든 자료</option>
-              {documents.map((document) => <option key={document.id} value={document.id}>{document.title}</option>)}
-            </select>
+            <TextInput label="Annotation 검색" isLabelHidden value={query} onChange={(value) => setQuery(value)} placeholder="기록 검색" startIcon={Search} hasClear width="100%" />
+            <Selector
+              label="자료별 필터"
+              isLabelHidden
+              value={documentId}
+              onChange={(value) => setDocumentId(value)}
+              options={[{ value: "all", label: "모든 자료" }, ...documents.map((document) => ({ value: document.id, label: document.title }))]}
+              width={180}
+            />
           </div>
           <div className="annotation-list">
             {filtered.map((annotation) => {
@@ -348,7 +406,7 @@ export function AnnotationPage({ project, annotations, documents, sources, selec
                 </button>
               );
             })}
-            {!filtered.length ? <div className="renovation-empty compact"><h3>아직 기록이 없습니다</h3><p>학습 공간에서 문장을 선택해 하이라이트하거나 노트를 남겨 보세요.</p></div> : null}
+            {!filtered.length ? <EmptyState isCompact title="아직 기록이 없습니다" description="학습 공간에서 문장을 선택해 하이라이트하거나 노트를 남겨 보세요." /> : null}
           </div>
         </section>
         <article className="annotation-detail">
@@ -417,11 +475,11 @@ export function AnnotationPage({ project, annotations, documents, sources, selec
                     onRemove={(imageId) => setPendingNoteImages((current) => current.filter((image) => image.id !== imageId))}
                   />
                   {noteEditError ? <p className="lookup-error">{noteEditError}</p> : null}
-                  <div className="annotation-note-editor-actions"><button type="button" className="renovation-secondary" onClick={() => setEditingNoteId(null)} disabled={noteBusy}>취소</button><button type="button" className="renovation-primary" disabled={noteBusy || (!noteDraft.trim() && !pendingNoteImages.length && !(selected.result.images || []).some((image) => !removedNoteImageIds.includes(image.id)))} onClick={() => {
+                  <div className="annotation-note-editor-actions"><Button label="취소" onClick={() => setEditingNoteId(null)} isDisabled={noteBusy} /><Button label="저장" variant="primary" isDisabled={noteBusy || (!noteDraft.trim() && !pendingNoteImages.length && !(selected.result.images || []).some((image) => !removedNoteImageIds.includes(image.id)))} onClick={() => {
                     setNoteBusy(true);
                     void onUpdateNote(selected.id, noteDraft, pendingNoteImages.map(noteImageUpload), removedNoteImageIds)
                       .then(() => setEditingNoteId(null)).catch((error) => setNoteEditError((error as Error).message || String(error))).finally(() => setNoteBusy(false));
-                  }}>저장</button></div>
+                  }} /></div>
                 </div>
               ) : isQuestionAnnotation(selected) || isLookupAnnotation(selected) ? null : (
                 <div className="annotation-body">
@@ -431,18 +489,18 @@ export function AnnotationPage({ project, annotations, documents, sources, selec
               )}
               <AnnotationExternalHtmlAttachment annotation={selected} />
               <div className="annotation-detail-actions">
-                {selectedSource ? <button type="button" className="renovation-primary" onClick={() => onOpenAnnotation(selected)}>본문에서 보기 <ArrowRight size={16} /></button> : null}
-                {selected.result.kind === "note" ? <button type="button" className="renovation-secondary" onClick={() => {
+                {selectedSource ? <Button label="본문에서 보기" variant="primary" endContent={<ArrowRight size={16} />} onClick={() => onOpenAnnotation(selected)} /> : null}
+                {selected.result.kind === "note" ? <Button label="편집" onClick={() => {
                   setEditingNoteId(selected.id);
                   setNoteDraft(selected.result.kind === "note" ? selected.result.note : "");
                   setPendingNoteImages([]);
                   setRemovedNoteImageIds([]);
                   setNoteEditError(null);
-                }}>편집</button> : null}
-                <button type="button" className="annotation-delete-action" onClick={() => onDelete(selected)}>삭제</button>
+                }} /> : null}
+                <Button label="삭제" variant="ghost" icon={<Trash2 size={16} />} onClick={() => onDelete(selected)} />
               </div>
             </div>
-          ) : <div className="renovation-empty"><h3>기록을 선택하세요</h3><p>왼쪽 목록에서 하이라이트, 노트 또는 AI 대화를 선택할 수 있습니다.</p></div>}
+          ) : <div className="annotation-detail-empty"><EmptyState title="기록을 선택하세요" description="왼쪽 목록에서 하이라이트, 노트 또는 AI 대화를 선택할 수 있습니다." /></div>}
         </article>
       </div>
     </div>
@@ -537,15 +595,26 @@ export function ProgressPage({ project, documents, sources, progress, onContinue
 
   return (
     <div className="renovation-page progress-page">
-      <header className="renovation-header">
-        <div><p className="renovation-kicker">Progress</p><h2>학습 진척도</h2><span>읽기 분량이 아니라 이해가 남은 지점을 보여줍니다.</span></div>
-        <button type="button" className="renovation-primary" onClick={onContinue} disabled={!sources.length}>학습 계속하기 <ArrowRight size={16} /></button>
-      </header>
-      <div className="progress-layout renovation-scroll">
+      <PageHeader
+        kicker="Progress"
+        title="학습 진척도"
+        subtitle="읽기 분량이 아니라 이해가 남은 지점을 보여줍니다."
+        actions={<Button label="학습 계속하기" variant="primary" endContent={<ArrowRight size={16} />} isDisabled={!sources.length} onClick={onContinue} />}
+      />
+      <div className="renovation-scroll ws-scroll">
+      <VStack gap={6}>
+      <Grid columns={{ minWidth: 200 }} gap={4}>
+        <StatTile label="전체 진도" value={`${progress?.percent ?? 0}%`} detail={progress ? `${progress.coveredChunks} / ${progress.totalChunks} 대목` : undefined} />
+        <StatTile label="최근 1년 학습일" value={`${(progress?.activityDays || []).filter((day) => day.viewedChunks > 0).length}일`} detail={project?.title} />
+        <StatTile label="완료한 자료" value={`${documentProgressRows.filter((document) => document.percent >= 100).length} / ${documentProgressRows.length}`} />
+      </Grid>
+      <div className="progress-layout">
+        <Card padding={5}>
         <section className="progress-main">
-          <p className="renovation-kicker">{project?.title || "Learning project"}</p>
-          <h3>학습 활동</h3>
-          <p>지난 1년 동안 새로 연 학습 대목입니다. 같은 대목을 다시 읽어도 한 번만 셉니다.</p>
+          <VStack gap={1}>
+            <Heading level={2}>학습 활동</Heading>
+            <Text type="supporting">지난 1년 동안 새로 연 학습 대목입니다. 같은 대목을 다시 읽어도 한 번만 셉니다.</Text>
+          </VStack>
           <div className="activity-overview" aria-label="최근 1년 학습 활동">
             <div className="activity-calendar-grid" role="grid" aria-label="요일과 주별 학습 대목 열람 기록">
               {calendar.weeks.map((week, index) => week.monthLabel ? (
@@ -568,21 +637,29 @@ export function ProgressPage({ project, documents, sources, progress, onContinue
             <div className="activity-legend" aria-label="활동량 범례"><span>적음</span>{[0, 1, 2, 3, 4].map((level) => <i key={level} className={`level-${level}`} />)}<span>많음</span></div>
           </div>
         </section>
-        <aside className="document-progress-list">
-          <p className="renovation-kicker">Progress</p>
-          <h3>{materialLabel}</h3>
-          <p>각 자료의 실제 학습 대목 기준</p>
-          <ol>
+        </Card>
+        <Card padding={5}>
+          <VStack gap={4}>
+            <VStack gap={0.5}>
+              <Heading level={2}>{materialLabel}</Heading>
+              <Text type="supporting">각 자료의 실제 학습 대목 기준</Text>
+            </VStack>
             {documentProgressRows.map((document) => (
-              <li key={document.documentId} className={document.status}>
-                <div><strong>{document.title}</strong><b>{document.percent}%</b></div>
-                <span>{document.totalChunks ? `${document.coveredChunks} / ${document.totalChunks} 대목` : "학습 자료 준비 중"}</span>
-                <i aria-hidden="true"><em style={{ width: `${document.percent}%` }} /></i>
-              </li>
+              <VStack key={document.documentId} gap={1}>
+                <ProgressBar
+                  label={document.title}
+                  value={document.percent}
+                  hasValueLabel
+                  variant={document.percent >= 100 ? "success" : "accent"}
+                />
+                <Text type="supporting">{document.totalChunks ? `${document.coveredChunks} / ${document.totalChunks} 대목` : "학습 자료 준비 중"}</Text>
+              </VStack>
             ))}
-          </ol>
-          {!documentProgressRows.length ? <div className="progress-empty">학습 자료를 가져오면 여기에서 자료별 진도를 확인할 수 있습니다.</div> : null}
-        </aside>
+            {!documentProgressRows.length ? <EmptyState isCompact title="아직 자료가 없습니다" description="학습 자료를 가져오면 여기에서 자료별 진도를 확인할 수 있습니다." /> : null}
+          </VStack>
+        </Card>
+      </div>
+      </VStack>
       </div>
     </div>
   );
