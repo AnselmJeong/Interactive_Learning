@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { confettiParticleCount } from "./MilestoneConfetti";
-import { crossedLearningMilestone } from "../learning-milestones";
+import { crossedLearningMilestone, learningProgressPercent } from "../learning-milestones";
 
 const appCss = readFileSync(new URL("../styles/app.css", import.meta.url), "utf8");
 const componentSource = readFileSync(new URL("./MilestoneConfetti.tsx", import.meta.url), "utf8");
@@ -14,6 +14,16 @@ describe("milestone confetti", () => {
     expect(crossedLearningMilestone(50, 86)).toBe(85);
     expect(crossedLearningMilestone(99, 100)).toBe(100);
     expect(crossedLearningMilestone(85, 70)).toBeNull();
+  });
+
+  test("reaches 100% only after the last chunk is actually covered", () => {
+    // Entering the last chunk counts it as reached but not covered.
+    expect(learningProgressPercent(10, 9, 10)).toBe(99);
+    // 199/200 must not round up to 100 and fire the completion celebration early.
+    expect(learningProgressPercent(199, 198, 200)).toBe(99);
+    expect(learningProgressPercent(10, 10, 10)).toBe(100);
+    expect(learningProgressPercent(3, 2, 10)).toBe(30);
+    expect(learningProgressPercent(0, 0, 0)).toBe(0);
   });
 
   test("makes every milestone substantial and later milestones progressively more celebratory", () => {

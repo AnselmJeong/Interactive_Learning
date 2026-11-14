@@ -12,3 +12,12 @@ export function crossedLearningMilestone(previousPercent: number, currentPercent
 export function reachedLearningMilestone(progressPercent: number): LearningMilestone | null {
   return LEARNING_MILESTONES.filter((milestone) => progressPercent >= milestone).at(-1) || null;
 }
+
+// The bar counts the chunk being taught as "reached", so entering the last chunk (or rounding
+// 199/200) would otherwise read 100% and fire the completion celebration early. 100% is reserved
+// for every chunk actually being covered.
+export function learningProgressPercent(reachedChunks: number, coveredChunks: number, totalChunks: number): number {
+  if (totalChunks <= 0) return 0;
+  if (coveredChunks >= totalChunks) return 100;
+  return Math.min(99, Math.round((Math.min(reachedChunks, totalChunks) / totalChunks) * 100));
+}
