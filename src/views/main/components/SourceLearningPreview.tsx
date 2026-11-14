@@ -1,6 +1,6 @@
 import { BookOpen, Clock3, FileText } from "lucide-react";
 import type { DocumentType, MaterialArtifacts } from "../../../shared/artifact-types";
-import { displayableCourseTitle, displayableModuleTitle } from "../../../shared/display-title";
+import { displayableCourseTitle, displayableModuleTitle, moduleSubtopicFromTitle } from "../../../shared/display-title";
 import { normalizeLearningHtml } from "../../../shared/learning-html";
 import { TutorBlockRenderer } from "./TutorBlockRenderer";
 
@@ -58,7 +58,7 @@ export function SourceLearningPreview({
           {artifacts.coursePlan.modules.map((module, index) => (
             <li key={module.id}>
               <span className="source-preview-module-index">{String(index + 1).padStart(2, "0")}</span>
-              <strong>{displayableModuleTitle(module.title) || module.title}</strong>
+              <strong>{module.subtopic || moduleSubtopicFromTitle(module.title) || displayableModuleTitle(module.title) || module.title}</strong>
             </li>
           ))}
         </ol>

@@ -7,7 +7,7 @@ import type { AppSettings, AiProviderStatus, ChatSubmitShortcut, ProviderModel }
 import type { DocumentType, MaterialAnnotation, MaterialArtifacts, NoteImageUpload, QuestionThreadResult, VisualSpec } from "../../shared/artifact-types";
 import type { LearningMessageSetSummary, SessionSnapshot, SessionSummary, SourceRef, TutorContext, TutorMessage, TutorPrefetchStatus } from "../../shared/tutor-types";
 import type { PreparedLearningIrResult } from "../../shared/learning-ir-types";
-import { comparableHeadingTitle, displayableCourseTitle, displayableHeadingPath, displayableModuleTitle, displayableOutlineTitle, stripRepeatedSourceHeading, titleCasedSourceTitle } from "../../shared/display-title";
+import { comparableHeadingTitle, displayableCourseTitle, displayableHeadingPath, displayableModuleTitle, displayableOutlineTitle, numberedModuleTitle, stripRepeatedSourceHeading, titleCasedSourceTitle } from "../../shared/display-title";
 import { SettingsModal } from "./components/SettingsModal";
 import { VisualRenderer } from "./components/VisualRenderer";
 import { MarkdownContent } from "./components/MarkdownContent";
@@ -2270,9 +2270,14 @@ export function App({ request }: { request: RpcRequest }) {
     return titles;
   }, [artifacts, sourceTitleById]);
   const displayModuleTitle = useCallback((module: { id: string; title: string }) => {
+    const moduleIndex = artifacts?.coursePlan.modules.findIndex((item) => item.id === module.id) ?? -1;
+    const planModule = moduleIndex >= 0 ? artifacts!.coursePlan.modules[moduleIndex]! : null;
+    if (planModule) {
+      const numbered = numberedModuleTitle(planModule, moduleIndex, sourceTitlesForModule(module.id));
+      if (numbered) return numbered;
+    }
     const title = displayableModuleTitle(module.title, sourceTitlesForModule(module.id));
     if (title) return title;
-    const moduleIndex = artifacts?.coursePlan.modules.findIndex((item) => item.id === module.id) ?? -1;
     return moduleIndex >= 0 ? `Module ${moduleIndex + 1}` : "Module";
   }, [artifacts?.coursePlan.modules, sourceTitlesForModule]);
   const selectedModuleTitle = selectedModule ? displayModuleTitle(selectedModule) : "";

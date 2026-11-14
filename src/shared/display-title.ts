@@ -154,7 +154,7 @@ export function displayableOutlineTitle(title: string, leadingTitles: string[] =
   return cleanHeadingParts(normalized.split(" › "), leadingTitles).join(" › ");
 }
 
-export function displayableModuleTitle(title: string, leadingTitles: string[] = []) {
+export function displayableModuleTitle(title: string, leadingTitles: string[] = [], preserveAuthoredMixedCase = false) {
   const outlineTitle = displayableOutlineTitle(title, leadingTitles);
   const withoutDecoration = outlineTitle
     .replace(/^\s*(?:#{1,6}|[-–—•·▪▫►▶◆◇■□]+)\s*/u, "")
@@ -165,5 +165,36 @@ export function displayableModuleTitle(title: string, leadingTitles: string[] = 
     .replace(/\s*(?:\[\s*\d{1,3}\s*\]|\(\s*\d{1,3}\s*\)|\{\s*\d{1,3}\s*\}|【\s*\d{1,3}\s*】)\s*$/u, "")
     .replace(/\s*[-–—:|]+\s*$/u, "")
     .trim();
-  return applyEnglishTitleCase(withoutDecoration, false);
+  return applyEnglishTitleCase(withoutDecoration, preserveAuthoredMixedCase);
+}
+
+const FIGURE_HEADING = /^(?:figure|fig\.?|table|plate|exhibit|그림|표)\s*[\dIVXLCDM]/iu;
+
+/** Heading parts such as "Figure 2.1" label a caption, not a learning subtopic. */
+export function isFigureHeading(part: string) {
+  return FIGURE_HEADING.test(plainDisplayText(part));
+}
+
+/**
+ * The learner-facing subtopic of a module: the most specific heading in its
+ * breadcrumb, without the repeated chapter prefix, figure labels, or the
+ * source's own section numbering (the module list supplies its own).
+ */
+export function moduleSubtopicFromTitle(title: string, leadingTitles: string[] = []) {
+  const parts = displayableOutlineTitle(title, leadingTitles).split(" › ").filter(Boolean);
+  const meaningful = parts.filter((part) => !isFigureHeading(part));
+  const last = (meaningful.length ? meaningful : parts).at(-1) || "";
+  const withoutNumber = last.replace(/^\s*\d{1,3}(?:\.\d{1,3})*\.?\s+(?=\S)/u, "");
+  // Section headings are authored text: keep mixed case such as "ERPs".
+  return displayableModuleTitle(withoutNumber || last, [], true);
+}
+
+/** "N. subtopic" for module lists, preferring the LLM-extracted subtopic. */
+export function numberedModuleTitle(
+  module: { title: string; subtopic?: string },
+  index: number,
+  leadingTitles: string[] = [],
+) {
+  const subtopic = plainDisplayText(module.subtopic || "") || moduleSubtopicFromTitle(module.title, leadingTitles);
+  return subtopic ? `${index + 1}. ${subtopic}` : "";
 }
