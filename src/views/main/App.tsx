@@ -55,6 +55,7 @@ import { isMessageSetPreparationComplete } from "./message-set-state";
 import { sessionDeletionTransition } from "./session-deletion-transition";
 import { groupFiguresByCanonicalChunk } from "../../shared/source-figure-placement";
 import { pinElementToTop } from "./scroll-anchor";
+import { classifyContinueShortcutFocus, shouldTriggerContinueShortcut } from "./continue-shortcut";
 import {
   additionalExplorationChoices,
   additionalExplorationContext,
@@ -2461,6 +2462,40 @@ export function App({ request }: { request: RpcRequest }) {
     });
     return () => cancelAnimationFrame(frame);
   }, [busy, continuePrefetchState, readyContinueFocusKey, selectedModuleWaiting, showProgressActions, viewMode]);
+  // Space / ⌘+Enter advance like the "계속해줘" button (see continue-shortcut.ts). The handler is
+  // kept in a ref so the single window listener always sees the latest session state.
+  const continueShortcutRef = useRef<(() => boolean) | null>(null);
+  continueShortcutRef.current = () => {
+    if (viewMode !== "chat" || !session || !showProgressActions || busy || selectedModuleWaiting) return false;
+    if (useReadyReturnButton) void returnToProgress();
+    else void advanceLearning("paragraph");
+    return true;
+  };
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return;
+      const shouldTrigger = shouldTriggerContinueShortcut({
+        key: event.key,
+        metaKey: event.metaKey,
+        ctrlKey: event.ctrlKey,
+        altKey: event.altKey,
+        shiftKey: event.shiftKey,
+        repeat: event.repeat,
+        isComposing: event.isComposing,
+        focus: classifyContinueShortcutFocus(document.activeElement, continueButtonRef.current),
+        hasTextSelection: hasExpandedTextSelection(window.getSelection()),
+        protectedSurfaceOpen: Boolean(document.querySelector(
+          '[role="dialog"], .selection-toolbar, .lookup-popover, .selection-side-chat'
+        )),
+      });
+      if (!shouldTrigger) return;
+      if (!continueShortcutRef.current?.()) return;
+      event.preventDefault();
+      event.stopPropagation();
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, []);
   const canContinueFromCompletedModule = Boolean(
     !sessionReadOnly
       && selectedModuleReadOnly
@@ -3209,13 +3244,13 @@ export function App({ request }: { request: RpcRequest }) {
                         className={continueButtonClass}
                         onClick={() => (useReadyReturnButton ? returnToProgress() : advanceLearning("paragraph"))}
                         disabled={busy || selectedModuleWaiting}
-                        title={
+                        title={`${
                           useReadyReturnButton
                             ? "원래 진도로 돌아갈 설명이 준비되었습니다."
                             : batchPreparedReady && prefetchStatus?.status !== "ready"
                             ? "미리 만들어 둔 다음 메시지를 바로 보여줍니다."
                             : continueButtonTitle(prefetchStatus)
-                        }
+                        } (단축키: Space 또는 ⌘+Enter)`}
                         aria-label={continueButtonAria}
                       >
                         {continuePrefetchState === "generating" ? <Loader2 size={14} className="spin" aria-hidden="true" /> : null}
