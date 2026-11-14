@@ -6356,9 +6356,6 @@ button:not(:where(.astryx-button, .astryx-tab, .astryx-selector, .astryx-field *
 /* Deep reading: readable source excerpts and explicit relation direction. */
 .explanation-evidence { margin: .4rem 0 .9rem; color: var(--muted); font-size: var(--ln-font-size-md); min-width: 0; }
 .explanation-status { display: inline-block; margin-bottom: .3rem; font-weight: var(--font-weight-semibold); }
-.explanation-evidence summary { cursor: pointer; width: fit-content; }
-.explanation-evidence blockquote { margin: .6rem 0; padding: .5rem .8rem; border-left: 2px solid currentColor; white-space: pre-wrap; overflow-wrap: anywhere; }
-.explanation-evidence .evidence-caption { font-size: var(--ln-font-size-xs); margin: .5rem 0; }
 .reading-relations { margin: 0; }
 .reading-relations figcaption { opacity: .65; font-size: var(--ln-font-size-xs); margin-top: .3rem; }
 .reading-relations ul { padding: 0; margin: .8rem 0 0; list-style: none; }
