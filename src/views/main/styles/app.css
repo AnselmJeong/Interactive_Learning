@@ -20,12 +20,42 @@
   --ln-font-size-3xl: 25px;
   --text-kicker-tracking: 0.08em;
 
-  --font-sans: var(--font-family-body, ui-sans-serif, system-ui, -apple-system, "Apple SD Gothic Neo", sans-serif), "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+  --font-sans: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Segoe UI", sans-serif;
   --font-serif: "Gowun Batang", "Noto Serif KR", Georgia, serif;
-  --font-mono: var(--font-family-code, ui-monospace, SFMono-Regular, Menlo, monospace);
+  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   --sans: var(--font-sans);
   --serif: var(--font-serif);
-  --editorial-serif: var(--font-family-heading, var(--font-sans)), "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+  --editorial-serif: var(--font-serif);
+}
+
+/* Astryx components use Learnie's own type families, so Korean text keeps the
+   pre-redesign look everywhere (Stone ships Figtree/Montserrat for Latin only). */
+:root[data-astryx-theme],
+[data-astryx-theme] {
+  --font-family-body: var(--font-sans);
+  --font-family-heading: var(--font-sans);
+  --font-family-code: var(--font-mono);
+}
+
+/* The Astryx reset also strips padding and background from every native control.
+   Learnie's own buttons and fields were styled on top of browser defaults, so give
+   them back (zero specificity: any Learnie class rule still wins). */
+:where(button, input, select, textarea):where(:not(.astryx-button, .astryx-tab, .astryx-selector, .astryx-field *, .astryx-text-input *, .astryx-selector *, .astryx-side-nav *, .astryx-popover *, .astryx-chat-composer *, .astryx-tab-list *, .astryx-segmented-control *)) {
+  padding: revert;
+  margin: revert;
+  background-color: revert;
+  background-image: revert;
+}
+
+/* The Stone theme's reset layer sizes every bare p, h1–h6, small, code and pre
+   (14px body, 18px h3 …). Learning content relies on inheriting its container's
+   reading size, so outside Astryx components fall back to browser defaults. */
+:where(p, h1, h2, h3, h4, h5, h6, small, code, pre):where(:not([class*="astryx"])) {
+  font-family: revert;
+  font-size: revert;
+  font-weight: revert;
+  line-height: revert;
+  color: revert;
 }
 
 :root {
@@ -1236,8 +1266,9 @@ button:not(:where(.astryx-button, .astryx-tab, .astryx-selector, .astryx-field *
   margin: 0;
   padding-left: 1.25em;
   display: grid;
-  gap: 5px;
-  line-height: 1.56;
+  gap: 6px;
+  font-size: calc(var(--tutor-body-font-size) - 2px);
+  line-height: 1.65;
 }
 .bullet-block li .markdown-content,
 .flow-block > ol > li > .markdown-content,
@@ -1253,7 +1284,7 @@ button:not(:where(.astryx-button, .astryx-tab, .astryx-selector, .astryx-field *
 .bullet-block h4,
 .compare-table-block h4 {
   margin: 0 0 10px;
-  font-size: var(--ln-font-size-base);
+  font-size: var(--ln-font-size-lg);
   line-height: 1.35;
   color: var(--accent-2);
 }
@@ -1841,7 +1872,9 @@ button:not(:where(.astryx-button, .astryx-tab, .astryx-selector, .astryx-field *
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  min-height: 32px;
+  min-height: 34px;
+  padding: 0 14px;
+  white-space: nowrap;
   border: 1px solid var(--line);
   border-radius: var(--radius-element);
   background: var(--surface-raised);
@@ -6321,7 +6354,7 @@ button:not(:where(.astryx-button, .astryx-tab, .astryx-selector, .astryx-field *
 
 
 /* Deep reading: readable source excerpts and explicit relation direction. */
-.explanation-evidence { margin: .4rem 0 .9rem; color: var(--muted); font-size: .82rem; min-width: 0; }
+.explanation-evidence { margin: .4rem 0 .9rem; color: var(--muted); font-size: var(--ln-font-size-md); min-width: 0; }
 .explanation-status { display: inline-block; margin-bottom: .3rem; font-weight: var(--font-weight-semibold); }
 .explanation-evidence summary { cursor: pointer; width: fit-content; }
 .explanation-evidence blockquote { margin: .6rem 0; padding: .5rem .8rem; border-left: 2px solid currentColor; white-space: pre-wrap; overflow-wrap: anywhere; }
