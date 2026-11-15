@@ -19,7 +19,7 @@ function mathSubscript(part: string) {
   return `\\mathrm{${part}}`;
 }
 
-function wrapBareSubscriptIdentifiers(segment: string) {
+export function wrapBareSubscriptIdentifiers(segment: string) {
   return segment
     .replace(BARE_SUBSCRIPT_IDENTIFIER, (_, prefix: string, identifier: string) => {
       const [base = "", ...subscripts] = identifier.replace(/\\_/gu, "_").split("_");

@@ -7,6 +7,7 @@ import type { AppSettings, AiProviderStatus, ChatSubmitShortcut, ProviderModel }
 import type { DocumentType, MaterialAnnotation, MaterialArtifacts, NoteImageUpload, QuestionThreadResult, VisualSpec } from "../../shared/artifact-types";
 import type { LearningMessageSetSummary, SessionSnapshot, SessionSummary, SourceRef, TutorContext, TutorMessage, TutorPrefetchStatus } from "../../shared/tutor-types";
 import type { PreparedLearningIrResult } from "../../shared/learning-ir-types";
+import { MathText } from "./components/MathText";
 import { comparableHeadingTitle, displayableCourseTitle, displayableHeadingPath, displayableModuleTitle, displayableOutlineTitle, numberedModuleTitle, stripRepeatedSourceHeading, titleCasedSourceTitle } from "../../shared/display-title";
 import { SettingsModal } from "./components/SettingsModal";
 import { VisualRenderer } from "./components/VisualRenderer";
@@ -3308,7 +3309,7 @@ export function App({ request }: { request: RpcRequest }) {
               <div className="lesson-header">
                 <div>
                   <p className="eyebrow">Learning Session</p>
-                  <h3>{selectedModuleTitle || activeModuleTitle || (activeSource ? displayableSourceName(activeSource) : activeMaterial?.title) || session.title}</h3>
+                  <h3><MathText text={selectedModuleTitle || activeModuleTitle || (activeSource ? displayableSourceName(activeSource) : activeMaterial?.title) || session.title} /></h3>
                 </div>
               </div>
               {selectedModuleWaiting ? (

@@ -80,6 +80,8 @@ const MATH_RENDERING_RULE = [
   "When learner-facing text contains mathematical notation, format inline math with $...$ and display equations with $$...$$ so the app can render them with KaTeX.",
   "Put variable names and indexed symbols inside math delimiters too: write $V_{\\mathrm{syn}}$, $I_{\\mathrm{ext},i}$, and $s_j$, never bare V_syn, I_ext_i, or sj.",
   "Never use \\(...\\) or \\[...\\] as math delimiters, and never leave LaTeX commands outside math delimiters.",
+  "Titles, headings and captions follow the same rule: write $N$ or $N/2+1$, never bare N/2+1 or unrendered TeX.",
+  "A variable name copied from source code (for example the loop index fi or np.linspace) is code, not math: put it in backticks. When it stands for an indexed symbol, write the index as a subscript ($f_i$), never run the letters together as $fi$.",
 ].join(" ");
 
 export class SessionMutationQueue {

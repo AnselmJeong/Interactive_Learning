@@ -9,6 +9,7 @@ import { learningBlockPresentation, parseLearningTable } from "../../../shared/l
 import { AnnotationInlineScope } from "./AnnotationInlineScope";
 import { MarkdownContent } from "./MarkdownContent";
 import { HtmlContent } from "./HtmlContent";
+import { MathText, MathTitle, plainMathText } from "./MathText";
 import { DiagramView } from "./DiagramView";
 import { SourceFigureCard } from "./SourceFigureCard";
 import { shouldAutoRenderSourceFigure } from "../source-figure-filter";
@@ -196,7 +197,7 @@ function stripFlowStepMarker(step: string) {
 
 function BlockTitle({ title }: { title: string | undefined }) {
   const displayTitle = title ? displayableOutlineTitle(title) : "";
-  return displayTitle ? <h4>{displayTitle}</h4> : null;
+  return displayTitle && title ? <h4><MathTitle title={title} /></h4> : null;
 }
 
 export const TutorBlockRenderer = memo(function TutorBlockRenderer({
@@ -355,7 +356,7 @@ function TutorBlock({ block: stored, preserveAnnotatedList = false }: { block: T
   if (block.type === "visual_ref") return null;
   if (block.type === "rich_html") return (
     <section className="tutor-block rich-explanation-block">
-      {block.title ? <h3>{displayableOutlineTitle(block.title)}</h3> : null}
+      {block.title ? <h3><MathTitle title={block.title} /></h3> : null}
       <HtmlContent html={block.html} headingTitles={block.title ? [block.title, displayableOutlineTitle(block.title)] : []} />
     </section>
   );
@@ -468,12 +469,12 @@ function TutorBlock({ block: stored, preserveAnnotatedList = false }: { block: T
     return (
       <section className="tutor-block compare-table-block">
         <BlockTitle title={block.title} />
-        <div className="block-table-scroll" tabIndex={0} role="region" aria-label={block.title ? displayableOutlineTitle(block.title) : "비교표"}>
-          <table aria-label={block.title ? displayableOutlineTitle(block.title) : undefined}>
+        <div className="block-table-scroll" tabIndex={0} role="region" aria-label={block.title ? plainMathText(block.title, displayableOutlineTitle) : "비교표"}>
+          <table aria-label={block.title ? plainMathText(block.title, displayableOutlineTitle) : undefined}>
             <thead>
               <tr>
                 {block.columns.map((column) => (
-                  <th key={column} scope="col">{plainDisplayText(column) || column}</th>
+                  <th key={column} scope="col"><MathText text={column} format={(text) => plainDisplayText(text) || text} /></th>
                 ))}
               </tr>
             </thead>

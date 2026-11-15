@@ -2,6 +2,7 @@ import { useId, useMemo } from "react";
 import type { SideChatPlotExpression, SideChatVisualSpec } from "../../../shared/artifact-types";
 import { evaluateSideChatPlotExpression, normalizeSideChatVisualSpec } from "../../../shared/side-chat-visual";
 import { sanitizeDiagramSpec } from "../../../shared/diagram-spec";
+import { MathText } from "./MathText";
 import { DiagramView } from "./DiagramView";
 
 const PLOT_WIDTH = 680;
@@ -170,7 +171,7 @@ export function SideChatVisualRenderer({ visual: rawVisual }: { visual: SideChat
   if (!visual) return null;
   return (
     <figure className={`side-chat-visual ${visual.type}`}>
-      <figcaption>{visual.title}</figcaption>
+      <figcaption><MathText text={visual.title} /></figcaption>
       <div className="side-chat-visual-canvas">
         {visual.type === "diagram" ? <DiagramVisual visual={visual} /> : <PlotVisual visual={visual} />}
       </div>
