@@ -303,6 +303,37 @@ describe("article source packs", () => {
     expect((await service.enrichReaderHtml(source!.id, modified))[0]?.html).toBeUndefined();
   });
 
+  test("adds imported packs and files to an existing book instead of creating a new one", async () => {
+    const project = await new ProjectService().create({ title: "Add to book" });
+    const writePack = async (name: string, title: string, documentType: string) => {
+      const pack = join(tempRoot, name);
+      await mkdir(join(pack, "chapters"), { recursive: true });
+      await writeFile(join(pack, "chapters/001.md"), `# ${title}\n\n${title} body text.`);
+      await writeFile(join(pack, "manifest.json"), JSON.stringify({ schema_version: 2, source: { document_type: documentType }, output: { chapters_dir: "chapters", assets_dir: "assets" }, chapters: [{ index: 1, title, kind: "chapter", path: "chapters/001.md", char_count: 60 }] }));
+      return pack;
+    };
+    const service = new SourceService();
+    const documents = new DocumentService();
+    const first = await service.prepareImport(project.id, [await writePack("book.preppy", "Chapter 12", "book")], "book");
+    const [chapter12] = await service.commitPreparedImport(project.id, first.id, first.items.map((item) => item.id));
+    const bookId = chapter12!.documentId!;
+
+    // The pack claims to be an article, and the caller asks for "article": the target book wins.
+    const added = await service.prepareImport(project.id, [await writePack("Chapter_13.preppy", "Chapter 13", "article")], "article", bookId);
+    expect(added).toMatchObject({ targetDocumentId: bookId, targetDocumentTitle: "book", documentType: "book" });
+    const [chapter13] = await service.commitPreparedImport(project.id, added.id, added.items.map((item) => item.id));
+    const notes = join(tempRoot, "notes.md");
+    await writeFile(notes, "# Notes\n\nExtra reading notes.");
+    const [notesSource] = await service.importPaths(project.id, [notes], "article", bookId);
+
+    expect(documents.list(project.id)).toMatchObject([{ id: bookId, documentType: "book", sourceCount: 3 }]);
+    expect([chapter13!.documentId, notesSource!.documentId]).toEqual([bookId, bookId]);
+    expect(documents.listSources(project.id, bookId).map((item) => item.id)).toEqual([chapter12!.id, chapter13!.id, notesSource!.id]);
+    expect([chapter12, chapter13, notesSource].map((item) => service.getRow(item!.id).source_ordinal)).toEqual([0, 1, 2]);
+
+    await expect(service.prepareImport(project.id, [notes], "book", "missing-document")).rejects.toThrow("문서를 찾을 수 없습니다");
+  });
+
   test("merges every selected article pack section into one article source", async () => {
     const project = await new ProjectService().create({ title: "Article Project" });
     const pack = join(tempRoot, "paper.preppy");

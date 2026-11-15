@@ -104,6 +104,10 @@ type PreparedImportEntry = {
   sourceName: string;
   sourcePath: string;
   documentType: DocumentType;
+  // When set, everything imported is attached to this existing document (the "add source" button in
+  // the learning workspace) instead of becoming a new book/article in the library.
+  targetDocumentId?: string;
+  targetDocumentTitle?: string;
   committing: boolean;
   pdfFolders: PdfFolder[];
   folders: Array<{ path: string; originalSourcePath: string; cleanup?: () => Promise<void> }>;
@@ -653,6 +657,8 @@ function toPrepared(entry: PreparedImportEntry): PreparedSourceImport {
     sourceName: entry.sourceName,
     sourcePath: entry.sourcePath,
     documentType: entry.documentType,
+    targetDocumentId: entry.targetDocumentId,
+    targetDocumentTitle: entry.targetDocumentTitle,
     itemCount: entry.items.length,
     pdfFolderFileCount: entry.pdfFolders.reduce((sum, folder) => sum + folder.files.length, 0),
     items: entry.items,
@@ -669,8 +675,8 @@ export class SourceService {
     return row?.root_path || dataPath("projects");
   }
 
-  async importPaths(projectId: string, paths: string[], documentType: DocumentType = "book") {
-    const prepared = await this.prepareImport(projectId, paths, documentType);
+  async importPaths(projectId: string, paths: string[], documentType: DocumentType = "book", targetDocumentId?: string) {
+    const prepared = await this.prepareImport(projectId, paths, documentType, targetDocumentId);
     try {
       return await this.commitPreparedImport(projectId, prepared.id, prepared.items.map((item) => item.id));
     } finally {
@@ -678,8 +684,19 @@ export class SourceService {
     }
   }
 
-  async prepareImport(projectId: string, paths: string[], documentType: DocumentType = "book") {
+  async prepareImport(projectId: string, paths: string[], documentType: DocumentType = "book", targetDocumentId?: string) {
     const id = crypto.randomUUID();
+    let targetDocumentTitle: string | undefined;
+    if (targetDocumentId) {
+      const target = getDb()
+        .query<{ document_type: DocumentType; title: string }, [string, string]>(
+          "SELECT document_type, title FROM project_documents WHERE id = ? AND project_id = ?"
+        )
+        .get(targetDocumentId, projectId);
+      if (!target) throw new Error("소스를 추가할 문서를 찾을 수 없습니다.");
+      documentType = target.document_type === "article" ? "article" : "book";
+      targetDocumentTitle = target.title;
+    }
     const settings = await this.settings.get();
     const inputs = await resolveImportInputs(paths);
     const singleInput = inputs.length === 1 ? inputs[0] : undefined;
@@ -689,6 +706,8 @@ export class SourceService {
       sourceName: singleInput ? (singleInput.kind === "file" ? titleForPath(singleInput.path) : basename(singleInput.path)) : `선택한 항목 ${inputs.length}개`,
       sourcePath: paths.join(", "),
       documentType,
+      targetDocumentId,
+      targetDocumentTitle,
       committing: false,
       pdfFolders: [],
       folders: [],
@@ -744,7 +763,7 @@ export class SourceService {
         const itemIds = [...entry.itemRefs.entries()]
           .filter(([, ref]) => ref.kind === "file" && ref.fileIndex === index)
           .map(([itemId]) => itemId);
-        if (itemIds.some((itemId) => selected.has(itemId))) imported.push(await this.importFile(projectId, entry.files[index]!.path, entry.documentType));
+        if (itemIds.some((itemId) => selected.has(itemId))) imported.push(await this.importFile(projectId, entry.files[index]!.path, entry.documentType, entry.targetDocumentId));
       }
 
       for (let index = 0; index < entry.folders.length; index += 1) {
@@ -753,13 +772,13 @@ export class SourceService {
           .map(([, ref]) => (ref.kind === "folder" ? ref.relativePath : ""));
         if (!selectedRelativePaths.length) continue;
         const folder = entry.folders[index]!;
-        imported.push(...(await this.importFolder(projectId, folder.path, folder.originalSourcePath, selectedRelativePaths, entry.documentType)));
+        imported.push(...(await this.importFolder(projectId, folder.path, folder.originalSourcePath, selectedRelativePaths, entry.documentType, entry.targetDocumentId)));
       }
       const folders = entry.pdfFolders.map((folder) => ({
         path: folder.path,
         files: folder.files.filter((file) => selected.has(file.id)),
       })).filter((folder) => folder.files.length);
-      imported.push(...await this.importPdfFolders(projectId, folders, entry.documentType, onPdfProgress));
+      imported.push(...await this.importPdfFolders(projectId, folders, entry.documentType, onPdfProgress, entry.targetDocumentId));
       await this.cleanupPrepared(entry);
       preparedImports.delete(importId);
       return imported;
@@ -863,7 +882,20 @@ export class SourceService {
     return id;
   }
 
-  private async importFile(projectId: string, path: string, documentType: DocumentType = "book") {
+  // Next free position at the end of an existing document, so added sources sort after the ones
+  // already there.
+  private nextSourceOrdinal(documentId: string) {
+    const row = getDb()
+      .query<{ next: number }, [string]>("SELECT COALESCE(MAX(source_ordinal), -1) + 1 AS next FROM project_sources WHERE document_id = ?")
+      .get(documentId);
+    return row?.next ?? 0;
+  }
+
+  private touchDocument(documentId: string) {
+    getDb().query("UPDATE project_documents SET updated_at = ? WHERE id = ?").run(Date.now(), documentId);
+  }
+
+  private async importFile(projectId: string, path: string, documentType: DocumentType = "book", targetDocumentId?: string) {
     const { digest, bytes } = await hashFile(path);
     const existing = getDb()
       .query<SourceRow, [string, string]>("SELECT * FROM project_sources WHERE project_id = ? AND content_hash = ?")
@@ -873,7 +905,8 @@ export class SourceService {
     const id = crypto.randomUUID();
     const type = sourceTypeForPath(path);
     const title = titleForPath(path);
-    const documentId = this.createDocument(projectId, documentType, title, path, basename(path), digest);
+    const documentId = targetDocumentId ?? this.createDocument(projectId, documentType, title, path, basename(path), digest);
+    const sourceOrdinal = targetDocumentId ? this.nextSourceOrdinal(targetDocumentId) : 0;
     const dir = sourceDirAt(this.projectRoot(projectId), projectId, id);
     try {
       await mkdir(dir, { recursive: true });
@@ -883,18 +916,18 @@ export class SourceService {
       const chunks = normalizeMarkdownChunks(id, rewriteLocalMarkdownImageLinks(importedPath, bytes.toString("utf8")));
       const status = chunks.length ? "good" : "poor";
       return await this.persistSource({
-        id, projectId, title, type, documentId, sourceOrdinal: 0, originalPath: path, originalFileName,
+        id, projectId, title, type, documentType, documentId, sourceOrdinal, originalPath: path, originalFileName,
         importedPath, digest, chunks, extractionMethod: "typescript-markdown-normalizer", status, warnings: [],
       });
     } catch (error) {
-      getDb().query("DELETE FROM project_documents WHERE id = ?").run(documentId);
+      if (!targetDocumentId) getDb().query("DELETE FROM project_documents WHERE id = ?").run(documentId);
       await rm(dir, { recursive: true, force: true });
       await writeProjectDocumentIndex(projectId, this.projectRoot(projectId)).catch(() => undefined);
       throw error;
     }
   }
 
-  private async importPdfFolders(projectId: string, folders: PdfFolder[], documentType: DocumentType, onProgress?: PdfProgress) {
+  private async importPdfFolders(projectId: string, folders: PdfFolder[], documentType: DocumentType, onProgress?: PdfProgress, targetDocumentId?: string) {
     const total = folders.reduce((sum, folder) => sum + folder.files.length, 0);
     if (!total) return [];
     const root = this.projectRoot(projectId);
@@ -922,7 +955,11 @@ export class SourceService {
               for await (const bytes of createReadStream(file.path)) hasher.update(bytes);
               const digest = hasher.digest("hex");
               let documentId: string;
-              if (documentType === "book") {
+              let sourceOrdinal = documentType === "book" ? index : 0;
+              if (targetDocumentId) {
+                documentId = targetDocumentId;
+                sourceOrdinal = this.nextSourceOrdinal(targetDocumentId);
+              } else if (documentType === "book") {
                 bookHash.update(relativePortable(folder.path, file.path)).update("\0").update(digest);
                 if (!bookId) {
                   bookId = this.createDocument(projectId, "book", basename(folder.path), folder.path, basename(folder.path), "");
@@ -938,7 +975,7 @@ export class SourceService {
               const { source } = await this.importTextFileFromCopiedFolder(projectId, file.path,
                 join(importedRoot, chapter.path), titleForPath(file.path), {
                   importedRoot, manifestPath: chapter.path, chapterIndex: chapter.index, figures: await readPreppyFigures(importedRoot),
-                  documentType, documentId, sourceOrdinal: documentType === "book" ? index : 0,
+                  documentType, documentId, sourceOrdinal,
                 }, { id: sourceId, originalFileName: basename(file.path) });
               sources.push(source);
             } finally {
@@ -950,6 +987,7 @@ export class SourceService {
         }
         if (bookId) getDb().query("UPDATE project_documents SET content_hash = ? WHERE id = ?").run(bookHash.digest("hex"), bookId);
       }
+      if (targetDocumentId && sources.length) this.touchDocument(targetDocumentId);
       await writeProjectDocumentIndex(projectId, root);
       return sources;
     } catch (error) {
@@ -963,7 +1001,7 @@ export class SourceService {
     }
   }
 
-  private async importFolder(projectId: string, path: string, originalSourcePath = path, selectedRelativePaths?: string[], requestedDocumentType?: DocumentType) {
+  private async importFolder(projectId: string, path: string, originalSourcePath = path, selectedRelativePaths?: string[], requestedDocumentType?: DocumentType, targetDocumentId?: string) {
     await this.removeLegacyFolderAggregate(projectId, originalSourcePath);
     const folderImportId = crypto.randomUUID();
     const folderDir = join(this.projectRoot(projectId), projectId, "source_folders", folderImportId);
@@ -974,7 +1012,11 @@ export class SourceService {
     const folderDigest = await hashDirectory(path);
     const allCopiedFiles = await walkFiles(importedRoot);
     const preppyManifest = await readPreppyManifest(importedRoot);
-    const documentType = requestedDocumentType === "article" ? "article" : preppyManifest.documentType;
+    // An existing target document decides the type: the pack's own guess must not turn a chapter
+    // added to a book into an article (or the reverse).
+    const documentType = targetDocumentId
+      ? (requestedDocumentType || "book")
+      : requestedDocumentType === "article" ? "article" : preppyManifest.documentType;
     const preppyFigures = await readPreppyFigures(importedRoot);
     const chaptersDir = join(importedRoot, preppyManifest.chaptersDir);
     const textRoot = (await existingDir(chaptersDir)) ? chaptersDir : importedRoot;
@@ -1013,7 +1055,7 @@ export class SourceService {
 
     const imported: SourceSummary[] = [];
     let createdCount = 0;
-    const documentId = this.createDocument(
+    const documentId = targetDocumentId ?? this.createDocument(
       projectId,
       documentType,
       titleForPath(originalSourcePath),
@@ -1021,12 +1063,14 @@ export class SourceService {
       basename(originalSourcePath),
       folderDigest,
     );
+    const ordinalBase = targetDocumentId ? this.nextSourceOrdinal(targetDocumentId) : 0;
     const createdSourceIds: string[] = [];
     try {
       if (documentType === "article" && textFiles.length) {
         const result = await this.importArticleFromCopiedFolder({
           projectId,
           documentId,
+          sourceOrdinal: ordinalBase,
           title: titleForPath(originalSourcePath),
           originalSourcePath,
           importedRoot,
@@ -1048,7 +1092,7 @@ export class SourceService {
           const title = preppyManifest.chapterTitleByPath.get(manifestPath) || titleForPath(copiedFile);
           const result = await this.importTextFileFromCopiedFolder(projectId, originalPath, copiedFile, title, {
             importedRoot, manifestPath, chapterIndex: preppyManifest.chapterIndexByPath.get(manifestPath),
-            figures: preppyFigures, documentType, documentId, sourceOrdinal: ordinal,
+            figures: preppyFigures, documentType, documentId, sourceOrdinal: ordinalBase + ordinal,
           });
           imported.push(result.source);
           if (result.created) {
@@ -1058,15 +1102,24 @@ export class SourceService {
         }
       }
     } catch (error) {
-      getDb().query("DELETE FROM project_documents WHERE id = ?").run(documentId);
+      if (targetDocumentId) {
+        const db = getDb();
+        db.transaction(() => {
+          for (const sourceId of createdSourceIds) db.query("DELETE FROM project_sources WHERE id = ?").run(sourceId);
+        })();
+      } else {
+        getDb().query("DELETE FROM project_documents WHERE id = ?").run(documentId);
+      }
       await Promise.all(createdSourceIds.map((sourceId) => rm(sourceDirAt(this.projectRoot(projectId), projectId, sourceId), { recursive: true, force: true })));
       await rm(folderDir, { recursive: true, force: true });
       await writeProjectDocumentIndex(projectId, this.projectRoot(projectId)).catch(() => undefined);
       throw error;
     }
     if (createdCount === 0) {
-      getDb().query("DELETE FROM project_documents WHERE id = ?").run(documentId);
+      if (!targetDocumentId) getDb().query("DELETE FROM project_documents WHERE id = ?").run(documentId);
       await rm(folderDir, { recursive: true, force: true });
+    } else if (targetDocumentId) {
+      this.touchDocument(targetDocumentId);
     }
     return imported;
   }
@@ -1074,6 +1127,7 @@ export class SourceService {
   private async importArticleFromCopiedFolder(input: {
     projectId: string;
     documentId: string;
+    sourceOrdinal: number;
     title: string;
     originalSourcePath: string;
     importedRoot: string;
@@ -1110,7 +1164,7 @@ export class SourceService {
       type: "markdown",
       documentType: "article",
       documentId: input.documentId,
-      sourceOrdinal: 0,
+      sourceOrdinal: input.sourceOrdinal,
       originalPath: input.originalSourcePath,
       originalFileName: basename(input.originalSourcePath),
       importedPath,

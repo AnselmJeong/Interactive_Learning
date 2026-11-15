@@ -222,6 +222,9 @@ export type PreparedSourceImport = {
   sourceName: string;
   sourcePath: string;
   documentType: DocumentType;
+  /** Set when the import adds sources to an existing document instead of creating a new one. */
+  targetDocumentId?: string;
+  targetDocumentTitle?: string;
   itemCount: number;
   pdfFolderFileCount: number;
   items: PreparedSourceImportItem[];
@@ -313,7 +316,7 @@ export type AppRPC = {
       "projects.openFolder": { params: { projectId?: string }; response: boolean };
       "app.openExternal": { params: { url: string }; response: boolean };
       "sources.importPaths": { params: { projectId: string; paths: string[]; documentType?: DocumentType }; response: SourceSummary[] };
-      "sources.prepareImport": { params: { projectId: string; paths: string[]; documentType?: DocumentType }; response: PreparedSourceImport };
+      "sources.prepareImport": { params: { projectId: string; paths: string[]; documentType?: DocumentType; targetDocumentId?: string }; response: PreparedSourceImport };
       "sources.commitPreparedImport": { params: { projectId: string; importId: string; selectedItemIds: string[] }; response: SourceSummary[] };
       "sources.cancelPreparedImport": { params: { projectId: string; importId: string }; response: boolean };
       "sources.chooseImportSelection": { params: { projectId: string }; response: SourceImportSelection };
