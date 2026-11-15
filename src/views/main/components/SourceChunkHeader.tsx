@@ -1,3 +1,4 @@
+import { MathText } from "./MathText";
 import { cleanHeadingParts, comparableHeadingTitle, displayableHeadingPath } from "../../../shared/display-title";
 
 export function SourceChunkHeader({ headingPath, previousHeadingPath = [], locator, status }: {
@@ -18,7 +19,7 @@ export function SourceChunkHeader({ headingPath, previousHeadingPath = [], locat
 
   return <>
     <header className="source-chunk-header">
-      {title ? <h4 className="source-heading">{title}</h4> : null}
+      {title ? <h4 className="source-heading"><MathText text={title} /></h4> : null}
       <span className="source-chunk-status">{status === "current" ? "진행 중" : status === "covered" ? "다룸" : "예정"}</span>
     </header>
     {location ? <p className="source-chunk-location">{location}</p> : null}

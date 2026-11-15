@@ -1,8 +1,13 @@
 import type { VisualSpec } from "../../../shared/artifact-types";
 import { plainDisplayText } from "../../../shared/display-title";
+import { MathText } from "./MathText";
 
 function visualText(value: string) {
   return plainDisplayText(value) || value;
+}
+
+function VisualText({ value }: { value: string }) {
+  return <MathText text={value} format={visualText} />;
 }
 
 export function VisualRenderer({ visual }: { visual: VisualSpec }) {
@@ -12,14 +17,14 @@ export function VisualRenderer({ visual }: { visual: VisualSpec }) {
     const labels = new Map(displayVisual.nodes.map((node) => [node.id, node.label]));
     return (
       <figure className="visual-block reading-relations">
-        <strong>{visualText(displayVisual.title)}</strong>
+        <strong><VisualText value={displayVisual.title} /></strong>
         <figcaption>원문 분석을 바탕으로 재구성한 관계</figcaption>
         <ul>
           {displayVisual.edges.map((edge, index) => (
             <li key={`${edge.from}-${edge.to}-${index}`}>
-              <span>{visualText(labels.get(edge.from) || "")}</span>
+              <span><VisualText value={labels.get(edge.from) || ""} /></span>
               <b className="reading-relation-label">{edge.label}<span aria-hidden="true"> →</span></b>
-              <span>{visualText(labels.get(edge.to) || "")}</span>
+              <span><VisualText value={labels.get(edge.to) || ""} /></span>
             </li>
           ))}
         </ul>
@@ -30,10 +35,10 @@ export function VisualRenderer({ visual }: { visual: VisualSpec }) {
   if (displayVisual.type === "flow" || displayVisual.type === "layers") {
     return (
       <div className="visual-block">
-        <strong>{visualText(displayVisual.title)}</strong>
+        <strong><VisualText value={displayVisual.title} /></strong>
         <div className="flow-row">
           {displayVisual.items.map((item) => (
-            <span key={item}>{visualText(item)}</span>
+            <span key={item}><VisualText value={item} /></span>
           ))}
         </div>
       </div>
@@ -42,10 +47,10 @@ export function VisualRenderer({ visual }: { visual: VisualSpec }) {
   if (displayVisual.type === "contrast") {
     return (
       <div className="visual-block">
-        <strong>{visualText(displayVisual.title)}</strong>
+        <strong><VisualText value={displayVisual.title} /></strong>
         <div className="contrast-grid">
-          <div><b>{visualText(displayVisual.left.label)}</b><p>{displayVisual.left.body}</p></div>
-          <div><b>{visualText(displayVisual.right.label)}</b><p>{displayVisual.right.body}</p></div>
+          <div><b><VisualText value={displayVisual.left.label} /></b><p>{displayVisual.left.body}</p></div>
+          <div><b><VisualText value={displayVisual.right.label} /></b><p>{displayVisual.right.body}</p></div>
         </div>
       </div>
     );
@@ -53,10 +58,10 @@ export function VisualRenderer({ visual }: { visual: VisualSpec }) {
   if (displayVisual.type === "grid") {
     return (
       <div className="visual-block">
-        <strong>{visualText(displayVisual.title)}</strong>
+        <strong><VisualText value={displayVisual.title} /></strong>
         <div className="mini-grid">
           {displayVisual.items.map((item) => (
-            <span key={item.label}><b>{visualText(item.label)}</b>{item.value}</span>
+            <span key={item.label}><b><VisualText value={item.label} /></b>{item.value}</span>
           ))}
         </div>
       </div>
@@ -65,11 +70,11 @@ export function VisualRenderer({ visual }: { visual: VisualSpec }) {
   if (displayVisual.type === "timeline") {
     return (
       <div className="visual-block">
-        <strong>{visualText(displayVisual.title)}</strong>
+        <strong><VisualText value={displayVisual.title} /></strong>
         <div className="timeline-list">
           {displayVisual.events.map((event) => (
             <div key={`${event.marker || ""}-${event.label}`}>
-              <b>{visualText(event.marker ? `${event.marker} · ${event.label}` : event.label)}</b>
+              <b><VisualText value={event.marker ? `${event.marker} · ${event.label}` : event.label} /></b>
               <small>{event.body}</small>
             </div>
           ))}
@@ -80,21 +85,21 @@ export function VisualRenderer({ visual }: { visual: VisualSpec }) {
   if (displayVisual.type === "axis") {
     return (
       <div className="visual-block">
-        <strong>{visualText(displayVisual.title)}</strong>
+        <strong><VisualText value={displayVisual.title} /></strong>
         <div className="axis-visual">
           <div className="axis-end">
-            <b>{visualText(displayVisual.left.label)}</b>
+            <b><VisualText value={displayVisual.left.label} /></b>
             <small>{displayVisual.left.caption}</small>
           </div>
           <div className="axis-line" aria-hidden="true">
             {displayVisual.markers.map((marker) => (
               <i key={marker.label} style={{ left: `${Math.max(0, Math.min(1, marker.position)) * 100}%` }}>
-                <span>{visualText(marker.label)}</span>
+                <span><VisualText value={marker.label} /></span>
               </i>
             ))}
           </div>
           <div className="axis-end">
-            <b>{visualText(displayVisual.right.label)}</b>
+            <b><VisualText value={displayVisual.right.label} /></b>
             <small>{displayVisual.right.caption}</small>
           </div>
         </div>
@@ -104,11 +109,11 @@ export function VisualRenderer({ visual }: { visual: VisualSpec }) {
   if (displayVisual.type === "matrix") {
     return (
       <div className="visual-block">
-        <strong>{visualText(displayVisual.title)}</strong>
+        <strong><VisualText value={displayVisual.title} /></strong>
         <div className="matrix-grid">
           {displayVisual.cells.map((cell) => (
             <span key={`${cell.row}-${cell.column}`}>
-              <b>{visualText(`${cell.row} / ${cell.column}`)}</b>
+              <b><VisualText value={`${cell.row} / ${cell.column}`} /></b>
               {cell.value}
             </span>
           ))}
@@ -119,13 +124,13 @@ export function VisualRenderer({ visual }: { visual: VisualSpec }) {
   if (displayVisual.type === "annotated_table") {
     return (
       <div className="visual-block">
-        <strong>{visualText(displayVisual.title)}</strong>
+        <strong><VisualText value={displayVisual.title} /></strong>
         <div className="block-table-scroll">
           <table className="annotated-table">
             <thead>
               <tr>
                 {displayVisual.columns.map((column) => (
-                  <th key={column}>{visualText(column)}</th>
+                  <th key={column}><VisualText value={column} /></th>
                 ))}
               </tr>
             </thead>
@@ -146,22 +151,22 @@ export function VisualRenderer({ visual }: { visual: VisualSpec }) {
   if (displayVisual.type === "geometry") {
     return (
       <div className="visual-block">
-        <strong>{visualText(displayVisual.title)}</strong>
+        <strong><VisualText value={displayVisual.title} /></strong>
         <div className="geometry-row">
           {displayVisual.shapes.map((shape) => (
             <span key={`${shape.kind}-${shape.label}`}>
-              <b>{visualText(shape.label)}</b>
+              <b><VisualText value={shape.label} /></b>
               {shape.items?.length ? shape.items.map(visualText).join(" · ") : visualText(shape.kind)}
             </span>
           ))}
         </div>
-        <p className="geometry-caption">{visualText(displayVisual.caption)}</p>
+        <p className="geometry-caption"><VisualText value={displayVisual.caption} /></p>
       </div>
     );
   }
   return (
     <div className="visual-block">
-      <strong>{visualText(displayVisual.title)}</strong>
+      <strong><VisualText value={displayVisual.title} /></strong>
       <code>{displayVisual.formula}</code>
     </div>
   );

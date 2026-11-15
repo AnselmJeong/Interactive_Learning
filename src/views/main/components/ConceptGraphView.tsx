@@ -21,6 +21,10 @@ const RELATION_LABEL: Record<LearningRelationType, string> = {
 
 const NODE_WIDTH = 208;
 const NODE_HEIGHT = 92;
+// WebKit only repaints a foreignObject inside its own bounds, so an outline or
+// box-shadow that spills past them leaves a smeared trail while a node moves.
+// The foreignObject is padded so every node decoration stays inside it.
+const NODE_PAINT_PAD = 40;
 
 export function isConceptGraphZoomEvent(event: Pick<Event, "type"> & { button?: number }) {
   return event.type === "wheel" || event.button === 1;
@@ -341,12 +345,13 @@ function DynamicConceptGraph({
             <foreignObject
               key={node.id}
               ref={(element) => { if (element) nodeRefs.current.set(node.id, element); else nodeRefs.current.delete(node.id); }}
-              x={-NODE_WIDTH / 2}
-              y={-NODE_HEIGHT / 2}
-              width={NODE_WIDTH}
-              height={NODE_HEIGHT}
-              overflow="visible"
+              className="concept-node-frame"
+              x={-NODE_WIDTH / 2 - NODE_PAINT_PAD}
+              y={-NODE_HEIGHT / 2 - NODE_PAINT_PAD}
+              width={NODE_WIDTH + NODE_PAINT_PAD * 2}
+              height={NODE_HEIGHT + NODE_PAINT_PAD * 2}
             >
+              <div className="concept-node-paint-box" style={{ padding: NODE_PAINT_PAD }}>
                 <button
                   type="button"
                   className={`concept-node ${selectedId === node.id ? "selected" : connectedConceptIds.has(node.id) ? "connected" : selectedId ? "context-muted" : ""} ${node.learned ? "learned" : "upcoming"} ${pinnedIds.has(node.id) ? "pinned" : ""}`}
@@ -363,6 +368,7 @@ function DynamicConceptGraph({
                 >
                   <strong>{plainConceptNodeLabel(node.concept.label)}</strong>
                 </button>
+              </div>
             </foreignObject>
           ))}
         </g>
