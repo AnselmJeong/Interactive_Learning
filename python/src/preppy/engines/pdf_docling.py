@@ -1819,7 +1819,7 @@ def _pdf_spatial_caption_map(
                     tuple[str, tuple[float, float, float, float], str]
                 ] = []
                 for block in page.get_text("blocks"):
-                    text = clean_caption_text(block[4])
+                    text = clean_caption_text(_join_hyphenated_lines(block[4]))
                     kind = _caption_marker_kind(text)
                     if not text or not kind or len(text) > 5000:
                         continue
@@ -1881,6 +1881,19 @@ def _pdf_spatial_caption_map(
     except Exception:  # noqa: BLE001 - this is a best-effort caption fallback
         return {}
     return resolved
+
+
+_LINE_BREAK_HYPHEN_RE = re.compile(
+    r"(?<=[a-z])-[ \t]*\n[ \t]*(?!(?:and|or|to|nor)\b)(?=[a-z])"
+)
+
+
+def _join_hyphenated_lines(text: str) -> str:
+    """Rejoin words the typesetter hyphenated across a line break.
+
+    Suspended hyphens ("high- and low-frequency") are kept.
+    """
+    return _LINE_BREAK_HYPHEN_RE.sub("", text)
 
 
 def _caption_marker_kind(text: str | None) -> Literal["figure", "table"] | None:

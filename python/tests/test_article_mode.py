@@ -325,3 +325,10 @@ def test_item_caption_prefers_the_spatial_block_over_a_misattached_docling_capti
         spatial_caption="Figure 3. Full caption",
     )
     assert status == "docling_caption"
+
+
+def test_spatial_caption_rejoins_line_break_hyphenation() -> None:
+    assert (
+        pdf_docling._join_hyphenated_lines("wavelet con-\nvolution and high-\nand low-pass")
+        == "wavelet convolution and high-\nand low-pass"
+    )
