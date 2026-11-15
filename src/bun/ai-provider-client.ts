@@ -3,6 +3,16 @@ import { modelSupportsVision } from "../shared/vision-models";
 import { type AiChatClient, type ChatParams, OpenAICompatibleClient, parseJsonFromText } from "./openai-compatible-client";
 import { providerConfigurationError, providerHttpError, providerNetworkError, providerTimeoutError } from "./provider-error";
 import { ClaudeSubscriptionClient, CodexSubscriptionClient } from "./subscription-cli-client";
+import {
+  CONSERVATIVE_OUTPUT_TOKENS,
+  OutputTokenLimitError,
+  expandedOutputTokens,
+  isOutputBudgetRejection,
+  resolveOutputTokens,
+} from "./output-token-budget";
+
+// Gemini's largest models cap output at 65,536 tokens; asking for more is rejected.
+const GEMINI_MAX_OUTPUT_TOKENS = 65_536;
 
 type ProviderClientSettings = {
   provider: AiProviderId;
@@ -106,7 +116,7 @@ class GeminiClient implements AiChatClient {
           ],
           generationConfig: {
             temperature: 0.4,
-            maxOutputTokens: 2048,
+            maxOutputTokens: resolveOutputTokens(),
           },
         }),
       });
@@ -123,6 +133,29 @@ class GeminiClient implements AiChatClient {
   }
 
   private async chat(params: ChatParams, jsonMode: boolean) {
+    let maxTokens = Math.min(GEMINI_MAX_OUTPUT_TOKENS, resolveOutputTokens(params.maxTokens));
+    let budgetRejected = false;
+    for (;;) {
+      try {
+        return await this.chatOnce(params, jsonMode, maxTokens);
+      } catch (error) {
+        if (error instanceof OutputTokenLimitError) {
+          const next = expandedOutputTokens(maxTokens);
+          if (next && !budgetRejected && maxTokens < GEMINI_MAX_OUTPUT_TOKENS) {
+            maxTokens = Math.min(GEMINI_MAX_OUTPUT_TOKENS, next);
+            continue;
+          }
+        } else if (!budgetRejected && maxTokens > CONSERVATIVE_OUTPUT_TOKENS && isOutputBudgetRejection(error)) {
+          budgetRejected = true;
+          maxTokens = CONSERVATIVE_OUTPUT_TOKENS;
+          continue;
+        }
+        throw error;
+      }
+    }
+  }
+
+  private async chatOnce(params: ChatParams, jsonMode: boolean, maxTokens: number) {
     const model = params.model || this.settings.model;
     if (!this.settings.apiKey) throw providerConfigurationError("Gemini", model, "Gemini API key is not configured");
     if (!model) throw providerConfigurationError("Gemini", model, "Model is not selected");
@@ -144,7 +177,7 @@ class GeminiClient implements AiChatClient {
           contents,
           generationConfig: {
             temperature: params.temperature ?? 0.7,
-            maxOutputTokens: params.maxTokens ?? 8192,
+            maxOutputTokens: maxTokens,
             responseMimeType: jsonMode ? "application/json" : undefined,
           },
         }),
@@ -173,7 +206,7 @@ function normalizeProviderError(error: unknown, provider: string, model: string,
 function assertGeminiFinished(provider: string, model: string, reason: string | undefined) {
   if (!reason || reason === "STOP") return;
   if (reason === "MAX_TOKENS") {
-    throw new Error(`${provider} ${model} stopped before finishing because it hit the output token limit (finishReason=MAX_TOKENS)`);
+    throw new OutputTokenLimitError(`${provider} ${model} stopped before finishing because it hit the output token limit (finishReason=MAX_TOKENS)`);
   }
   throw new Error(`${provider} ${model} stopped before finishing (finishReason=${reason})`);
 }

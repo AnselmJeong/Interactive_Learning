@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { OpenAICompatibleClient } from "./openai-compatible-client";
+import { CONSERVATIVE_OUTPUT_TOKENS, DEFAULT_OUTPUT_TOKENS, MAX_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS } from "./output-token-budget";
 
 const originalFetch = globalThis.fetch;
 
@@ -133,5 +134,70 @@ describe("OpenAI-compatible thinking controls", () => {
 
     expect(body.thinking).toEqual({ type: "disabled" });
     expect(body).not.toHaveProperty("think");
+  });
+});
+
+describe("OpenAI-compatible output token budget", () => {
+  const ollama = () => new OpenAICompatibleClient({
+    baseUrl: "http://127.0.0.1:11434/v1",
+    apiKey: "",
+    model: "deepseek-v4.1-flash:1017",
+    providerName: "Ollama",
+  });
+
+  test("never sends less than the output token floor, even when a call site asks for less", async () => {
+    const budgets: number[] = [];
+    globalThis.fetch = (async (_input, init) => {
+      budgets.push(JSON.parse(String(init?.body)).max_tokens);
+      return new Response(JSON.stringify({ choices: [{ finish_reason: "stop", message: { content: "답변" } }] }), { status: 200 });
+    }) as typeof fetch;
+
+    await ollama().chatText({ messages: [{ role: "user", content: "hi" }], maxTokens: 3200 });
+    await ollama().chatText({ messages: [{ role: "user", content: "hi" }] });
+
+    expect(budgets).toEqual([MIN_OUTPUT_TOKENS, DEFAULT_OUTPUT_TOKENS]);
+  });
+
+  test("retries with a doubled budget when the model stops with finish_reason=length", async () => {
+    const budgets: number[] = [];
+    globalThis.fetch = (async (_input, init) => {
+      budgets.push(JSON.parse(String(init?.body)).max_tokens);
+      const finished = budgets.length > 1;
+      return new Response(JSON.stringify({
+        choices: [{ finish_reason: finished ? "stop" : "length", message: { content: finished ? "완성된 답변" : "잘린 답" } }],
+      }), { status: 200 });
+    }) as typeof fetch;
+
+    const text = await ollama().chatText({ messages: [{ role: "user", content: "hi" }] });
+
+    expect(text).toBe("완성된 답변");
+    expect(budgets).toEqual([MIN_OUTPUT_TOKENS, MIN_OUTPUT_TOKENS * 2]);
+  });
+
+  test("gives up with a clear error once the ceiling is reached", async () => {
+    const budgets: number[] = [];
+    globalThis.fetch = (async (_input, init) => {
+      budgets.push(JSON.parse(String(init?.body)).max_tokens);
+      return new Response(JSON.stringify({ choices: [{ finish_reason: "length", message: { content: "..." } }] }), { status: 200 });
+    }) as typeof fetch;
+
+    await expect(ollama().chatText({ messages: [{ role: "user", content: "hi" }] })).rejects.toThrow("finish_reason=length");
+    expect(budgets.at(-1)).toBe(MAX_OUTPUT_TOKENS);
+  });
+
+  test("falls back to a conservative budget when the provider rejects a large max_tokens", async () => {
+    const budgets: number[] = [];
+    globalThis.fetch = (async (_input, init) => {
+      const budget = JSON.parse(String(init?.body)).max_tokens;
+      budgets.push(budget);
+      if (budget > CONSERVATIVE_OUTPUT_TOKENS) {
+        return new Response(JSON.stringify({ error: { message: "Invalid max_tokens value, the valid range of max_tokens is [1, 8192]" } }), { status: 400 });
+      }
+      return new Response(JSON.stringify({ choices: [{ finish_reason: "stop", message: { content: "ok" } }] }), { status: 200 });
+    }) as typeof fetch;
+
+    const client = new OpenAICompatibleClient({ baseUrl: "https://api.example.com/v1", apiKey: "key", model: "small-model", providerName: "OpenAI-compatible" });
+    expect(await client.chatText({ messages: [{ role: "user", content: "hi" }] })).toBe("ok");
+    expect(budgets).toEqual([MIN_OUTPUT_TOKENS, CONSERVATIVE_OUTPUT_TOKENS]);
   });
 });
