@@ -13,7 +13,8 @@
 .rich-html figure { margin: 1.5em 0; }
 .rich-html img { display: block; max-width: 100%; height: auto; margin: 0 auto; object-fit: contain; }
 .rich-html figcaption, .rich-html caption, .rich-html .learn-caption { color: var(--ink-soft); font-size: .83em; line-height: 1.6; margin-top: .8em; text-align: start; }
-.rich-html svg { display: block; width: 100%; height: auto; max-height: 600px; overflow: visible; }
+/* Figure SVGs only: KaTeX draws square roots and stretchy delimiters as SVG with its own sizing. */
+.rich-html svg:not(.katex *) { display: block; width: 100%; height: auto; max-height: 600px; overflow: visible; }
 .rich-html table { border-collapse: collapse; width: max-content; min-width: min(100%, 420px); max-width: 100%; margin: 1.3em 0; font-size: .9em; line-height: 1.55; }
 .rich-html:has(table) { overflow-x: auto; scrollbar-color: var(--line-strong) transparent; }
 .rich-html th, .rich-html td { padding: .8em 1em; border-bottom: 1px solid var(--line); text-align: start; vertical-align: top; min-width: 100px; }
@@ -56,7 +57,7 @@
 .learning-html .learn-equation { background: var(--surface-soft); padding: 1.2em; margin: 1.5em 0; text-align: center; border-radius: 12px; overflow-x: auto; }
 .learning-html .learn-diagram { padding: 1.2em 0; color: var(--teal); }
 .learning-html figure:has(svg) { overflow-x: auto; scrollbar-color: var(--line-strong) transparent; }
-.learning-html svg { min-width: 480px; }
+.learning-html svg:not(.katex *) { min-width: 480px; }
 .learning-html svg text { font-family: ui-sans-serif, system-ui, sans-serif; font-size: 16px; fill: currentColor; }
 .learning-html figure:has(svg):focus-visible { outline: 2px solid var(--teal); outline-offset: 5px; }
 .learning-html .learn-diagram figcaption { color: var(--ink-soft); }

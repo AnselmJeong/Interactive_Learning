@@ -31,6 +31,9 @@ export default {
       "buddy/milestones/milestone-85.gif": "views/main/assets/buddy-milestone-85.gif",
       "buddy/milestones/milestone-100.gif": "views/main/assets/buddy-milestone-100.gif",
       "node_modules/katex/dist/katex.min.css": "views/main/katex.min.css",
+      // katex.min.css loads its glyphs from ./fonts/. Without them WebKit falls
+      // back to system fonts (e.g. ∥ drawn slanted like "//").
+      "node_modules/katex/dist/fonts": "views/main/fonts",
       "node_modules/chart.js/dist/chart.umd.js": "external-html-dependencies/chart.js-4.4.1.umd.js",
       "node_modules/chart.js/LICENSE.md": "external-html-dependencies/chart.js-4.4.1-LICENSE.md",
       "python/pyproject.toml": "python/pyproject.toml",
