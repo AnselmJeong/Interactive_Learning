@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, writeFileSync } from "node:fs";
 import { basename } from "node:path";
 import { databasePath } from "./paths";
+import { repairNumberedSeriesOrder } from "./source-order";
 
 let db: Database | null = null;
 
@@ -541,6 +542,7 @@ export function getDb() {
   createPreparedMessageStore(db);
   migrateLegacyPreparedMessages(db);
   normalizeMessageOrdinals(db);
+  repairNumberedSeriesOrder(db);
   db.exec(`
     CREATE UNIQUE INDEX IF NOT EXISTS idx_learning_messages_session_ordinal_unique
       ON learning_messages(session_id, ordinal ASC);
