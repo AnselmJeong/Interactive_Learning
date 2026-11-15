@@ -779,6 +779,10 @@ export class SourceService {
         files: folder.files.filter((file) => selected.has(file.id)),
       })).filter((folder) => folder.files.length);
       imported.push(...await this.importPdfFolders(projectId, folders, entry.documentType, onPdfProgress, entry.targetDocumentId));
+      if (entry.targetDocumentId && imported.length) {
+        this.placeAddedSources(entry.targetDocumentId, imported.map((source) => source.id));
+        await writeProjectDocumentIndex(projectId, this.projectRoot(projectId));
+      }
       await this.cleanupPrepared(entry);
       preparedImports.delete(importId);
       return imported;
@@ -889,6 +893,26 @@ export class SourceService {
       .query<{ next: number }, [string]>("SELECT COALESCE(MAX(source_ordinal), -1) + 1 AS next FROM project_sources WHERE document_id = ?")
       .get(documentId);
     return row?.next ?? 0;
+  }
+
+  // Sources added to an existing book are first appended. When the book's own sources are already in
+  // natural title order (Chapter 02 < ... < Chapter 12 < Chapter 14), the added ones are moved to their
+  // place in that order, so a re-imported "Chapter 13" lands between 12 and 14. Otherwise the book has
+  // a deliberate custom order and the added sources stay at the end.
+  private placeAddedSources(documentId: string, addedIds: string[]) {
+    const db = getDb();
+    const rows = db.query<{ id: string; title: string; original_file_name: string | null }, [string]>(`
+      SELECT id, title, original_file_name FROM project_sources WHERE document_id = ?
+      ORDER BY COALESCE(source_ordinal, 2147483647), created_at ASC, id ASC
+    `).all(documentId);
+    const added = new Set(addedIds);
+    const compare = (a: { title: string }, b: { title: string }) => naturalPathSorter.compare(a.title, b.title);
+    const existing = rows.filter((row) => !added.has(row.id));
+    const existingSorted = existing.every((row, index) => index === 0 || compare(existing[index - 1]!, row) <= 0);
+    const ordered = existingSorted ? [...rows].sort(compare) : rows;
+    db.transaction(() => {
+      ordered.forEach((row, ordinal) => db.query("UPDATE project_sources SET source_ordinal = ? WHERE id = ?").run(ordinal, row.id));
+    })();
   }
 
   private touchDocument(documentId: string) {
@@ -1336,8 +1360,13 @@ export class SourceService {
     return getDb()
       .query<SourceRow, [string]>("SELECT * FROM project_sources WHERE project_id = ?")
       .all(projectId)
-      .map((row) => toSource(row, learningStatusBySourceId.get(row.id) || "not_started"))
-      .sort((a, b) => naturalPathSorter.compare(a.originalFileName || a.title, b.originalFileName || b.title));
+      // Within a book the stored source order wins; file names only break ties. Sorting by file name
+      // alone put a chapter added later (its pack file is "001-….md") at the top of the book.
+      .sort((a, b) =>
+        (a.document_id || "").localeCompare(b.document_id || "")
+        || (a.source_ordinal ?? Number.MAX_SAFE_INTEGER) - (b.source_ordinal ?? Number.MAX_SAFE_INTEGER)
+        || naturalPathSorter.compare(a.original_file_name || a.title, b.original_file_name || b.title))
+      .map((row) => toSource(row, learningStatusBySourceId.get(row.id) || "not_started"));
   }
 
   async rename(projectId: string, sourceId: string, title: string) {

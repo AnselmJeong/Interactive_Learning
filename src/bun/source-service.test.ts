@@ -334,6 +334,39 @@ describe("article source packs", () => {
     await expect(service.prepareImport(project.id, [notes], "book", "missing-document")).rejects.toThrow("문서를 찾을 수 없습니다");
   });
 
+  test("places a re-imported chapter by title when the book is in title order", async () => {
+    const project = await new ProjectService().create({ title: "Reimport" });
+    const writePack = async (name: string, titles: string[]) => {
+      const pack = join(tempRoot, name);
+      await mkdir(join(pack, "chapters"), { recursive: true });
+      const chapters = await Promise.all(titles.map(async (title, index) => {
+        const path = `chapters/${String(index + 1).padStart(3, "0")}.md`;
+        await writeFile(join(pack, path), `# ${title}\n\n${title} body text.`);
+        return { index: index + 1, title, kind: "chapter", path, char_count: 60 };
+      }));
+      await writeFile(join(pack, "manifest.json"), JSON.stringify({ schema_version: 2, source: { document_type: "book" }, output: { chapters_dir: "chapters", assets_dir: "assets" }, chapters }));
+      return pack;
+    };
+    const service = new SourceService();
+    const book = await service.prepareImport(project.id, [await writePack("whole.preppy", ["Chapter 02", "Chapter 12", "Chapter 14"])], "book");
+    const imported = await service.commitPreparedImport(project.id, book.id, book.items.map((item) => item.id));
+    const bookId = imported[0]!.documentId!;
+
+    // The added pack's chapter file is "001.md", which used to sort it above every other chapter.
+    const added = await service.prepareImport(project.id, [await writePack("Chapter_13.preppy", ["Chapter 13"])], "book", bookId);
+    await service.commitPreparedImport(project.id, added.id, added.items.map((item) => item.id));
+    expect(service.list(project.id).map((source) => source.title)).toEqual(["Chapter 02", "Chapter 12", "Chapter 13", "Chapter 14"]);
+    expect(new DocumentService().listSources(project.id, bookId).map((source) => source.title)).toEqual(["Chapter 02", "Chapter 12", "Chapter 13", "Chapter 14"]);
+
+    // A book in a custom (non-title) order keeps it, and added sources go to the end.
+    const custom = await service.prepareImport(project.id, [await writePack("custom.preppy", ["Preface", "Appendix", "Body"])], "book");
+    const customSources = await service.commitPreparedImport(project.id, custom.id, custom.items.map((item) => item.id));
+    const customId = customSources[0]!.documentId!;
+    const extra = await service.prepareImport(project.id, [await writePack("extra.preppy", ["Afterword"])], "book", customId);
+    await service.commitPreparedImport(project.id, extra.id, extra.items.map((item) => item.id));
+    expect(service.list(project.id).filter((source) => source.documentId === customId).map((source) => source.title)).toEqual(["Preface", "Appendix", "Body", "Afterword"]);
+  });
+
   test("merges every selected article pack section into one article source", async () => {
     const project = await new ProjectService().create({ title: "Article Project" });
     const pack = join(tempRoot, "paper.preppy");
