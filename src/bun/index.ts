@@ -370,9 +370,9 @@ const rpc = BrowserView.defineRPC<AppRPC>({
         sendToView("sources.ingestionProgress", { projectId, stage: "complete", message: "Sources imported", progress: 100 });
         return sources.list(projectId);
       },
-      "sources.prepareImport": async ({ projectId, paths, documentType }) => {
+      "sources.prepareImport": async ({ projectId, paths, documentType, targetDocumentId }) => {
         sendToView("sources.ingestionProgress", { projectId, stage: "extracting", message: "Preparing source preview", progress: 20 });
-        const result = await sources.prepareImport(projectId, paths, documentType || "book");
+        const result = await sources.prepareImport(projectId, paths, documentType || "book", targetDocumentId || undefined);
         sendToView("sources.ingestionProgress", { projectId, stage: "indexing", message: "Source preview ready", progress: 80 });
         return result;
       },

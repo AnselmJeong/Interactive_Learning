@@ -73,9 +73,11 @@ export function SourceImportModal({
       <div className="modal source-import-modal">
         <header className="modal-header">
           <div>
-            <p className="eyebrow">책·논문 가져오기</p>
+            <p className="eyebrow">{prepared.targetDocumentId ? `"${prepared.targetDocumentTitle || "현재 책"}"에 소스 추가` : "책·논문 가져오기"}</p>
             <h2>{prepared.sourceName}</h2>
-            <p>{pdfFolderOnly
+            <p>{prepared.targetDocumentId
+              ? `선택한 항목을 새 책으로 만들지 않고 "${prepared.targetDocumentTitle || "현재 책"}"의 Sources 끝에 추가합니다.`
+              : pdfFolderOnly
               ? `PDF ${prepared.itemCount}개 중 ${isArticle ? "논문으로" : "책의 챕터로"} 가져올 파일을 선택하세요.`
               : `가져올 항목 ${prepared.itemCount}개를 준비했습니다.`}</p>
           </div>

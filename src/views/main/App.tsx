@@ -1427,8 +1427,11 @@ export function App({ request }: { request: RpcRequest }) {
     void refreshPrefetchStatus(session.id);
   }, [refreshPrefetchStatus, session?.id, session?.updatedAt]);
 
-  async function chooseAndImportSources() {
+  // Without a target this is the library's "new book/article" import. With a target document (the
+  // upload button in the Sources header) the chosen files become extra sources of that document.
+  async function chooseAndImportSources(targetDocumentId?: string | null) {
     if (!activeProject) return;
+    const target = targetDocumentId ? documents.find((document) => document.id === targetDocumentId) || null : null;
     try {
       const selection = (await request("sources.chooseImportSelection", { projectId: activeProject.id })) as SourceImportSelection;
       const { paths } = selection;
@@ -1437,6 +1440,15 @@ export function App({ request }: { request: RpcRequest }) {
         return;
       }
       const transferPaths = paths.filter((path) => path.toLowerCase().endsWith(".zip"));
+      if (target && transferPaths.length) {
+        setSourceNotice("Learnie 내보내기 ZIP은 서재의 '새 책·논문 가져오기'로 가져와 주세요.");
+        return;
+      }
+      if (target) {
+        // The document already fixes the type, so the book/article question is skipped.
+        await prepareSelectedSources(target.documentType === "article" ? "article" : "book", selection, target.id);
+        return;
+      }
       if (transferPaths.length) {
         if (transferPaths.length !== 1 || paths.length !== 1) {
           setSourceNotice("Learnie 내보내기 ZIP은 한 번에 하나만 선택해 주세요.");
@@ -1454,15 +1466,16 @@ export function App({ request }: { request: RpcRequest }) {
     }
   }
 
-  async function prepareSelectedSources(documentType: DocumentType) {
-    if (!activeProject || !sourceSelection) return;
+  async function prepareSelectedSources(documentType: DocumentType, selection = sourceSelection, targetDocumentId?: string) {
+    if (!activeProject || !selection) return;
     setBusy(true);
     setSourceNotice("");
     try {
       const prepared = (await request("sources.prepareImport", {
         projectId: activeProject.id,
-        paths: sourceSelection.paths,
+        paths: selection.paths,
         documentType,
+        targetDocumentId,
       })) as PreparedSourceImport;
       setPreparedImport(prepared);
       setSourceSelection(null);
@@ -2975,7 +2988,13 @@ export function App({ request }: { request: RpcRequest }) {
                   <span className="workspace-source-batch-count">{analysisBatch.completedSourceIds.length + analysisBatch.failedSourceIds.length}/{analysisBatch.sourceIds.length}</span>
                 ) : null}
               </button>
-              <button className="icon-button ghost workspace-source-add" onClick={chooseAndImportSources} disabled={!activeProject || busy} title="소스 추가" aria-label="소스 추가">
+              <button
+                className="icon-button ghost workspace-source-add"
+                onClick={() => void chooseAndImportSources(selectedDocumentId)}
+                disabled={!activeProject || busy}
+                title={selectedDocumentId ? "이 책에 소스 추가" : "소스 추가"}
+                aria-label={selectedDocumentId ? "이 책에 소스 추가" : "소스 추가"}
+              >
                 <Upload size={16} />
               </button>
               </div>
@@ -3656,7 +3675,7 @@ export function App({ request }: { request: RpcRequest }) {
           notice={sourceNotice}
           busy={busy}
           onCancel={() => setSourceSelection(null)}
-          onContinue={prepareSelectedSources}
+          onContinue={(documentType) => prepareSelectedSources(documentType)}
         />
       ) : null}
       {pendingAnnotationDeletion ? (
