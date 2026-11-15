@@ -15,6 +15,7 @@ import {
   type VisualGrammarKind,
 } from "../shared/learning-ir-types";
 import { canonicalJson, sha256, validateLearningIr } from "./learning-ir-validator";
+import { ANALYSIS_CONCURRENCY, mapWithConcurrency } from "./concurrency";
 
 const MAX_BATCH_CHARACTERS = 24_000;
 
@@ -215,16 +216,27 @@ export async function compileLearningIr(input: CompileLearningIrInput): Promise<
     .map((module) => ({ module, chunks: moduleChunks(module, chunksById) }))
     .filter((entry) => entry.chunks.length > 0);
 
-  for (const [index, { module, chunks }] of modules.entries()) {
-    input.onProgress?.({
-      phase: "module",
-      completedModules: index,
-      totalModules: modules.length,
-      moduleIndex: index + 1,
-      moduleTitle: module.title,
-    });
-    const fallback = fallbackFragment(module, chunks, input.legacyConcepts);
+  // Module extraction calls are independent, so a few run at once; the results are merged below in
+  // source order so the IR stays deterministic.
+  let completedModules = 0;
+  const reportModule = (moduleTitle: string) => input.onProgress?.({
+    phase: "module",
+    completedModules,
+    totalModules: modules.length,
+    moduleIndex: Math.min(modules.length, completedModules + 1),
+    moduleTitle,
+  });
+  if (modules[0]) reportModule(modules[0].module.title);
+  const extractedFragments = await mapWithConcurrency(modules, ANALYSIS_CONCURRENCY, async ({ module, chunks }) => {
     const extracted = input.runtime ? await extractFragment(input.runtime, module, chunks) : null;
+    completedModules += 1;
+    if (completedModules < modules.length) reportModule(module.title);
+    return extracted;
+  });
+
+  for (const [index, { module, chunks }] of modules.entries()) {
+    const fallback = fallbackFragment(module, chunks, input.legacyConcepts);
+    const extracted = extractedFragments[index];
     const fragment = normalizeFragment(extracted || fallback, module, chunks, fallback);
     const keyToId = new Map<string, string>();
     for (const item of fragment.concepts || []) {

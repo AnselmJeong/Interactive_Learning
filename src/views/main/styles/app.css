@@ -6431,3 +6431,32 @@ button:not(:where(.astryx-button, .astryx-tab, .astryx-selector, .astryx-field *
   list-style: revert;
   padding-inline-start: revert;
 }
+
+/* Batch source analysis (document-wide, runs in the background). */
+.workspace-source-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.workspace-source-batch {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.workspace-source-batch.running {
+  color: var(--accent-2);
+}
+.workspace-source-batch .workspace-source-batch-count {
+  font-size: var(--ln-font-size-2xs);
+  font-weight: var(--font-weight-semibold);
+  font-variant-numeric: tabular-nums;
+  color: inherit;
+}
+.source-analysis-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--quiet);
+}
+.source-analysis-state.running { color: var(--accent-2); }
+.source-analysis-state.failed { color: var(--danger); }
