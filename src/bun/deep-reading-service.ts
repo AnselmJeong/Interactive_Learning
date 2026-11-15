@@ -3,6 +3,7 @@ import { DEEP_READING_VERSION, type DeepReadingPlan, type ExplanationGrounding, 
 import type { SourceSemanticIr } from "../shared/learning-ir-types";
 import type { LearningIrRuntime } from "./learning-ir-compiler";
 import { sha256 } from "./learning-ir-validator";
+import { ANALYSIS_CONCURRENCY, mapWithConcurrency } from "./concurrency";
 
 const MAX_FOCUS_CHARS = 12_000;
 const MAX_RELATED_CHARS = 2400;
@@ -146,12 +147,13 @@ export async function compileDeepReading(input: {
   chunks: SourceChunk[]; ir: SourceSemanticIr; runtime?: LearningIrRuntime;
   onProgress?: (completed: number, total: number) => void;
 }): Promise<DeepReadingPlan> {
-  const passages: PassagePlan[] = [];
-  for (const focus of input.chunks) {
-    input.onProgress?.(passages.length, input.chunks.length);
+  // Each passage is planned independently, so a few plans are designed at once; results keep
+  // source order.
+  let completed = 0;
+  input.onProgress?.(0, input.chunks.length);
+  const planPassage = async (focus: SourceChunk): Promise<PassagePlan> => {
     if (!input.runtime) {
-      passages.push(fallbackPlan(focus, "설명 설계 모델을 사용할 수 없어 기본 해설을 사용합니다."));
-      continue;
+      return fallbackPlan(focus, "설명 설계 모델을 사용할 수 없어 기본 해설을 사용합니다.");
     }
     const related = relatedReadingChunks(input.chunks, focus.id, "", input.ir);
     const supplied = [
@@ -187,12 +189,18 @@ Schema: {role:string,difficulty:string,steps:[{purpose:string,instruction:string
         value = await input.runtime.client.chatJson({ ...request, messages: [...request.messages, { role: "user", content: "The previous plan failed validation. Return a smaller teacher-only explanation plan. No reader assignments. Every step needs an exact excerpt from the current passage; every connection needs exact excerpts from both passages. Verify quotes character for character. Return the full corrected JSON." }] });
         plan = normalizePassagePlan(value, focus, supplied);
       }
-      passages.push(plan);
+      return plan;
     } catch (error) {
       console.error(`[deep-reading] ${focus.id}: explanation design failed (${input.runtime.model}): ${(error as Error)?.message ?? error}`);
-      passages.push(fallbackPlan(focus, "설명 설계를 완료하지 못해 기본 해설을 사용합니다."));
+      return fallbackPlan(focus, "설명 설계를 완료하지 못해 기본 해설을 사용합니다.");
     }
-  }
+  };
+  const passages = await mapWithConcurrency(input.chunks, input.runtime ? ANALYSIS_CONCURRENCY : 1, async (focus) => {
+    const plan = await planPassage(focus);
+    completed += 1;
+    if (completed < input.chunks.length) input.onProgress?.(completed, input.chunks.length);
+    return plan;
+  });
   input.onProgress?.(passages.length, input.chunks.length);
   const basis = { version: DEEP_READING_VERSION, sourceFingerprint: deepReadingFingerprint(input.chunks), model: input.runtime?.model || "unavailable", generatedAt: new Date().toISOString(), passages } satisfies Omit<DeepReadingPlan, "contentHash">;
   return { ...basis, contentHash: sha256(basis) };

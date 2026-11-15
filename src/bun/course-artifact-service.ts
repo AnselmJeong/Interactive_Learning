@@ -753,38 +753,32 @@ export class CourseArtifactService {
         projectId,
         materialId: id,
         stage: "brief",
-        message: "자료의 전체 주제를 요약하는 중",
+        message: runtime ? "자료의 전체 주제와 모듈별 소주제를 정리하는 중" : "자료의 전체 주제를 요약하는 중",
         progress: 12,
       });
-      const overview = runtime
-        ? await generateMaterialOverview(title, sourceChunks, runtime, documentType).catch((error) => {
-            console.warn("Material overview generation degraded", (error as Error).message);
-            return deterministicMaterialOverview(title, sourceChunks, documentType);
-          })
-        : deterministicMaterialOverview(title, sourceChunks, documentType);
-      if (runtime) {
-        reportGenerationProgress(reportProgress, {
-          projectId,
-          materialId: id,
-          stage: "brief",
-          message: "모듈별 소주제를 정리하는 중",
-          progress: 16,
-        });
-      }
       const chunkTextById = new Map(sourceChunks.map((chunk) => [chunk.id, chunk.text]));
-      const subtopics = runtime
-        ? await generateModuleSubtopics(
-            title,
-            sectionPlan.modules.map((module) => ({
-              title: module.title,
-              text: module.sourceChunkIds.map((chunkId) => chunkTextById.get(chunkId) || "").join("\n\n"),
-            })),
-            runtime,
-          ).catch((error) => {
-            console.warn("Module subtopic generation degraded", (error as Error).message);
-            return null;
-          })
-        : null;
+      // The overview and module subtopics are independent LLM calls, so they run together.
+      const [overview, subtopics] = await Promise.all([
+        runtime
+          ? generateMaterialOverview(title, sourceChunks, runtime, documentType).catch((error) => {
+              console.warn("Material overview generation degraded", (error as Error).message);
+              return deterministicMaterialOverview(title, sourceChunks, documentType);
+            })
+          : Promise.resolve(deterministicMaterialOverview(title, sourceChunks, documentType)),
+        runtime
+          ? generateModuleSubtopics(
+              title,
+              sectionPlan.modules.map((module) => ({
+                title: module.title,
+                text: module.sourceChunkIds.map((chunkId) => chunkTextById.get(chunkId) || "").join("\n\n"),
+              })),
+              runtime,
+            ).catch((error) => {
+              console.warn("Module subtopic generation degraded", (error as Error).message);
+              return null;
+            })
+          : Promise.resolve(null),
+      ]);
       const coursePlan = applyModuleSubtopics(sectionPlan, subtopics || []);
       const learningIr = await compileLearningIr({
         materialId: id,

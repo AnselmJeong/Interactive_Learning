@@ -81,3 +81,44 @@ export function primaryMaterialGenerationJob(jobs: MaterialGenerationJobs) {
   const withProgress = all.filter((job) => job.progress);
   return { job: latestJob(withProgress.length ? withProgress : all), total: all.length };
 }
+
+// Batch analysis of every source in a document. Sources are analysed one after another in the
+// background (each analysis already runs several LLM calls at once), so the learner can keep studying.
+export type DocumentAnalysisBatch = {
+  projectId: string;
+  documentId: string;
+  sourceIds: string[];
+  completedSourceIds: string[];
+  failedSourceIds: string[];
+  currentSourceId: string | null;
+  stopRequested: boolean;
+};
+
+type BatchSource = { id: string; documentId?: string | null };
+type BatchMaterial = { sourceIds: string[]; status: string };
+
+export function hasReadySourceMaterial(materials: BatchMaterial[], sourceId: string) {
+  return materials.some((material) => material.sourceIds.length === 1 && material.sourceIds[0] === sourceId && material.status === "ready");
+}
+
+// Sources of the document, in reading order, that still need their learning structure analysed.
+export function documentSourcesNeedingAnalysis(sources: BatchSource[], materials: BatchMaterial[], documentId: string) {
+  return sources
+    .filter((source) => source.documentId === documentId && !hasReadySourceMaterial(materials, source.id))
+    .map((source) => source.id);
+}
+
+export type SourceAnalysisState = "ready" | "running" | "queued" | "failed" | "none";
+
+export function sourceAnalysisState(
+  sourceId: string,
+  materials: BatchMaterial[],
+  jobs: MaterialGenerationJobs,
+  batch: DocumentAnalysisBatch | null,
+): SourceAnalysisState {
+  if (Object.values(jobs).some((job) => job.sourceIds.length === 1 && job.sourceIds[0] === sourceId)) return "running";
+  if (hasReadySourceMaterial(materials, sourceId)) return "ready";
+  if (batch?.failedSourceIds.includes(sourceId)) return "failed";
+  if (batch && !batch.stopRequested && batch.sourceIds.includes(sourceId) && !batch.completedSourceIds.includes(sourceId)) return "queued";
+  return "none";
+}

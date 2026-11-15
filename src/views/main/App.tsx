@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react";
-import { BarChart3, BookOpen, Check, Download, Highlighter, Info, LibraryBig, Loader2, LocateFixed, MessageSquare, Moon, PanelRightClose, PanelRightOpen, Pencil, Play, Send, Settings, Sparkles, Sun, Trash2, Upload, X } from "lucide-react";
+import { BarChart3, BookOpen, Check, Download, Highlighter, Info, Layers, LibraryBig, Loader2, LocateFixed, MessageSquare, Moon, PanelRightClose, PanelRightOpen, Pencil, Play, Send, Settings, Sparkles, Square, Sun, Trash2, Upload, X } from "lucide-react";
 import type { AnnotationReadableExport, DocumentMetadataCandidate, DocumentMetadataSearchInput, DocumentRemovalImpact, DocumentSummary, GenerationProgress, MaterialProgressSnapshot, MaterialSummary, SourceImportSelection, PreparedSourceImport, ProjectProgressSnapshot, ProjectSummary, SourceRemovalImpact, SourceSummary } from "../../shared/rpc-types";
 import type { ProjectTransferExport, ProjectTransferPreview, SessionReadableExport } from "../../shared/project-transfer-types";
 import type { DocumentTransferExport, DocumentTransferImportPreview, DocumentTransferImportResult } from "../../shared/document-transfer-types";
@@ -42,7 +42,7 @@ import { QuestionThreadAnnotationCard } from "./components/QuestionThreadAnnotat
 import { AdditionalExploration } from "./components/AdditionalExploration";
 import { AnnotationExternalHtmlAttachment, EXTERNAL_HTML_ACTION_EVENT, publishExternalHtmlCapability, type ExternalHtmlActionEventDetail } from "./components/AnnotationExternalHtmlAttachment";
 import { GenerationStatus } from "./components/GenerationStatus";
-import { applyMaterialGenerationProgress, finishMaterialGenerationJob, materialGenerationJobKey, primaryMaterialGenerationJob, startMaterialGenerationJob, type MaterialGenerationJobs } from "./material-generation-jobs";
+import { applyMaterialGenerationProgress, documentSourcesNeedingAnalysis, finishMaterialGenerationJob, materialGenerationJobKey, primaryMaterialGenerationJob, sourceAnalysisState, startMaterialGenerationJob, type DocumentAnalysisBatch, type MaterialGenerationJobs } from "./material-generation-jobs";
 import { figureIdForExplanationAnnotation } from "./figure-annotations";
 import { stripFigureMarkdown } from "./figure-text";
 import { placeAnnotationsForMessages, shouldRenderInlineAnnotation } from "./annotation-placement";
@@ -831,6 +831,9 @@ export function App({ request }: { request: RpcRequest }) {
   const [status, setStatus] = useState(READY_STATUS);
   const [materialJobs, setMaterialJobs] = useState<MaterialGenerationJobs>({});
   const materialJobPromisesRef = useRef(new Map<string, Promise<MaterialSummary>>());
+  // Batch "analyse every source of this document" run; the ref is read by the async loop.
+  const [analysisBatch, setAnalysisBatchState] = useState<DocumentAnalysisBatch | null>(null);
+  const analysisBatchRef = useRef<DocumentAnalysisBatch | null>(null);
   // Bumped whenever the learner navigates or continues learning, so a background generation that
   // finishes later only auto-opens its material if the learner is still waiting for it.
   const learningIntentRef = useRef(0);
@@ -1544,6 +1547,57 @@ export function App({ request }: { request: RpcRequest }) {
     })();
     materialJobPromisesRef.current.set(key, job);
     return job;
+  }
+
+  function updateAnalysisBatch(update: (batch: DocumentAnalysisBatch) => DocumentAnalysisBatch | null) {
+    const current = analysisBatchRef.current;
+    if (!current) return;
+    const next = update(current);
+    analysisBatchRef.current = next;
+    setAnalysisBatchState(next);
+  }
+
+  // Analyses (topic overview, module structure, per-passage explanation design) every source of a
+  // document that has no ready material yet, one source at a time, entirely in the background.
+  // Nothing is opened automatically; a source that is ready opens instantly when clicked.
+  async function analyzeDocumentSources(documentId: string) {
+    if (!activeProject || analysisBatchRef.current) return;
+    const projectId = activeProject.id;
+    const sourceIds = documentSourcesNeedingAnalysis(state.sources, state.materials, documentId);
+    if (!sourceIds.length) {
+      setStatus("이 문서의 모든 소스가 이미 분석되어 있습니다");
+      return;
+    }
+    const batch: DocumentAnalysisBatch = {
+      projectId, documentId, sourceIds, completedSourceIds: [], failedSourceIds: [], currentSourceId: null, stopRequested: false,
+    };
+    analysisBatchRef.current = batch;
+    setAnalysisBatchState(batch);
+    for (const sourceId of sourceIds) {
+      const current = analysisBatchRef.current;
+      if (!current || current.stopRequested || activeProjectIdRef.current !== projectId) break;
+      updateAnalysisBatch((value) => ({ ...value, currentSourceId: sourceId }));
+      try {
+        await generateMaterialInBackground(projectId, [sourceId]);
+        updateAnalysisBatch((value) => ({ ...value, completedSourceIds: [...value.completedSourceIds, sourceId] }));
+      } catch (error) {
+        console.warn("Batch source analysis failed", sourceId, (error as Error).message);
+        updateAnalysisBatch((value) => ({ ...value, failedSourceIds: [...value.failedSourceIds, sourceId] }));
+      }
+    }
+    const finished = analysisBatchRef.current;
+    analysisBatchRef.current = null;
+    setAnalysisBatchState(null);
+    if (!finished || activeProjectIdRef.current !== projectId) return;
+    const done = finished.completedSourceIds.length;
+    const failed = finished.failedSourceIds.length;
+    const stopped = finished.stopRequested && done + failed < finished.sourceIds.length;
+    setStatus(`소스 일괄 분석 ${stopped ? "중지" : "완료"} · ${done}/${finished.sourceIds.length}개 준비${failed ? ` · ${failed}개 실패` : ""}`);
+  }
+
+  // Stops the batch after the source that is currently being analysed.
+  function stopDocumentAnalysis() {
+    updateAnalysisBatch((value) => ({ ...value, stopRequested: true }));
   }
 
   function learnFromDocument(documentId: string) {
@@ -2808,6 +2862,21 @@ export function App({ request }: { request: RpcRequest }) {
   const sidebarSources = selectedDocumentId
     ? state.sources.filter((source) => source.documentId === selectedDocumentId)
     : state.sources;
+  const documentBatchRunning = Boolean(analysisBatch && analysisBatch.documentId === selectedDocumentId);
+  const pendingDocumentSourceCount = selectedDocumentId
+    ? documentSourcesNeedingAnalysis(state.sources, state.materials, selectedDocumentId).length
+    : 0;
+  const documentBatchTitle = documentBatchRunning && analysisBatch
+    ? analysisBatch.stopRequested
+      ? "현재 소스 분석이 끝나면 일괄 분석을 멈춥니다"
+      : `소스 일괄 분석 중 · ${analysisBatch.completedSourceIds.length + analysisBatch.failedSourceIds.length}/${analysisBatch.sourceIds.length} · 클릭하면 중지`
+    : analysisBatch
+      ? "다른 문서의 소스를 일괄 분석하고 있습니다"
+      : !selectedDocumentId
+        ? "문서를 선택하면 소스를 일괄 분석할 수 있습니다"
+        : pendingDocumentSourceCount
+          ? `이 문서의 소스 ${pendingDocumentSourceCount}개를 백그라운드에서 일괄 분석 (전체 주제, 대목별 설명, 원문 연결)`
+          : "이 문서의 모든 소스가 분석되어 있습니다";
 
   return (
     <AppShell
@@ -2888,9 +2957,27 @@ export function App({ request }: { request: RpcRequest }) {
           <section className="pane-section sources-section workspace-source-section" aria-labelledby="workspace-sources-title">
             <div className="section-heading">
               <h2 id="workspace-sources-title">Sources <span>{sidebarSources.length}</span></h2>
+              <div className="workspace-source-actions">
+              <button
+                type="button"
+                className={`icon-button ghost workspace-source-batch${documentBatchRunning ? " running" : ""}`}
+                onClick={() => {
+                  if (documentBatchRunning) stopDocumentAnalysis();
+                  else if (selectedDocumentId) void analyzeDocumentSources(selectedDocumentId);
+                }}
+                disabled={documentBatchRunning ? Boolean(analysisBatch?.stopRequested) : !activeProject || !selectedDocumentId || Boolean(analysisBatch) || !pendingDocumentSourceCount}
+                title={documentBatchTitle}
+                aria-label={documentBatchTitle}
+              >
+                {documentBatchRunning ? <Square size={13} /> : <Layers size={16} />}
+                {documentBatchRunning && analysisBatch ? (
+                  <span className="workspace-source-batch-count">{analysisBatch.completedSourceIds.length + analysisBatch.failedSourceIds.length}/{analysisBatch.sourceIds.length}</span>
+                ) : null}
+              </button>
               <button className="icon-button ghost workspace-source-add" onClick={chooseAndImportSources} disabled={!activeProject || busy} title="소스 추가" aria-label="소스 추가">
                 <Upload size={16} />
               </button>
+              </div>
             </div>
             {sourceNotice ? <p className="source-notice">{sourceNotice}</p> : null}
             <div className="list source-list-fill" role="list" aria-label="선택한 책의 Sources">
@@ -2898,7 +2985,18 @@ export function App({ request }: { request: RpcRequest }) {
                 const isActive = activeSourceId === source.id;
                 const sourceName = displayableSourceName(source);
                 const learningStatusLabel = sourceLearningStatusLabel(source.learningStatus);
-                const sourceTitle = `${sourceName} - ${learningStatusLabel}`;
+                const analysisState = sourceAnalysisState(source.id, state.materials, materialJobs, analysisBatch);
+                const analysisJob = analysisState === "running"
+                  ? Object.values(materialJobs).find((job) => job.sourceIds.length === 1 && job.sourceIds[0] === source.id) || null
+                  : null;
+                const analysisLabel = analysisState === "running"
+                  ? `분석 중${analysisJob?.progress ? ` ${Math.round(analysisJob.progress.progress)}%` : ""}`
+                  : analysisState === "queued"
+                    ? "분석 대기"
+                    : analysisState === "failed"
+                      ? "분석 실패"
+                      : "";
+                const sourceTitle = `${sourceName} - ${learningStatusLabel}${analysisLabel ? ` · ${analysisLabel}` : ""}`;
                 const sourceMaterial = state.materials.find((item) => item.sourceIds.length === 1 && item.sourceIds[0] === source.id) || null;
                 const sourceMessageSet = sourceMaterial
                   ? (messageSetsByMaterial[sourceMaterial.id] || []).find((item) => item.status !== "cancelled" && item.status !== "superseded") || null
@@ -2955,7 +3053,12 @@ export function App({ request }: { request: RpcRequest }) {
                             <span className="source-row-title">{sourceName}</span>
                             <small className={`source-status-text ${source.learningStatus}`}>
                               <span className={`source-status-dot ${source.learningStatus}`} aria-hidden="true" />
-                              {learningStatusLabel}
+                              {analysisLabel ? (
+                                <span className={`source-analysis-state ${analysisState}`}>
+                                  {analysisState === "running" ? <Loader2 size={10} className="spin" aria-hidden="true" /> : null}
+                                  {analysisLabel}
+                                </span>
+                              ) : learningStatusLabel}
                             </small>
                           </span>
                         </button>
@@ -3068,7 +3171,11 @@ export function App({ request }: { request: RpcRequest }) {
               status={status}
               busy={busy || tutorThinking || sessionStartBusy}
               progress={primaryMaterialJob.job?.progress || null}
-              jobLabel={primaryMaterialJob.job ? materialJobLabel(primaryMaterialJob.job.sourceIds) : undefined}
+              jobLabel={primaryMaterialJob.job
+                ? `${analysisBatch && primaryMaterialJob.job.sourceIds.length === 1 && analysisBatch.sourceIds.includes(primaryMaterialJob.job.sourceIds[0]!)
+                  ? `일괄 분석 ${Math.min(analysisBatch.sourceIds.length, analysisBatch.completedSourceIds.length + analysisBatch.failedSourceIds.length + 1)}/${analysisBatch.sourceIds.length} · `
+                  : ""}${materialJobLabel(primaryMaterialJob.job.sourceIds)}`
+                : undefined}
               jobCount={primaryMaterialJob.total}
             />
           </div>
