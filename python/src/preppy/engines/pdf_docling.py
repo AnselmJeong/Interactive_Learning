@@ -1707,6 +1707,9 @@ def _render_table(table_item: TableItem, doc: DoclingDocument) -> tuple[str, boo
     return "*[table omitted: rendering failed]*", False
 
 
+SPATIAL_CAPTION_MAX_CHARS = 1200
+
+
 def _item_caption(
     item: PictureItem | TableItem,
     doc: DoclingDocument,
@@ -1721,12 +1724,25 @@ def _item_caption(
         caption = clean_caption_text(item.caption_text(doc))
     except Exception:  # noqa: BLE001
         caption = None
+    spatial = clean_caption_text(spatial_caption)
+    # The PDF text layer keeps a caption as one block right next to its
+    # figure. Docling sometimes links the caption *above* a figure (the
+    # previous figure's) and splits caption bodies into neighbouring
+    # paragraphs, leaving fragments such as "Figure 13.1 pairs of those
+    # dimensions.". Prefer the spatial block unless Docling's caption is a
+    # longer version of the same figure's caption.
+    if spatial and len(spatial) <= SPATIAL_CAPTION_MAX_CHARS:
+        if not (
+            caption
+            and _figure_caption_key(caption) == _figure_caption_key(spatial)
+            and len(caption) > len(spatial)
+        ):
+            return spatial, "pdf_text_caption"
     if caption:
         return caption, "docling_caption"
     nearby = clean_caption_text(nearby_caption)
     if nearby:
         return nearby, "nearby_text"
-    spatial = clean_caption_text(spatial_caption)
     if spatial:
         return spatial, "pdf_text_caption"
     return None, "missing"
@@ -1820,7 +1836,11 @@ def _pdf_spatial_caption_map(
                         )
                     )
 
-                used: set[int] = set()
+                # Score every (target, caption block) pair and assign the
+                # closest pairs first. Assigning target by target let an
+                # earlier picture take the caption block that sits right
+                # under the next picture (Figure 13.1/13.2 swap).
+                ranked: list[tuple[float, int, int, str]] = []
                 for target in targets:
                     target_rect = _docling_bbox_to_pdf_rect(
                         target.bbox, page.rect.height
@@ -1828,9 +1848,8 @@ def _pdf_spatial_caption_map(
                     if target_rect is None:
                         continue
                     target_kind = "figure" if target.label == "picture" else "table"
-                    ranked: list[tuple[float, int, str]] = []
                     for index, (kind, caption_rect, text) in enumerate(candidates):
-                        if index in used or kind != target_kind:
+                        if kind != target_kind:
                             continue
                         overlap = max(
                             0.0,
@@ -1850,11 +1869,15 @@ def _pdf_spatial_caption_map(
                             ((target_rect[0] + target_rect[2]) / 2)
                             - ((caption_rect[0] + caption_rect[2]) / 2)
                         )
-                        ranked.append((gap + center_delta * 0.02, index, text))
-                    if ranked:
-                        _score, index, text = min(ranked)
-                        used.add(index)
-                        resolved[target.index] = text
+                        ranked.append(
+                            (gap + center_delta * 0.02, target.index, index, text)
+                        )
+                used: set[int] = set()
+                for _score, target_index, index, text in sorted(ranked):
+                    if index in used or target_index in resolved:
+                        continue
+                    used.add(index)
+                    resolved[target_index] = text
     except Exception:  # noqa: BLE001 - this is a best-effort caption fallback
         return {}
     return resolved

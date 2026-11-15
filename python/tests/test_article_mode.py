@@ -266,3 +266,62 @@ def test_compound_figure_does_not_merge_conflicting_figure_numbers() -> None:
     }
 
     assert pdf_docling._detect_compound_picture_groups(pictures, captions) == []
+
+
+def test_spatial_captions_pair_each_figure_with_the_block_right_below_it(
+    tmp_path: Path,
+) -> None:
+    # Layout of Cohen ch. 13 p. 152: figure 13.1, its caption, figure 13.2, its
+    # caption. Figure 13.2's top is close to the 13.1 caption above it, but the
+    # 13.2 caption directly below is closer still.
+    pdf_path = tmp_path / "stacked.pdf"
+    with pymupdf.open() as pdf:
+        page = pdf.new_page(width=576, height=648)
+        page.insert_textbox(
+            pymupdf.Rect(120, 300, 504, 336),
+            "Figure 13.1 A complex wavelet is a 3-D function.",
+            fontsize=9,
+        )
+        page.insert_textbox(
+            pymupdf.Rect(120, 520, 400, 545),
+            "Figure 13.2 Three-dimensional view of a complex wavelet.",
+            fontsize=9,
+        )
+        pdf.save(pdf_path)
+    # Docling bboxes are bottom-left based: top = 648 - t.
+    first = pdf_docling._FlatItem(
+        object(), 1, 0, "picture", 1, [119, 577, 358, 357], None, "#/pictures/0"
+    )
+    second = pdf_docling._FlatItem(
+        object(), 1, 1, "picture", 1, [119, 292, 311, 138], None, "#/pictures/1"
+    )
+
+    captions = pdf_docling._pdf_spatial_caption_map(pdf_path, [first, second])
+
+    assert captions[0].startswith("Figure 13.1")
+    assert captions[1].startswith("Figure 13.2")
+
+
+class _CaptionedPicture:
+    def __init__(self, caption: str | None) -> None:
+        self._caption = caption
+
+    def caption_text(self, doc: object) -> str:
+        return self._caption or ""
+
+
+def test_item_caption_prefers_the_spatial_block_over_a_misattached_docling_caption() -> None:
+    caption, status = pdf_docling._item_caption(
+        _CaptionedPicture("Figure 13.1 pairs of those dimensions."),
+        object(),
+        spatial_caption="Figure 13.2 Three-dimensional view of a complex wavelet.",
+    )
+    assert caption == "Figure 13.2 Three-dimensional view of a complex wavelet."
+    assert status == "pdf_text_caption"
+
+    caption, status = pdf_docling._item_caption(
+        _CaptionedPicture("Figure 3. Full caption with considerably more descriptive detail."),
+        object(),
+        spatial_caption="Figure 3. Full caption",
+    )
+    assert status == "docling_caption"
