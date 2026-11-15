@@ -1,6 +1,13 @@
 import type { ProviderModel } from "../shared/settings-types";
 import { modelSupportsVision } from "../shared/vision-models";
 import { providerConfigurationError, providerHttpError, providerNetworkError, providerTimeoutError } from "./provider-error";
+import {
+  CONSERVATIVE_OUTPUT_TOKENS,
+  OutputTokenLimitError,
+  expandedOutputTokens,
+  isOutputBudgetRejection,
+  resolveOutputTokens,
+} from "./output-token-budget";
 
 export type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
 
@@ -141,7 +148,7 @@ export class OpenAICompatibleClient implements AiChatClient {
           model,
           messages,
           temperature: 0.4,
-          max_tokens: 2048,
+          max_tokens: resolveOutputTokens(),
         }),
       });
     } catch (error) {
@@ -173,15 +180,44 @@ export class OpenAICompatibleClient implements AiChatClient {
     this.assertApiKey(model);
     if (!model) throw providerConfigurationError(this.providerName(), model, "Model is not selected");
 
+    // Output token budget. NOTE: this is TOKENS, not characters. Korean is token-dense, structured
+    // turns carry a JSON envelope, and reasoning models spend output tokens on thinking first, so
+    // the budget is floored high (see output-token-budget.ts). If the model still runs out, retry
+    // with a doubled budget instead of surfacing a truncated reply.
+    let maxTokens = resolveOutputTokens(params.maxTokens);
+    let budgetRejected = false;
+    for (;;) {
+      try {
+        return await this.chatOnce(params, model, maxTokens, responseFormat);
+      } catch (error) {
+        if (error instanceof OutputTokenLimitError) {
+          const next = expandedOutputTokens(maxTokens);
+          if (next && !budgetRejected) {
+            maxTokens = next;
+            continue;
+          }
+        } else if (!budgetRejected && maxTokens > CONSERVATIVE_OUTPUT_TOKENS && isOutputBudgetRejection(error)) {
+          // Some hosted models cap max_tokens below our floor and reject the request outright.
+          budgetRejected = true;
+          maxTokens = CONSERVATIVE_OUTPUT_TOKENS;
+          continue;
+        }
+        throw error;
+      }
+    }
+  }
+
+  private async chatOnce(
+    params: ChatParams,
+    model: string,
+    maxTokens: number,
+    responseFormat?: { type: "json_object" }
+  ) {
     const body: Record<string, unknown> = {
       model,
       messages: params.messages,
       temperature: params.temperature ?? 0.7,
-      // Output token budget. NOTE: this is TOKENS, not characters — and Korean is token-dense
-      // (~2-3 tokens per syllable), while the response also carries the full JSON envelope
-      // (blocks, choices, stateUpdate, sourceRefs). So 2048 tokens only buys ~600-900 Korean
-      // characters of actual teaching before the turn truncates mid-sentence. Keep this high.
-      max_tokens: params.maxTokens ?? 8192,
+      max_tokens: maxTokens,
       response_format: responseFormat,
     };
     if (params.thinking && this.supportsThinkingToggle(model)) {
@@ -211,7 +247,7 @@ export class OpenAICompatibleClient implements AiChatClient {
 
     const data = (await response.json()) as { choices?: Array<{ finish_reason?: string | null; message?: { content?: string } }> };
     const choice = data.choices?.[0];
-    assertOpenAIChoiceFinished(this.providerName(), model, choice);
+    assertOpenAIChoiceFinished(this.providerName(), model, choice, maxTokens);
     const content = choice?.message?.content || "";
     if (!content.trim()) throw new Error(`AI provider returned an empty message for model ${model}`);
     return content;
@@ -258,12 +294,14 @@ function isLoopbackHttpUrl(value: string) {
 function assertOpenAIChoiceFinished(
   provider: string,
   model: string,
-  choice: { finish_reason?: string | null } | undefined
+  choice: { finish_reason?: string | null } | undefined,
+  maxTokens?: number
 ) {
   const reason = choice?.finish_reason;
   if (!reason || reason === "stop") return;
   if (reason === "length") {
-    throw new Error(`${provider} ${model} stopped before finishing because it hit the output token limit (finish_reason=length)`);
+    const budget = maxTokens ? `, max_tokens=${maxTokens}` : "";
+    throw new OutputTokenLimitError(`${provider} ${model} stopped before finishing because it hit the output token limit (finish_reason=length${budget})`);
   }
   if (reason === "content_filter") {
     throw new Error(`${provider} ${model} stopped because the provider content filter interrupted the response (finish_reason=content_filter)`);

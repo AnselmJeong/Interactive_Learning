@@ -176,11 +176,15 @@ const MAX_LOOKUP_IMAGE_BYTES = 1_500_000;
 const MAX_LOOKUP_IMAGE_RESULTS = 3;
 const SELECTION_QUESTION_CONTEXT_CHARS = 4000;
 const SELECTION_QUESTION_CHARS = 2000;
-const SELECTION_QUESTION_ANSWER_CHARS = 8000;
-const SELECTION_QUESTION_ANSWER_TOKENS = 3200;
+const SELECTION_QUESTION_ANSWER_CHARS = 20_000;
+// Generous on purpose: Korean is token-dense and reasoning models think before answering. The
+// clients also floor every request (output-token-budget.ts), so this is never the binding limit.
+const SELECTION_QUESTION_ANSWER_TOKENS = 32_768;
+// Long answers take a while to stream from local models; do not time them out mid-answer.
+const SELECTION_QUESTION_ANSWER_TIMEOUT_MS = 300_000;
 const QUESTION_THREAD_MAX_MESSAGES = 120;
-const QUESTION_THREAD_MAX_MESSAGE_CHARS = 12_000;
-const QUESTION_THREAD_MAX_TOTAL_CHARS = 120_000;
+const QUESTION_THREAD_MAX_MESSAGE_CHARS = 32_000;
+const QUESTION_THREAD_MAX_TOTAL_CHARS = 320_000;
 const QUESTION_THREAD_MAX_VISUAL_CHARS = 32_000;
 const QUESTION_THREAD_CONTEXT_MESSAGES = 16;
 const QUESTION_THREAD_SUMMARY_CHARS = 4_000;
@@ -1503,7 +1507,7 @@ export class AnnotationService {
       model,
       temperature: 0.35,
       maxTokens: SELECTION_QUESTION_ANSWER_TOKENS,
-      timeoutMs: 90000,
+      timeoutMs: SELECTION_QUESTION_ANSWER_TIMEOUT_MS,
       messages: [
         { role: "system", content: tutorInstructions },
         { role: "user", content: prompt },
@@ -1597,7 +1601,7 @@ export class AnnotationService {
             model,
             temperature: attempt === 0 ? 0.25 : 0.1,
             maxTokens: SELECTION_QUESTION_ANSWER_TOKENS,
-            timeoutMs: 90000,
+            timeoutMs: SELECTION_QUESTION_ANSWER_TIMEOUT_MS,
             messages: attempt === 0
               ? messages
               : [
@@ -1618,7 +1622,7 @@ export class AnnotationService {
         model,
         temperature: 0.35,
         maxTokens: SELECTION_QUESTION_ANSWER_TOKENS,
-        timeoutMs: 90000,
+        timeoutMs: SELECTION_QUESTION_ANSWER_TIMEOUT_MS,
         messages,
       });
     }
@@ -1793,7 +1797,7 @@ export class AnnotationService {
       model,
       temperature: 0.15,
       maxTokens: SELECTION_QUESTION_ANSWER_TOKENS,
-      timeoutMs: 90000,
+      timeoutMs: SELECTION_QUESTION_ANSWER_TIMEOUT_MS,
       thinking: "disabled",
       messages: [
         {
