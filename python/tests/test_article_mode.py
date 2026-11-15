@@ -67,7 +67,7 @@ class _FakeDocument:
         self.tables = [self.items[8]]
         self.pages: dict[int, object] = {}
 
-    def iterate_items(self, *, with_groups: bool = False):
+    def iterate_items(self, *, with_groups: bool = False, **kwargs):
         return iter((item, item.level) for item in self.items)
 
     def num_pages(self) -> int:

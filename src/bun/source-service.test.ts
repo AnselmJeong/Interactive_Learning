@@ -100,6 +100,51 @@ describe("source figure reading order", () => {
   });
 });
 
+describe("source figure placement in HTML chunks", () => {
+  test("places each figure at the HTML chunk that inlines its asset instead of the first chunk", async () => {
+    const { normalizeHtmlChunks } = await import("./source-html");
+    const root = await mkdtemp(join(tmpdir(), "learnie-figure-html-"));
+    try {
+      const assets = [Buffer.alloc(300, 1), Buffer.alloc(300, 2)];
+      const paths = await Promise.all(assets.map(async (bytes, index) => {
+        const path = join(root, `fig-000${index + 1}.png`);
+        await writeFile(path, bytes);
+        return path;
+      }));
+      const img = (bytes: Buffer) => `<figure><img src="data:image/png;base64,${bytes.toString("base64")}"></figure>`;
+      const chunks = normalizeHtmlChunks("source", [
+        "<h1>Chapter</h1><p>Opening text mentions nothing.</p>",
+        "<h2>First</h2><p>First section text.</p>", img(assets[0]!),
+        "<h2>Second</h2><p>Second section text.</p>", img(assets[1]!),
+      ].join(""));
+      const figures = paths.map((assetPath, index) => ({
+        id: `figure-${index + 1}`,
+        sourceId: "source",
+        title: `Figure 13.${index + 6}`,
+        assetPath,
+        assetUrl: `file://${assetPath}`,
+        mimeType: "image/png",
+        caption: null,
+        captionStatus: "missing",
+        width: 10,
+        height: 10,
+        locator: "page 9",
+        pageRange: [9, 9] as [number, number],
+        sourceChunkIds: [],
+      } satisfies SourceFigure));
+
+      const normalized = normalizeSourceFigureChunkIds(figures, chunks);
+      const first = chunks.find((chunk) => chunk.headingPath.at(-1) === "First");
+      const second = chunks.find((chunk) => chunk.headingPath.at(-1) === "Second");
+      expect(normalized[0]?.sourceChunkIds[0]).toBe(first!.id);
+      expect(normalized[1]?.sourceChunkIds[0]).toBe(second!.id);
+      expect(normalized.flatMap((figure) => figure.sourceChunkIds)).not.toContain(chunks[0]!.id);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+});
+
 describe("source title rename", () => {
   let tempRoot = "";
 
