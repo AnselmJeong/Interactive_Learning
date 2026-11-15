@@ -42,3 +42,13 @@ test("restores paragraph fragments and repeated sentences monotonically", () => 
   expect(restored[2]?.html).toBe('<p>The <strong>first</strong> original sentence.</p>');
   expect(restored.map(({ html, ...chunk }) => chunk)).toEqual(chunks);
 });
+
+test("flags an HTML sidecar that stops long before its Markdown", async () => {
+  const { htmlChunksCoverMarkdown } = await import("./source-html");
+  const sections = Array.from({ length: 10 }, (_, index) => `## Section ${index + 1}\n\n${"Body sentence about wavelets. ".repeat(20)}`);
+  const markdown = `# Chapter\n\n${sections.join("\n\n")}`;
+  const fullHtml = sections.map((section) => `<h2>${section.split("\n\n")[0]!.slice(3)}</h2><p>${section.split("\n\n")[1]}</p>`).join("");
+  const truncatedHtml = sections.slice(0, 3).map((section) => `<h2>${section.split("\n\n")[0]!.slice(3)}</h2><p>${section.split("\n\n")[1]}</p>`).join("");
+  expect(htmlChunksCoverMarkdown(normalizeHtmlChunks("s", fullHtml), markdown)).toBe(true);
+  expect(htmlChunksCoverMarkdown(normalizeHtmlChunks("s", truncatedHtml), markdown)).toBe(false);
+});

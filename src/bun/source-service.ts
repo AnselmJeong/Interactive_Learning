@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { createReadStream } from "node:fs";
+import { createReadStream, readFileSync } from "node:fs";
 import { copyFile, cp, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -7,7 +7,7 @@ import { getDb } from "./project-db";
 import { dataPath, sourceDirAt } from "./paths";
 import { buildPreppySourcePack } from "./preppy-service";
 import { SettingsService } from "./settings-service";
-import { attachHtmlToExistingChunks, normalizeHtmlChunks, readSourceHtml } from "./source-html";
+import { attachHtmlToExistingChunks, htmlChunksCoverMarkdown, normalizeHtmlChunks, readSourceHtml } from "./source-html";
 import { writeProjectDocumentIndex } from "./project-bundle-sync";
 import type { DocumentType, SourceChunk, SourceFigure, SourceManifest, SourceType } from "../shared/artifact-types";
 import type { DocumentRemovalImpact, PreparedSourceImport, PreparedSourceImportItem, SourceImportSelection, SourceRemovalImpact, SourceSummary } from "../shared/rpc-types";
@@ -504,7 +504,32 @@ function figureLabel(caption: string | null | undefined) {
   return /figure\s+\d+(?:\.\d+)*/i.exec(caption || "")?.[0] || null;
 }
 
+const figureAssetBase64Cache = new Map<string, string | null>();
+
+function figureAssetBase64(assetPath: string) {
+  if (!figureAssetBase64Cache.has(assetPath)) {
+    let encoded: string | null = null;
+    try {
+      encoded = readFileSync(assetPath).toString("base64");
+    } catch {
+      encoded = null;
+    }
+    figureAssetBase64Cache.set(assetPath, encoded);
+    if (figureAssetBase64Cache.size > 64) figureAssetBase64Cache.delete(figureAssetBase64Cache.keys().next().value!);
+  }
+  return figureAssetBase64Cache.get(assetPath) ?? null;
+}
+
+// HTML chunks carry figures as inlined data URIs (readSourceHtml), so their
+// text has no asset path; match the inlined bytes instead.
+function chunkHtmlContainsFigureAsset(chunk: SourceChunk, figure: Pick<SourceFigure, "assetPath">) {
+  if (!chunk.html || !/<img\b/.test(chunk.html) || !figure.assetPath) return false;
+  const encoded = figureAssetBase64(figure.assetPath);
+  return Boolean(encoded && encoded.length >= 64 && chunk.html.includes(encoded));
+}
+
 function chunkContainsFigureAsset(chunk: SourceChunk, figure: Pick<SourceFigure, "assetPath" | "assetUrl">) {
+  if (chunkHtmlContainsFigureAsset(chunk, figure)) return true;
   const rawText = chunk.text.replaceAll("\\", "/");
   const decodedText = decodePathPart(rawText);
   const references = [figure.assetUrl, pathToFileURL(figure.assetPath).href, figure.assetPath]
@@ -1066,7 +1091,7 @@ export class SourceService {
     await writeFile(importedPath, `${mergedText.trim()}\n`, "utf8");
     const htmlParts = await Promise.all(input.textFiles.map(readSourceHtml));
     const htmlChunks = htmlParts.every(Boolean) ? normalizeHtmlChunks(id, htmlParts.join("\n")) : [];
-    const chunks = htmlChunks.length ? htmlChunks : normalizeMarkdownChunks(id, mergedText);
+    const chunks = htmlChunks.length && htmlChunksCoverMarkdown(htmlChunks, mergedText) ? htmlChunks : normalizeMarkdownChunks(id, mergedText);
     const figures = input.textFiles.flatMap((file) => {
       const manifestPath = relativePortable(input.importedRoot, file);
       return toSourceFigures({
@@ -1144,8 +1169,11 @@ export class SourceService {
     const id = original?.id ?? crypto.randomUUID();
     const type = sourceTypeForPath(importedPath);
     const html = await readSourceHtml(importedPath);
+    const markdownText = bytes.toString("utf8");
     const htmlChunks = html ? normalizeHtmlChunks(id, html) : [];
-    const chunks = htmlChunks.length ? htmlChunks : normalizeMarkdownChunks(id, rewriteLocalMarkdownImageLinks(importedPath, bytes.toString("utf8")));
+    const chunks = htmlChunks.length && htmlChunksCoverMarkdown(htmlChunks, markdownText)
+      ? htmlChunks
+      : normalizeMarkdownChunks(id, rewriteLocalMarkdownImageLinks(importedPath, markdownText));
     const figures = preppy
       ? toSourceFigures({
           sourceId: id,

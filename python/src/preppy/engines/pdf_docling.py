@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import re
+import sys
 import time
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
@@ -22,8 +23,15 @@ from docling.datamodel.document import ConversionResult
 from docling.datamodel.pipeline_options import HeadingHierarchyOptions, PdfPipelineOptions
 from docling.document_converter import DocumentConverter, PdfFormatOption
 from docling.pipeline.standard_pdf_pipeline import StandardPdfPipeline
-from docling_core.types.doc.document import DoclingDocument, PictureItem, TableItem
-from docling_core.types.doc import ImageRefMode
+from docling_core.types.doc.document import (
+    DEFAULT_CONTENT_LAYERS,
+    DoclingDocument,
+    GroupItem,
+    PictureItem,
+    TableItem,
+)
+from docling_core.types.doc import ImageRefMode, Size
+from docling_core.types.doc.document import ImageRef
 from bs4 import BeautifulSoup
 
 from preppy.figures.captions import clean_caption_text
@@ -105,6 +113,7 @@ class _PictureOutcome:
     figure_id: str | None = None
     asset: FigureAsset | None = None
     markdown: str | None = None
+    asset_link: str | None = None
 
 
 @dataclass(slots=True)
@@ -350,6 +359,7 @@ def convert(
         key=lambda c: c.pdf_item_index or 0,
     )
 
+    html_bounds = _html_element_bounds(doc, flat_items)
     exporter = FigureExporter()
     figures: list[FigureAsset] = []
     tables: list[Table] = []
@@ -422,6 +432,7 @@ def convert(
         chapter_table_ids: list[str] = []
         lines: list[str] = []
         text_parts: list[str] = []
+        html_picture_links: dict[str, str] = {}
 
         if candidate.parent_title and start_idx < boundary_idx:
             lines.append(f"## {candidate.parent_title}")
@@ -475,6 +486,8 @@ def convert(
                     figures_duplicate += 1
                 if outcome.figure_id:
                     chapter_figure_ids.append(outcome.figure_id)
+                if outcome.asset_link and fi.self_ref:
+                    html_picture_links[fi.self_ref] = outcome.asset_link
                 if outcome.markdown:
                     lines.append(outcome.markdown)
                 continue
@@ -575,7 +588,20 @@ def convert(
         # Serialize the structured document before Markdown flattens tables,
         # inline formatting and formula markup. The same item interval defines
         # both representations, preserving chapter/matter boundaries.
-        html = doc.export_to_html(from_element=start_idx, to_element=end_idx, image_mode=ImageRefMode.EMBEDDED)
+        # Docling's HTML serializer slices on its own item index space, which
+        # also counts groups and the text items nested inside pictures (axis
+        # labels, legends). Translate the flat-item interval into that space;
+        # passing flat indexes directly truncates figure-heavy chapters.
+        # Pictures point at the same exported assets as the Markdown, so the
+        # HTML reader shows the filtered/merged figures and Learnie can match
+        # each figure to the chunk that actually contains it.
+        html = _export_chapter_html(
+            doc,
+            from_element=html_bounds[start_idx],
+            to_element=html_bounds[end_idx],
+            picture_links=html_picture_links,
+            slice_items=slice_items,
+        )
         soup = BeautifulSoup(html, "html.parser")
         body = soup.body or soup
         for node in body.select("script, style"):
@@ -775,6 +801,85 @@ def _flatten(doc: DoclingDocument) -> list[_FlatItem]:
             )
         )
     return flat
+
+
+def _export_chapter_html(
+    doc: DoclingDocument,
+    *,
+    from_element: int,
+    to_element: int,
+    picture_links: dict[str, str],
+    slice_items: list[_FlatItem],
+) -> str:
+    """Serialize a chapter to HTML with pictures referencing exported assets.
+
+    Pictures that preppy filtered out (tiny/decorative, or non-leader panels of
+    a merged compound figure) get no ``<img>``; every other picture links to
+    the asset file the Markdown also uses. Image refs are restored afterwards
+    because the document is exported to JSON later.
+    """
+    originals: list[tuple[PictureItem, object]] = []
+    try:
+        for flat_item in slice_items:
+            picture = flat_item.item
+            if flat_item.label != "picture" or not isinstance(picture, PictureItem):
+                continue
+            originals.append((picture, picture.image))
+            link = picture_links.get(flat_item.self_ref or "")
+            if link is None:
+                picture.image = None
+                continue
+            size = picture.image.size if picture.image is not None else Size(width=1, height=1)
+            picture.image = ImageRef(mimetype="image/png", dpi=72, size=size, uri=Path(link))
+        return doc.export_to_html(
+            from_element=from_element,
+            to_element=to_element,
+            image_mode=ImageRefMode.REFERENCED,
+        )
+    finally:
+        for picture, image in originals:
+            picture.image = image
+
+
+def _html_element_bounds(doc: DoclingDocument, flat_items: list[_FlatItem]) -> list[int]:
+    """Map flat-item slice boundaries onto ``export_to_html`` element indexes.
+
+    ``_flatten`` enumerates body items without groups or picture children,
+    while Docling's serializers decide inclusion by enumerating
+    ``iterate_items(with_groups=True, traverse_pictures=True)``. A chapter
+    interval ``flat_items[a:b]`` therefore has to be translated before it is
+    handed to ``export_to_html``: ``bounds[a]`` and ``bounds[b]`` give the
+    matching serializer interval. Each boundary is moved back over group nodes
+    that open immediately before the boundary item, so a list or section group
+    starting a chapter belongs to that chapter, while picture children (which
+    follow their picture) stay with the preceding chapter.
+    """
+    serial_nodes = [
+        node
+        for node, _level in doc.iterate_items(
+            with_groups=True,
+            traverse_pictures=True,
+            included_content_layers=DEFAULT_CONTENT_LAYERS,
+        )
+    ]
+    serial_index_by_ref = {
+        getattr(node, "self_ref", None): index for index, node in enumerate(serial_nodes)
+    }
+    bounds: list[int] = []
+    previous = 0
+    for flat_item in flat_items:
+        serial_index = serial_index_by_ref.get(flat_item.self_ref)
+        if serial_index is None:
+            bounds.append(previous)
+            continue
+        while serial_index > previous and isinstance(serial_nodes[serial_index - 1], GroupItem):
+            serial_index -= 1
+        previous = max(previous, serial_index)
+        bounds.append(previous)
+    bounds.append(sys.maxsize)
+    if bounds:
+        bounds[0] = 0
+    return bounds
 
 
 def _detect_candidates(
@@ -1463,7 +1568,10 @@ def _handle_compound_picture(
     markdown_line = f"![{group.caption}]({markdown_asset_link(exported.filename)})\n\n{group.caption}"
     if not exported.is_new:
         return _PictureOutcome(
-            kind="duplicate", figure_id=exported.figure_id, markdown=markdown_line
+            kind="duplicate",
+            figure_id=exported.figure_id,
+            markdown=markdown_line,
+            asset_link=markdown_asset_link(exported.filename),
         )
     figure_meta = Figure(
         id=exported.figure_id,
@@ -1487,6 +1595,7 @@ def _handle_compound_picture(
         figure_id=exported.figure_id,
         asset=FigureAsset(meta=figure_meta, image_bytes=image_bytes),
         markdown=markdown_line,
+        asset_link=markdown_asset_link(exported.filename),
     )
 
 
@@ -1553,7 +1662,10 @@ def _handle_picture(
 
     if not exported.is_new:
         return _PictureOutcome(
-            kind="duplicate", figure_id=exported.figure_id, markdown=markdown_line
+            kind="duplicate",
+            figure_id=exported.figure_id,
+            markdown=markdown_line,
+            asset_link=markdown_asset_link(exported.filename),
         )
 
     figure_meta = Figure(
@@ -1581,6 +1693,7 @@ def _handle_picture(
         figure_id=exported.figure_id,
         asset=asset,
         markdown=markdown_line,
+        asset_link=markdown_asset_link(exported.filename),
     )
 
 
@@ -1592,6 +1705,9 @@ def _render_table(table_item: TableItem, doc: DoclingDocument) -> tuple[str, boo
     except Exception:  # noqa: BLE001
         pass
     return "*[table omitted: rendering failed]*", False
+
+
+SPATIAL_CAPTION_MAX_CHARS = 1200
 
 
 def _item_caption(
@@ -1608,12 +1724,25 @@ def _item_caption(
         caption = clean_caption_text(item.caption_text(doc))
     except Exception:  # noqa: BLE001
         caption = None
+    spatial = clean_caption_text(spatial_caption)
+    # The PDF text layer keeps a caption as one block right next to its
+    # figure. Docling sometimes links the caption *above* a figure (the
+    # previous figure's) and splits caption bodies into neighbouring
+    # paragraphs, leaving fragments such as "Figure 13.1 pairs of those
+    # dimensions.". Prefer the spatial block unless Docling's caption is a
+    # longer version of the same figure's caption.
+    if spatial and len(spatial) <= SPATIAL_CAPTION_MAX_CHARS:
+        if not (
+            caption
+            and _figure_caption_key(caption) == _figure_caption_key(spatial)
+            and len(caption) > len(spatial)
+        ):
+            return spatial, "pdf_text_caption"
     if caption:
         return caption, "docling_caption"
     nearby = clean_caption_text(nearby_caption)
     if nearby:
         return nearby, "nearby_text"
-    spatial = clean_caption_text(spatial_caption)
     if spatial:
         return spatial, "pdf_text_caption"
     return None, "missing"
@@ -1690,7 +1819,7 @@ def _pdf_spatial_caption_map(
                     tuple[str, tuple[float, float, float, float], str]
                 ] = []
                 for block in page.get_text("blocks"):
-                    text = clean_caption_text(block[4])
+                    text = clean_caption_text(_join_hyphenated_lines(block[4]))
                     kind = _caption_marker_kind(text)
                     if not text or not kind or len(text) > 5000:
                         continue
@@ -1707,7 +1836,11 @@ def _pdf_spatial_caption_map(
                         )
                     )
 
-                used: set[int] = set()
+                # Score every (target, caption block) pair and assign the
+                # closest pairs first. Assigning target by target let an
+                # earlier picture take the caption block that sits right
+                # under the next picture (Figure 13.1/13.2 swap).
+                ranked: list[tuple[float, int, int, str]] = []
                 for target in targets:
                     target_rect = _docling_bbox_to_pdf_rect(
                         target.bbox, page.rect.height
@@ -1715,9 +1848,8 @@ def _pdf_spatial_caption_map(
                     if target_rect is None:
                         continue
                     target_kind = "figure" if target.label == "picture" else "table"
-                    ranked: list[tuple[float, int, str]] = []
                     for index, (kind, caption_rect, text) in enumerate(candidates):
-                        if index in used or kind != target_kind:
+                        if kind != target_kind:
                             continue
                         overlap = max(
                             0.0,
@@ -1737,14 +1869,31 @@ def _pdf_spatial_caption_map(
                             ((target_rect[0] + target_rect[2]) / 2)
                             - ((caption_rect[0] + caption_rect[2]) / 2)
                         )
-                        ranked.append((gap + center_delta * 0.02, index, text))
-                    if ranked:
-                        _score, index, text = min(ranked)
-                        used.add(index)
-                        resolved[target.index] = text
+                        ranked.append(
+                            (gap + center_delta * 0.02, target.index, index, text)
+                        )
+                used: set[int] = set()
+                for _score, target_index, index, text in sorted(ranked):
+                    if index in used or target_index in resolved:
+                        continue
+                    used.add(index)
+                    resolved[target_index] = text
     except Exception:  # noqa: BLE001 - this is a best-effort caption fallback
         return {}
     return resolved
+
+
+_LINE_BREAK_HYPHEN_RE = re.compile(
+    r"(?<=[a-z])-[ \t]*\n[ \t]*(?!(?:and|or|to|nor)\b)(?=[a-z])"
+)
+
+
+def _join_hyphenated_lines(text: str) -> str:
+    """Rejoin words the typesetter hyphenated across a line break.
+
+    Suspended hyphens ("high- and low-frequency") are kept.
+    """
+    return _LINE_BREAK_HYPHEN_RE.sub("", text)
 
 
 def _caption_marker_kind(text: str | None) -> Literal["figure", "table"] | None:

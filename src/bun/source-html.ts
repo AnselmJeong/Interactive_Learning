@@ -31,6 +31,22 @@ export async function readSourceHtml(markdownPath: string): Promise<string | nul
   return serialize(root);
 }
 
+function coverageKey(text: string) {
+  return text.replace(/!\[[^\]]*\]\([^)]*\)/g, "").toLowerCase().replace(/[^\p{L}\p{N}]/gu, "");
+}
+
+/**
+ * Safety net for HTML sidecars that end early (e.g. a mis-sliced serializer
+ * export). Math and markup make HTML and Markdown text differ somewhat, so only
+ * a sidecar carrying well under the Markdown's text is treated as truncated.
+ */
+export function htmlChunksCoverMarkdown(chunks: SourceChunk[], markdown: string, minRatio = 0.6) {
+  const markdownLength = coverageKey(markdown).length;
+  if (markdownLength < 200) return true;
+  const htmlLength = coverageKey(chunks.map((chunk) => chunk.text).join(" ")).length;
+  return htmlLength >= markdownLength * minRatio;
+}
+
 /** HTML is authoritative for new imports. Never reassign existing chunk IDs. */
 export function normalizeHtmlChunks(sourceId: string, html: string): SourceChunk[] {
   const chunks: SourceChunk[] = [];
