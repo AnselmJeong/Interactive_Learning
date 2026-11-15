@@ -4,6 +4,7 @@ import { copyFile, cp, mkdir, readFile, readdir, rename, rm, stat, writeFile } f
 import { basename, dirname, extname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { getDb } from "./project-db";
+import { orderNumberedSeries } from "./source-order";
 import { dataPath, sourceDirAt } from "./paths";
 import { buildPreppySourcePack } from "./preppy-service";
 import { SettingsService } from "./settings-service";
@@ -780,7 +781,7 @@ export class SourceService {
       })).filter((folder) => folder.files.length);
       imported.push(...await this.importPdfFolders(projectId, folders, entry.documentType, onPdfProgress, entry.targetDocumentId));
       if (entry.targetDocumentId && imported.length) {
-        this.placeAddedSources(entry.targetDocumentId, imported.map((source) => source.id));
+        this.placeAddedSources(entry.targetDocumentId);
         await writeProjectDocumentIndex(projectId, this.projectRoot(projectId));
       }
       await this.cleanupPrepared(entry);
@@ -895,24 +896,11 @@ export class SourceService {
     return row?.next ?? 0;
   }
 
-  // Sources added to an existing book are first appended. When the book's own sources are already in
-  // natural title order (Chapter 02 < ... < Chapter 12 < Chapter 14), the added ones are moved to their
-  // place in that order, so a re-imported "Chapter 13" lands between 12 and 14. Otherwise the book has
-  // a deliberate custom order and the added sources stay at the end.
-  private placeAddedSources(documentId: string, addedIds: string[]) {
-    const db = getDb();
-    const rows = db.query<{ id: string; title: string; original_file_name: string | null }, [string]>(`
-      SELECT id, title, original_file_name FROM project_sources WHERE document_id = ?
-      ORDER BY COALESCE(source_ordinal, 2147483647), created_at ASC, id ASC
-    `).all(documentId);
-    const added = new Set(addedIds);
-    const compare = (a: { title: string }, b: { title: string }) => naturalPathSorter.compare(a.title, b.title);
-    const existing = rows.filter((row) => !added.has(row.id));
-    const existingSorted = existing.every((row, index) => index === 0 || compare(existing[index - 1]!, row) <= 0);
-    const ordered = existingSorted ? [...rows].sort(compare) : rows;
-    db.transaction(() => {
-      ordered.forEach((row, ordinal) => db.query("UPDATE project_sources SET source_ordinal = ? WHERE id = ?").run(ordinal, row.id));
-    })();
+  // Sources added to an existing book are first appended. When the whole book is one numbered
+  // series ("Chapter 02" … "Chapter 35"), they move to their place by number, so a re-imported
+  // "Chapter 13" lands between 12 and 14. Any other book keeps its order and gets them at the end.
+  private placeAddedSources(documentId: string) {
+    orderNumberedSeries(getDb(), documentId);
   }
 
   private touchDocument(documentId: string) {
