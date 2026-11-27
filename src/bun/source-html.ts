@@ -47,6 +47,28 @@ export function htmlChunksCoverMarkdown(chunks: SourceChunk[], markdown: string,
   return htmlLength >= markdownLength * minRatio;
 }
 
+/**
+ * Stricter check for stored imports: besides the overall ratio, the chunks must
+ * contain one of the Markdown's closing paragraphs. A sidecar that stops at a
+ * figure two thirds of the way in can still pass the ratio check alone.
+ */
+export function chunksReachMarkdownEnd(chunks: SourceChunk[], markdown: string) {
+  if (!htmlChunksCoverMarkdown(chunks, markdown)) return false;
+  const chunkKey = coverageKey(chunks.map((chunk) => chunk.text).join(" "));
+  const paragraphs = markdown
+    .split(/\n\s*\n/)
+    .map((paragraph) => coverageKey(paragraph.replace(/^#+\s.*$/gm, "")))
+    .filter((key) => key.length >= 40);
+  const closing = paragraphs.slice(-3);
+  if (!closing.length) return true;
+  // Math and inline markup differ between the two renderings, so compare short
+  // probes from each closing paragraph instead of whole paragraphs.
+  return closing.some((key) => {
+    const probes = [key.slice(0, 24), key.slice(Math.floor(key.length / 2) - 12, Math.floor(key.length / 2) + 12), key.slice(-24)];
+    return probes.some((probe) => chunkKey.includes(probe));
+  });
+}
+
 /** HTML is authoritative for new imports. Never reassign existing chunk IDs. */
 export function normalizeHtmlChunks(sourceId: string, html: string): SourceChunk[] {
   const chunks: SourceChunk[] = [];

@@ -92,6 +92,32 @@ void tutor.recoverInterruptedMessageSets().then((count) => {
   console.warn("Failed to recover interrupted prepared message sets", error);
 });
 
+// Imports made before the chapter-HTML fix stored only the first part of
+// many PDF chapters. Rebuild them from the original files in the background.
+setTimeout(() => {
+  let done = 0;
+  void sources.repairTruncatedSources(async (row) => {
+    done += 1;
+    await materials.refreshSourceSnapshots(row.id).catch((error) => {
+      console.warn("Failed to refresh material copies of a repaired source", { sourceId: row.id, error: (error as Error).message });
+    });
+    sendToView("sources.ingestionProgress", {
+      projectId: row.project_id, sourceId: row.id, stage: "indexing",
+      message: `잘린 원문 복구 중 · ${row.title} (${done})`, progress: 50,
+    });
+  }).then((result) => {
+    if (!result.found) return;
+    console.warn(`Truncated sources: ${result.found} found, ${result.repaired.length} repaired, ${result.failed.length} failed.`);
+    if (result.repaired.length) {
+      sendToView("sources.ingestionProgress", {
+        projectId: "", stage: "complete", message: `잘린 원문 ${result.repaired.length}개를 원본에서 다시 가져왔습니다`, progress: 100,
+      });
+    }
+  }).catch((error) => {
+    console.warn("Failed to repair truncated sources", error);
+  });
+}, 5_000);
+
 function sendToView(message: string, payload: unknown) {
   const viewRpc = mainWindow?.webview.rpc as { proxy?: { send?: (message: string, payload: unknown) => void } } | undefined;
   viewRpc?.proxy?.send?.(message, payload);

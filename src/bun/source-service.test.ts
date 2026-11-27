@@ -278,6 +278,80 @@ describe("article source packs", () => {
     expect(calls.every((call) => call.endsWith("|article|false"))).toBe(true);
   });
 
+  test("repairs a chapter stored from a truncated HTML sidecar by re-converting its original PDF", async () => {
+    const folder = join(tempRoot, "Neural Time Series");
+    await mkdir(folder, { recursive: true });
+    const pdf = join(folder, "Chapter 12.pdf");
+    await writeFile(pdf, "pdf bytes");
+    const paragraphs = Array.from({ length: 12 }, (_, index) =>
+      `Paragraph ${index + 1} explains wavelet convolution step number ${index + 1} in careful and complete detail for the reader.`);
+    const markdown = `# 12 Morlet Wavelets\n\n${paragraphs.join("\n\n")}\n`;
+    const htmlFor = (count: number) => `<h1>12 Morlet Wavelets</h1>${paragraphs.slice(0, count).map((text) => `<p>${text}</p>`).join("")}`;
+    let conversions = 0;
+    const service = new SourceService(async (_file, type) => {
+      conversions += 1;
+      const outputPath = await mkdtemp(join(tempRoot, "pack-"));
+      await mkdir(join(outputPath, "chapters"));
+      const path = "chapters/001-chapter-12.md";
+      await writeFile(join(outputPath, path), markdown);
+      await writeFile(join(outputPath, "chapters/001-chapter-12.html"), htmlFor(paragraphs.length));
+      await writeFile(join(outputPath, "manifest.json"), JSON.stringify({ source: { document_type: type }, chapters: [{ index: 1, title: "Chapter 12", path }] }));
+      return { outputPath, cleanup: () => rm(outputPath, { recursive: true, force: true }) };
+    });
+    const project = await new ProjectService().create({ title: "Repair" });
+    const prepared = await service.prepareImport(project.id, [folder], "book");
+    const [source] = await service.commitPreparedImport(project.id, prepared.id, prepared.items.map((item) => item.id));
+    const complete = await service.loadChunks(source!.id);
+    expect(complete.at(-1)?.text).toContain("Paragraph 12");
+
+    // Simulate an import made before the sidecar fix: the pack HTML and the stored chunks stop early.
+    const row = service.getRow(source!.id);
+    await writeFile(row.imported_file_path.replace(/\.md$/, ".html"), htmlFor(4));
+    const { normalizeHtmlChunks } = await import("./source-html");
+    const truncated = normalizeHtmlChunks(source!.id, htmlFor(4));
+    await writeFile(row.chunks_path!, JSON.stringify(truncated));
+    expect((await service.findTruncatedSources()).map((item) => item.id)).toEqual([source!.id]);
+
+    // A learning material made from the truncated source keeps its own copy of the chunks.
+    const materialDir = join(tempRoot, "material");
+    await mkdir(materialDir, { recursive: true });
+    await writeFile(join(materialDir, "source_chunks.json"), JSON.stringify(truncated));
+    const staleSha = "stale";
+    await writeFile(join(materialDir, "material_manifest.json"), JSON.stringify({ files: { "source_chunks.json": { path: "source_chunks.json", sha256: staleSha, required: true } } }));
+    getDb().query("INSERT INTO learning_materials (id, project_id, title, status, manifest_path, created_at, updated_at) VALUES ('m1', ?, 'Chapter 12', 'ready', ?, 1, 1)")
+      .run(project.id, join(materialDir, "material_manifest.json"));
+    getDb().query("INSERT INTO material_sources (material_id, source_id, ordinal) VALUES ('m1', ?, 0)").run(source!.id);
+
+    conversions = 0;
+    const repairedRows: string[] = [];
+    const result = await service.repairTruncatedSources((repairedRow) => { repairedRows.push(repairedRow.id); });
+    expect(result).toMatchObject({ found: 1, repaired: [source!.id], failed: [] });
+    expect(repairedRows).toEqual([source!.id]);
+    expect(conversions).toBe(1);
+    const repaired = await service.loadChunks(source!.id);
+    expect(repaired.at(-1)?.text).toContain("Paragraph 12");
+    // The intact part keeps its chunk IDs, so notes and progress stay attached.
+    expect(repaired.slice(0, truncated.length - 1).map((chunk) => chunk.id)).toEqual(truncated.slice(0, -1).map((chunk) => chunk.id));
+    expect(service.getRow(source!.id).imported_file_path).not.toBe(row.imported_file_path);
+    expect(await service.findTruncatedSources()).toEqual([]);
+    const { CourseArtifactService } = await import("./course-artifact-service");
+    expect(await new CourseArtifactService().refreshSourceSnapshots(source!.id)).toBe(1);
+    const materialChunks = JSON.parse(await readFile(join(materialDir, "source_chunks.json"), "utf8")) as Array<{ text: string }>;
+    expect(materialChunks.at(-1)?.text).toContain("Paragraph 12");
+    const materialManifest = JSON.parse(await readFile(join(materialDir, "material_manifest.json"), "utf8"));
+    expect(materialManifest.files["source_chunks.json"].sha256).not.toBe(staleSha);
+    expect(getDb().query<{ updated_at: number }, []>("SELECT updated_at FROM learning_materials WHERE id = 'm1'").get()!.updated_at).toBeGreaterThan(1);
+
+    // When the original is gone the failure is recorded once instead of retried on every launch.
+    const nextRow = service.getRow(source!.id);
+    await writeFile(nextRow.chunks_path!, JSON.stringify(truncated));
+    await rm(pdf);
+    const missing = await service.repairTruncatedSources();
+    expect(missing.failed.map((item) => item.sourceId)).toEqual([source!.id]);
+    const again = await service.repairTruncatedSources();
+    expect(again).toMatchObject({ found: 1, repaired: [], failed: [] });
+  });
+
   test("imports native HTML and restores legacy formatting without changing stored source chunks", async () => {
     const project = await new ProjectService().create({ title: "HTML reader" });
     const pack = join(tempRoot, "book.preppy");

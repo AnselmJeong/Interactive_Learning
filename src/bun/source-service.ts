@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { createReadStream, readFileSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync } from "node:fs";
 import { copyFile, cp, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -8,7 +8,7 @@ import { orderNumberedSeries } from "./source-order";
 import { dataPath, sourceDirAt } from "./paths";
 import { buildPreppySourcePack } from "./preppy-service";
 import { SettingsService } from "./settings-service";
-import { attachHtmlToExistingChunks, htmlChunksCoverMarkdown, normalizeHtmlChunks, readSourceHtml } from "./source-html";
+import { attachHtmlToExistingChunks, chunksReachMarkdownEnd, htmlChunksCoverMarkdown, normalizeHtmlChunks, readSourceHtml } from "./source-html";
 import { writeProjectDocumentIndex } from "./project-bundle-sync";
 import type { DocumentType, SourceChunk, SourceFigure, SourceManifest, SourceType } from "../shared/artifact-types";
 import type { DocumentRemovalImpact, PreparedSourceImport, PreparedSourceImportItem, SourceImportSelection, SourceRemovalImpact, SourceSummary } from "../shared/rpc-types";
@@ -1723,6 +1723,155 @@ export class SourceService {
     const impact = this.previewRemoval(projectId, row.document_id, sourceId);
     await this.removeSource(projectId, row.document_id, sourceId, impact.impactToken);
     return true;
+  }
+
+  /**
+   * Finds sources whose stored chunks stop well short of their own Markdown.
+   * Imports made before the HTML-sidecar fix trusted a sidecar that ended
+   * partway through the chapter, so the reader lost the rest of the text and
+   * every figure past the cut fell back to the first chunk.
+   */
+  async findTruncatedSources() {
+    const rows = getDb()
+      .query<SourceRow, []>("SELECT * FROM project_sources WHERE chunks_path IS NOT NULL ORDER BY project_id, document_id, source_ordinal")
+      .all();
+    const truncated: SourceRow[] = [];
+    for (const row of rows) {
+      const chunks = await readFile(row.chunks_path!, "utf8").then((raw) => JSON.parse(raw) as SourceChunk[]).catch(() => null);
+      if (!Array.isArray(chunks) || !chunks.length || !chunks.some((chunk) => chunk.html)) continue;
+      const markdown = await readFile(row.imported_file_path, "utf8").catch(() => null);
+      if (!markdown) continue;
+      if (!chunksReachMarkdownEnd(chunks, markdown)) truncated.push(row);
+    }
+    return truncated;
+  }
+
+  /**
+   * Re-converts the original PDF/EPUB of every truncated source and rebuilds
+   * its chunks and figures in place. Chunk IDs are positional, so the intact
+   * part keeps its IDs (and the notes, highlights and progress tied to them).
+   */
+  async repairTruncatedSources(onRepaired?: (row: SourceRow) => void | Promise<void>) {
+    const rows = await this.findTruncatedSources();
+    const repaired: string[] = [];
+    const failed: Array<{ sourceId: string; title: string; error: string }> = [];
+    const packs = new Map<string, Promise<string>>();
+    for (const row of rows) {
+      const sourceDir = dirname(row.chunks_path!);
+      const chunksDigest = createHash("sha256").update(await readFile(row.chunks_path!)).digest("hex");
+      const attemptPath = join(sourceDir, "truncation_repair.json");
+      const attempt = await readFile(attemptPath, "utf8").then((raw) => JSON.parse(raw) as { chunksDigest?: string }).catch(() => null);
+      // A failed attempt is not retried on every launch; it is retried once the chunks change.
+      if (attempt?.chunksDigest === chunksDigest) continue;
+      try {
+        const plan = this.repairPlanFor(row);
+        if (!plan) throw new Error("원본 PDF·EPUB 파일을 찾을 수 없습니다.");
+        const key = `${plan.originalPath}\0${row.document_type}\0${plan.singleChapter}`;
+        if (!packs.has(key)) packs.set(key, this.persistRepairPack(row, plan.originalPath, plan.singleChapter));
+        const importedRoot = await packs.get(key)!;
+        await this.rebuildSourceFromPack(row, importedRoot, plan.singleChapter);
+        await rm(attemptPath, { force: true });
+        repaired.push(row.id);
+        await onRepaired?.(this.getRow(row.id));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        failed.push({ sourceId: row.id, title: row.title, error: message });
+        console.warn("Could not repair truncated source", { sourceId: row.id, title: row.title, error: message });
+        await writeFile(attemptPath, `${JSON.stringify({ chunksDigest, failedAt: new Date().toISOString(), error: message }, null, 2)}\n`, "utf8").catch(() => undefined);
+      }
+    }
+    return { found: rows.length, repaired, failed };
+  }
+
+  private repairPlanFor(row: SourceRow) {
+    const document = row.document_id
+      ? getDb().query<{ original_file_path: string | null }, [string]>("SELECT original_file_path FROM project_documents WHERE id = ?").get(row.document_id)
+      : null;
+    const candidates = [row.original_file_path, document?.original_file_path]
+      .filter((path): path is string => Boolean(path))
+      .map((path) => path.split("#")[0]!);
+    const originalPath = candidates.find((path) => isPreppyInputFile(path) && existsSync(path));
+    if (!originalPath) return null;
+    // A PDF picked on its own (or from a folder of chapter PDFs) is one chapter;
+    // a whole-book PDF records the chapter as "book.pdf#chapters/NNN-....md".
+    const singleChapter = row.document_type === "book" && row.original_file_path === originalPath;
+    return { originalPath, singleChapter };
+  }
+
+  private async persistRepairPack(row: SourceRow, originalPath: string, singleChapter: boolean) {
+    const pack = await this.convertPdf(originalPath, row.document_type, singleChapter);
+    try {
+      const importedRoot = join(this.projectRoot(row.project_id), row.project_id, "source_folders", crypto.randomUUID(), "original");
+      await mkdir(dirname(importedRoot), { recursive: true });
+      await cp(pack.outputPath, importedRoot, { recursive: true });
+      return importedRoot;
+    } finally {
+      await pack.cleanup();
+    }
+  }
+
+  private async rebuildSourceFromPack(row: SourceRow, importedRoot: string, singleChapter: boolean) {
+    const manifest = await readPreppyManifest(importedRoot);
+    const chapters = await this.preppyChapterRows(importedRoot);
+    const preppyFigures = await readPreppyFigures(importedRoot);
+    const isMergedArticle = basename(row.imported_file_path) === ".learnie-article-source.md";
+    let importedPath: string;
+    let chunks: SourceChunk[];
+    let figures: SourceFigure[];
+    if (isMergedArticle) {
+      const textFiles = chapters.map((chapter) => join(importedRoot, chapter.path));
+      if (!textFiles.length) throw new Error("다시 변환한 결과에 본문이 없습니다.");
+      const parts = await Promise.all(textFiles.map(async (file) => rewriteLocalMarkdownImageLinks(file, await readFile(file, "utf8"))));
+      const mergedText = parts.filter((part) => part.trim()).join("\n\n");
+      importedPath = join(importedRoot, ".learnie-article-source.md");
+      await writeFile(importedPath, `${mergedText.trim()}\n`, "utf8");
+      const htmlParts = await Promise.all(textFiles.map(readSourceHtml));
+      const htmlChunks = htmlParts.every(Boolean) ? normalizeHtmlChunks(row.id, htmlParts.join("\n")) : [];
+      chunks = htmlChunks.length && htmlChunksCoverMarkdown(htmlChunks, mergedText) ? htmlChunks : normalizeMarkdownChunks(row.id, mergedText);
+      figures = textFiles.flatMap((file) => {
+        const manifestPath = relativePortable(importedRoot, file);
+        return toSourceFigures({ sourceId: row.id, importedRoot, manifestPath, chapterIndex: manifest.chapterIndexByPath.get(manifestPath), figures: preppyFigures, chunks });
+      });
+    } else {
+      const chapter = await this.matchRepairChapter(row, chapters, singleChapter);
+      if (!chapter) throw new Error("다시 변환한 결과에서 같은 장을 찾지 못했습니다.");
+      importedPath = join(importedRoot, chapter.path);
+      const markdownText = await readFile(importedPath, "utf8");
+      const html = await readSourceHtml(importedPath);
+      const htmlChunks = html ? normalizeHtmlChunks(row.id, html) : [];
+      chunks = htmlChunks.length && htmlChunksCoverMarkdown(htmlChunks, markdownText)
+        ? htmlChunks
+        : normalizeMarkdownChunks(row.id, rewriteLocalMarkdownImageLinks(importedPath, markdownText));
+      figures = toSourceFigures({ sourceId: row.id, importedRoot, manifestPath: chapter.path, chapterIndex: chapter.index, figures: preppyFigures, chunks });
+    }
+    const previous = JSON.parse(await readFile(row.chunks_path!, "utf8")) as SourceChunk[];
+    const textLength = (items: SourceChunk[]) => items.reduce((sum, chunk) => sum + chunk.text.length, 0);
+    if (!chunks.length || textLength(chunks) <= textLength(previous)) {
+      throw new Error("다시 변환해도 원문이 더 길어지지 않았습니다.");
+    }
+    const sourceDir = dirname(row.chunks_path!);
+    await writeFile(row.chunks_path!, `${JSON.stringify(chunks, null, 2)}\n`, "utf8");
+    await writeFile(join(sourceDir, "source_figures.json"), `${JSON.stringify(figures, null, 2)}\n`, "utf8");
+    // Reader HTML cached against the truncated chunks no longer matches them.
+    await rm(join(sourceDir, "reader_html.json"), { force: true });
+    getDb()
+      .query("UPDATE project_sources SET imported_file_path = ?, updated_at = ? WHERE id = ?")
+      .run(importedPath, Date.now(), row.id);
+  }
+
+  private async matchRepairChapter(row: SourceRow, chapters: Awaited<ReturnType<SourceService["preppyChapterRows"]>>, singleChapter: boolean) {
+    if (singleChapter || chapters.length === 1) return chapters.length === 1 ? chapters[0]! : null;
+    const relativePath = sourcePackRelativePath(row);
+    const byPath = relativePath ? chapters.find((chapter) => chapter.path === relativePath) : undefined;
+    if (byPath) return byPath;
+    const oldRoot = sourceFolderDirFor(this.projectRoot(row.project_id), row.project_id, row.imported_file_path);
+    if (oldRoot && relativePath) {
+      const oldManifest = await readPreppyManifest(join(oldRoot, "original"));
+      const oldIndex = oldManifest.chapterIndexByPath.get(relativePath);
+      const byIndex = oldIndex == null ? undefined : chapters.find((chapter) => chapter.index === oldIndex);
+      if (byIndex) return byIndex;
+    }
+    return chapters.find((chapter) => chapter.title && chapter.title === row.title) || null;
   }
 
   async enrichReaderHtml(sourceId: string, chunks: SourceChunk[]): Promise<SourceChunk[]> {
