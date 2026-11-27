@@ -1266,6 +1266,55 @@ export class CourseArtifactService {
     return { artifacts: await this.getArtifacts(materialId), formatted, total, errors };
   }
 
+  /**
+   * Materials keep their own copy of the source chunks and figures. After a
+   * source has been rebuilt (e.g. a truncated import repaired), refresh those
+   * copies so the reader shows the whole text. Chunk IDs are positional, so
+   * notes, progress and lesson references to the intact part stay valid.
+   */
+  async refreshSourceSnapshots(sourceId: string) {
+    const materialIds = getDb()
+      .query<{ material_id: string }, [string]>("SELECT DISTINCT material_id FROM material_sources WHERE source_id = ?")
+      .all(sourceId)
+      .map((row) => row.material_id);
+    let refreshed = 0;
+    for (const materialId of materialIds) {
+      const row = getDb().query<MaterialRow, [string]>("SELECT * FROM learning_materials WHERE id = ?").get(materialId);
+      if (!row?.manifest_path) continue;
+      const dir = dirname(row.manifest_path);
+      const sourceIds = this.sourceIds(materialId);
+      const loaded = (await Promise.all(sourceIds.map((id) => this.sources.loadChunks(id)))).flat();
+      const { chunks } = normalizeFigureCaptionChunks(loaded);
+      if (!chunks.length) continue;
+      const figures = normalizeSourceFigureChunkIds(
+        (await Promise.all(sourceIds.map((id) => this.sources.loadFigures(id)))).flat(),
+        chunks,
+      );
+      const payloads: Record<string, unknown> = {
+        "source_chunks.json": chunks,
+        "figures.json": figures,
+        "figure_index.json": buildFigureIndex(figures),
+      };
+      const manifest = await readFile(row.manifest_path, "utf8").then((raw) => JSON.parse(raw) as MaterialManifest).catch(() => null);
+      for (const [name, value] of Object.entries(payloads)) {
+        const raw = serializedArtifact(value);
+        const temporary = join(dir, `${name}.${crypto.randomUUID()}.tmp`);
+        await writeFile(temporary, raw, "utf8");
+        await rename(temporary, join(dir, name));
+        if (manifest?.files?.[name]) manifest.files[name] = { ...manifest.files[name]!, sha256: sha256(raw) };
+      }
+      if (manifest?.files) {
+        const temporary = join(dir, `material_manifest.json.${crypto.randomUUID()}.tmp`);
+        await writeFile(temporary, serializedArtifact(manifest), "utf8");
+        await rename(temporary, row.manifest_path);
+      }
+      getDb().query("UPDATE learning_materials SET updated_at = ? WHERE id = ?").run(Date.now(), materialId);
+      this.artifactCache.delete(materialId);
+      refreshed += 1;
+    }
+    return refreshed;
+  }
+
   private async loadMaterialSourceChunks(row: MaterialRow) {
     if (row.manifest_path) {
       const chunksPath = join(dirname(row.manifest_path), "source_chunks.json");
