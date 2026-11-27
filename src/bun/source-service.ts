@@ -568,17 +568,27 @@ function sourceChunkIdsForFigure(figure: SourceFigure, chunks: SourceChunk[]) {
       if (validChunkIds.has(chunkId)) ids.push(chunkId);
     }
   }
-  return [...new Set(ids.length ? ids : [chunks[0]!.id])];
+  return [...new Set(ids)];
 }
 
 // The first sourceChunkId is the figure's canonical reading-order position.
 // Later ids are contextual text mentions that let tutor messages show the same
 // figure while discussing it without moving the figure in the source reader.
+// A figure no chunk claims (no image, mention or caption match) follows the
+// figure before it in reading order instead of jumping to the first chunk, so
+// a gap in the text cannot silently pile figures at the top of the source.
 export function normalizeSourceFigureChunkIds(figures: SourceFigure[], chunks: SourceChunk[]) {
-  return figures.map((figure) => ({
-    ...figure,
-    sourceChunkIds: sourceChunkIdsForFigure(figure, chunks),
-  }));
+  let previous: { sourceId: string; chunkId: string } | null = null;
+  return figures.map((figure) => {
+    let sourceChunkIds = sourceChunkIdsForFigure(figure, chunks);
+    if (!sourceChunkIds.length && chunks.length) {
+      const sourceChunks = chunks.filter((chunk) => chunk.id.startsWith(`${figure.sourceId}-chunk-`));
+      const fallback = previous?.sourceId === figure.sourceId ? previous.chunkId : (sourceChunks[0] ?? chunks[0]!).id;
+      sourceChunkIds = [fallback];
+    }
+    if (sourceChunkIds[0]) previous = { sourceId: figure.sourceId, chunkId: sourceChunkIds[0] };
+    return { ...figure, sourceChunkIds };
+  });
 }
 
 function toSourceFigures(input: {

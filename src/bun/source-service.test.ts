@@ -71,6 +71,24 @@ describe("source figure reading order", () => {
     expect(normalized?.sourceChunkIds).not.toContain(chunks[0]?.id);
   });
 
+  test("keeps an unmatched figure next to the figure before it instead of the first chunk", () => {
+    const chunks = normalizeMarkdownChunks("source", [
+      "# Chapter", "", "Opening text.", "", "## Later", "", "Figure 3.1 shows the result.", "", "## End", "", "Closing text.",
+    ].join("\n"));
+    const base = {
+      sourceId: "source", assetUrl: "", mimeType: "image/png", captionStatus: "docling_caption",
+      width: 10, height: 10, locator: "page 1", sourceChunkIds: [] as string[],
+    };
+    const figures = [
+      { ...base, id: "f1", title: "Figure 3.1", caption: "Figure 3.1", assetPath: "/tmp/missing-1.png" },
+      { ...base, id: "f2", title: "Figure 3.2", caption: "Figure 3.2", assetPath: "/tmp/missing-2.png" },
+    ] satisfies SourceFigure[];
+    const [first, second] = normalizeSourceFigureChunkIds(figures, chunks);
+    const mention = chunks.find((chunk) => chunk.text.includes("Figure 3.1 shows"))!;
+    expect(first?.sourceChunkIds[0]).toBe(mention.id);
+    expect(second?.sourceChunkIds).toEqual([mention.id]);
+  });
+
   test("places an uncaptioned figure by its exact asset link", () => {
     const chunks = normalizeMarkdownChunks(
       "source",
